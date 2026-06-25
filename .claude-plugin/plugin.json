@@ -1,0 +1,20 @@
+{
+  "name": "schedule-reminder",
+  "version": "0.1.0",
+  "description": "Persistent store for todos, events, deadlines and progress with pending/doing/done states; fires due reminders via Discord; stable CLI/JSON API other skills call.",
+  "author": {
+    "name": "DaizeDong"
+  },
+  "homepage": "https://github.com/DaizeDong/schedule-reminder",
+  "license": "MIT",
+  "keywords": [
+    "scheduler",
+    "reminder",
+    "task-management",
+    "sqlite",
+    "cli",
+    "infrastructure",
+    "automation",
+    "skill"
+  ]
+}
