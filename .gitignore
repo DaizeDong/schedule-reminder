@@ -1,0 +1,31 @@
+# --- secrets / DB: NEVER commit (these never enter the repo) ---
+db.sqlite3
+db.sqlite3-wal
+db.sqlite3-shm
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+config.json
+*.credentials.json
+.credentials.json
+*credentials*
+secrets/
+*.token
+.env
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# --- os / editor ---
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
