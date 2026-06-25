@@ -30,25 +30,76 @@ Write-Host "[1/4] init DB ..."
 if ($LASTEXITCODE -ne 0) { throw "DB init failed (rc=$LASTEXITCODE)" }
 
 # 2) Heartbeat scheduled task (single PT5M tick; OS = heartbeat only) ----------------------------
+# Use schtasks + XML (Beeline-style) — most portable across Windows PowerShell 5.1 / pwsh 7.
 if (-not $NoTask) {
   Write-Host "[2/4] register scheduled task ScheduleReminderTick (PT5M heartbeat) ..."
   $taskName = "ScheduleReminderTick"
-  $action   = New-ScheduledTaskAction -Execute $PythonW -Argument "`"$Reminder`" tick"
-  $trigger  = New-ScheduledTaskTrigger -Once -At (Get-Date) `
-                -RepetitionInterval (New-TimeSpan -Minutes 5) `
-                -RepetitionDuration (New-TimeSpan -Days 1)
-  $settings = New-ScheduledTaskSettingsSet `
-                -StartWhenAvailable `
-                -MultipleInstances IgnoreNew `
-                -DisallowStartIfOnBatteries:$false `
-                -StopIfGoingOnBatteries:$false `
-                -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+  $start    = (Get-Date).ToString("s")
+  $user     = "$env:USERDOMAIN\$env:USERNAME"
+  $xml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>schedule-reminder PT5M heartbeat -> reminder.py tick (reconciles due reminders).</Description>
+    <URI>\ScheduleReminderTick</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <StartBoundary>$start</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT5M</Interval>
+        <Duration>P1D</Duration>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>$user</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>$PythonW</Command>
+      <Arguments>"$Reminder" tick</Arguments>
+      <WorkingDirectory>$ScriptsDir</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"@
+  $xmlPath = Join-Path $env:TEMP "ScheduleReminderTick.xml"
+  # Task Scheduler XML must be UTF-16 LE (declared encoding above).
+  [System.IO.File]::WriteAllText($xmlPath, $xml, [System.Text.Encoding]::Unicode)
   try {
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
-      -Settings $settings -Force | Out-Null
-    Write-Host "      registered (re-registers daily-style trigger; reconciliation handles catch-up)."
+    schtasks /Create /TN $taskName /XML "$xmlPath" /F | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+      Write-Host "      registered ScheduleReminderTick (PT5M; missed-fire catch-up via reconciliation)."
+    } else {
+      Write-Warning "      schtasks rc=$LASTEXITCODE; DB + skill still usable, run 'reminder.py tick' manually."
+    }
   } catch {
     Write-Warning "      could not register task ($_). DB + skill still usable; run tick manually."
+  } finally {
+    Remove-Item $xmlPath -ErrorAction SilentlyContinue
   }
 } else {
   Write-Host "[2/4] -NoTask: skipping scheduled task."
