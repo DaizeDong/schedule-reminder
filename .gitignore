@@ -32,3 +32,8 @@ Thumbs.db
 
 # --- self-evolve sandbox artefacts (nested .git + worktree copies + run logs): NEVER commit ---
 .sie/
+
+# --- build/iteration metainfo (not skill content): NEVER commit ---
+PROGRESS.md
+scratchpad/
+*.log
