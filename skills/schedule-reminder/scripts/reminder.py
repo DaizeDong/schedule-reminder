@@ -65,7 +65,10 @@ def _fail(err):
     if isinstance(err, store.SkillError):
         body.update(err.to_dict())
     else:
-        body.update({"error_code": "ERR_INTERNAL", "message": str(err)})
+        # Unexpected error: surface only the exception *type*, not str(err), which can embed the db
+        # path or other host details. Structured SkillErrors above carry their own safe messages.
+        body.update({"error_code": "ERR_INTERNAL",
+                     "message": "internal error (%s)" % type(err).__name__})
     sys.stderr.write(json.dumps(body, ensure_ascii=False, default=str) + "\n")
     return 1
 
@@ -88,6 +91,16 @@ def _tags(s):
     return [t.strip() for t in s.split(",") if t.strip()]
 
 
+def _json_arg(s, flag):
+    """Parse a JSON CLI value (used by --alarms/--rdate/--exdate). None passes through."""
+    if s is None:
+        return None
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError as e:
+        raise store.SkillError("ERR_BAD_JSON", "%s is not valid JSON: %s" % (flag, e))
+
+
 def cmd_init(a):
     path = store.init_db(a.db)
     return _emit({"db_path": path, "schema_user_version": store.SCHEMA_USER_VERSION})
@@ -98,6 +111,8 @@ def cmd_add(a):
         a.title, kind=a.kind, due_at=a.due_at, state=a.state,
         priority=a.priority, progress=a.progress, description=a.description,
         scheduled_at=a.scheduled_at, wait_until=a.wait_until,
+        recurrence=a.recurrence, rdate=_json_arg(a.rdate, "--rdate"),
+        exdate=_json_arg(a.exdate, "--exdate"), alarms=_json_arg(a.alarms, "--alarms"),
         tags=_tags(a.tags), project=a.project, source=a.source,
         idempotency_key=a.idempotency_key, ext=_parse_ext(a.ext),
         actor=a.actor, db_path=a.db,
@@ -186,6 +201,11 @@ def build_parser():
     s.add_argument("--state", default="pending", choices=list(store.STATES))
     s.add_argument("--priority", type=int, default=0)
     s.add_argument("--progress", type=int, default=0)
+    s.add_argument("--recurrence", default=None, help="RRULE string, e.g. FREQ=DAILY;INTERVAL=1")
+    s.add_argument("--rdate", default=None, help="JSON array of extra RFC3339 dates")
+    s.add_argument("--exdate", default=None, help="JSON array of excluded RFC3339 dates")
+    s.add_argument("--alarms", default=None,
+                   help='JSON array of alarm rules, e.g. [{"lead":3600}] or [{"trigger":"-PT15M"}]')
     s.add_argument("--description", default=None)
     s.add_argument("--tags", default=None, help="comma-separated")
     s.add_argument("--project", default=None)

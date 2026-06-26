@@ -2,6 +2,33 @@
 
 All notable changes to this project are documented here (Keep a Changelog style).
 
+## [0.2.0] - 2026-06-25
+### Added
+- **RRULE rolling recurrence** (architecture §2.4): on fire, a `recurrence` item rolls to its next
+  future occurrence and re-arms instead of being permanently notified — long-overdue items catch up
+  once, then re-arm. Minimal stdlib RFC5545 subset (`FREQ`/`INTERVAL`/`UNTIL`, `exdate` skip); the
+  infinite series is never materialised. (E14)
+- **Per-alarm lead times** (architecture §4.5): `alarms[]` entries (`{"lead":secs}` or iCal
+  `{"trigger":"-PT15M"}`) make an item fire *before* `due_at`; effective lead = max(global `--lead`,
+  alarm leads). Applied by both `due` and `tick`. (E15)
+- New additive `add` flags: `--recurrence`, `--rdate`, `--exdate`, `--alarms` (item field set and
+  verb set unchanged → `api_version` stays 1.0.0).
+### Fixed
+- **Concurrent-tick double-fire (MEDIUM)**: the `tick` claim is now exclusive on `claimed_at` (only
+  an unclaimed-or-stale row is grabbed) and the candidate SELECT skips freshly-claimed rows, so two
+  overlapping ticks (manual vs the PT5M heartbeat, or a tick running > 5 min) never both push the
+  same reminder. Stale claims (`> _CLAIM_TTL`, left by a crashed tick) are reclaimed.
+- **progress invariant**: `add`/`update`/`transition` now reject out-of-range progress with
+  `ERR_BAD_PROGRESS` (previously `update --set progress=99999` was accepted).
+- **Internal error redaction**: the `ERR_INTERNAL` fallback no longer echoes `str(e)` (which could
+  embed the db path) — only the exception type name.
+- Docs: dangling `ARCHITECTURE.md` section refs repointed to in-repo `docs/design-brief.md`;
+  removed the misleading `--json` flag mention (JSON is always emitted); `.sie/` sandbox added to
+  `.gitignore`; 9th plugin keyword added for the base-9 GitHub topics target.
+### Tests
+- Acceptance suite grows 35 → 41: E14 rolling (+ UNTIL stop), E15 alarm lead (+ iCal trigger),
+  exclusive-claim concurrency guard, progress-bounds guard. Each verified red on the prior code.
+
 ## [0.1.0] - 2026-06-25
 ### Added
 - T0 schedule/memo base: SQLite (WAL) storage engine (`store.py`).

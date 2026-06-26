@@ -1,12 +1,23 @@
 # Roadmap
 
-Current: **v0.1.0**
+Current: **v0.2.0**
 
-## v0.1.0 (current)
+## v0.2.0 (current)
+- **RRULE rolling recurrence** (§2.4): fired `recurrence` items roll to the next future occurrence
+  and re-arm; minimal stdlib `FREQ`/`INTERVAL`/`UNTIL` subset + `exdate` skip; series never
+  materialised. (E14)
+- **Per-alarm lead times** (§4.5): `alarms[]` (`{"lead":secs}` / iCal `{"trigger":"-PT15M"}`) fire an
+  item before `due_at`; applied by `due` + `tick`. (E15)
+- Concurrency hardening: exclusive `claimed_at` claim + stale reclaim → no concurrent-tick
+  double-fire. `progress` 0-100 enforced on every write (`ERR_BAD_PROGRESS`).
+- New additive `add` flags (`--recurrence`/`--rdate`/`--exdate`/`--alarms`); contract still
+  `api_version 1.0.0` (item field + verb sets unchanged). 41-test suite (E1-E15).
+
+## v0.1.0
 - T0 base: SQLite (WAL) storage with `store.py` engine.
 - Unified `item` model (event/task), immutable UUIDv7 keys, append-only `events` audit stream.
 - Guarded state machine (pending/doing/done/blocked/cancelled) + write-time invariants.
-- Frozen CLI/JSON contract `reminder.py <verb> --json` (`api_version 1.0.0`).
+- Frozen CLI/JSON contract `reminder.py <verb>` (`api_version 1.0.0`).
 - Concurrency safety: BEGIN IMMEDIATE writes, optimistic CAS, in-process write lock, BUSY back-off.
 - Idempotent writes (UPSERT on idempotency_key); MUST-PRESERVE unknown fields via `ext`.
 - Due reminders: single PT5M heartbeat + stateless `tick` reconciliation, at-least-once + dedupe,
@@ -14,9 +25,8 @@ Current: **v0.1.0**
 - `install.ps1` (DB + scheduled task + junction + health); 35-test acceptance suite (E1-E13).
 
 ## Planned
-- **v0.2** — RRULE recurrence expansion (rolling next-due via dateutil; rdate/exdate); per-item alarm
-  lead times (`alarms[]` triggers) instead of a global `--lead`.
-- **v0.2** — `VACUUM INTO` backup helper + scheduled cold-snapshot task; idle WAL checkpoint.
+- **v0.2.x** — RRULE `BYDAY`/ordinal (`1FR`/`-1SU`) + `COUNT`; `rdate` extra-occurrence merge;
+  `VACUUM INTO` backup helper + scheduled cold-snapshot task; idle WAL checkpoint.
 - **v0.3** — optional MCP wrapper over the same `store.py` (only if a cross-client/remote need
   appears); richer `query` filters (tag/project/priority ranges).
 - **v0.3** — agent-skills-eval lift (G1) + held-out trigger-rate optimization (G2) wired into CI.

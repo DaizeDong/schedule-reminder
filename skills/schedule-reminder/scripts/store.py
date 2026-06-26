@@ -45,7 +45,8 @@ STATES = ("pending", "doing", "done", "blocked", "cancelled")
 ACTIVE_STATES = ("pending", "doing", "blocked")
 TERMINAL_STATES = ("done", "cancelled")
 
-# Legal state-machine transitions (architecture section 2.3). Reopen from terminal allowed.
+# Legal state-machine transitions (see docs/design-brief.md §2.3; full ARCHITECTURE lives in the
+# CodesResearch build notes). Reopen from terminal allowed.
 TRANSITIONS = {
     "pending":   {"doing", "blocked", "done", "cancelled"},
     "doing":     {"done", "blocked", "pending", "cancelled"},
@@ -75,6 +76,14 @@ _BUSY_BASE = 0.05  # seconds
 _NOTIFY_MAX_RETRIES = 5
 _NOTIFY_BACKOFF_BASE = 60      # seconds
 _NOTIFY_BACKOFF_CAP = 30 * 60  # 30 min
+# tick claim TTL: a fresh claim is exclusive; a claim older than this is treated as stale and
+# may be re-acquired (the tick that set it likely crashed). Makes claim cross-process exclusive
+# (the in-process RLock alone cannot serialise two separate tick processes). See tick().
+_CLAIM_TTL = 10 * 60           # 10 min
+
+# progress is a 0-100 percentage (architecture §2.3 invariant). Enforced on every write path.
+PROGRESS_MIN = 0
+PROGRESS_MAX = 100
 
 _WRITE_LOCK = threading.RLock()  # serialises same-process writers
 
@@ -339,6 +348,22 @@ def _validate_state(state):
         raise SkillError("ERR_BAD_STATE", "state must be one of %s" % (STATES,), state=state)
 
 
+def _validate_progress(progress):
+    """progress is a 0-100 percentage; reject out-of-range so the invariant holds on every write."""
+    if progress is None:
+        return None
+    try:
+        p = int(progress)
+    except (TypeError, ValueError):
+        raise SkillError("ERR_BAD_PROGRESS", "progress must be an integer 0-100",
+                         progress=progress)
+    if p < PROGRESS_MIN or p > PROGRESS_MAX:
+        raise SkillError("ERR_BAD_PROGRESS",
+                         "progress must be in [%d, %d]" % (PROGRESS_MIN, PROGRESS_MAX),
+                         progress=p)
+    return p
+
+
 def _deps_satisfied(conn, relations):
     """All depends-on targets must be in state done."""
     if not relations:
@@ -354,7 +379,7 @@ def _deps_satisfied(conn, relations):
 
 
 def _enforce_terminal_fields(fields, to_state, now):
-    """done/cancelled MUST have end_at; done forces progress=100."""
+    """done/cancelled MUST have end_at; done forces progress=100 (see docs/design-brief.md §2.3)."""
     if to_state == "done":
         fields.setdefault("end_at", now)
         if fields.get("end_at") is None:
@@ -378,6 +403,7 @@ def add_item(title, *, kind="task", due_at=None, state="pending", priority=0, pr
         raise SkillError("ERR_BAD_INPUT", "title is required")
     _validate_kind(kind)
     _validate_state(state)
+    progress = _validate_progress(progress)
     now = to_rfc3339(now_utc())
     item_id = _id or uuid7()
 
@@ -388,7 +414,7 @@ def add_item(title, *, kind="task", due_at=None, state="pending", priority=0, pr
     fields = {
         "id": item_id, "schema_version": RECORD_SCHEMA_VERSION, "kind": kind,
         "title": str(title), "description": description, "state": state,
-        "progress": int(progress), "priority": int(priority),
+        "progress": progress, "priority": int(priority),
         "due_at": t(due_at), "scheduled_at": t(scheduled_at), "start_at": t(start_at),
         "end_at": t(end_at), "wait_until": t(wait_until), "tz": tz, "recurrence": recurrence,
         "rdate": _dump_json(rdate), "exdate": _dump_json(exdate), "tags": _dump_json(tags),
@@ -473,6 +499,8 @@ def update_item(item_id, *, idempotency_key=None, actor=None, ext=None, db_path=
                     raise SkillError("ERR_BAD_FIELD", "field not updatable: %s" % k, field=k)
                 if k in _TIME_FIELDS:
                     v = to_rfc3339(parse_dt(v)) if v else None
+                elif k == "progress":
+                    v = _validate_progress(v)
                 elif k in _JSON_COLS:
                     v = _dump_json(v)
                 sets.append("%s=?" % k)
@@ -519,7 +547,7 @@ def transition(item_id, to_state, *, expect_state=None, reason=None, actor=None,
 
             new_fields = {"state": to_state, "updated_at": now}
             if progress is not None:
-                new_fields["progress"] = int(progress)
+                new_fields["progress"] = _validate_progress(progress)
 
             if to_state == "done":
                 ok, unmet = _deps_satisfied(conn, relations)
@@ -640,24 +668,222 @@ def list_items(*, state=None, source=None, kind=None, due_before=None, active_on
 
 
 def due_items(*, now=None, lead=0, db_path=None):
-    """Read-only: items whose due_at - lead <= now and still active and not waiting."""
+    """Read-only: items whose due_at - effective_lead <= now and still active and not waiting.
+
+    effective_lead = max(global `lead`, per-item alarms[] lead). Candidate rows are pulled with a
+    cheap SQL pre-filter (active, not waiting, has due_at) and the alarm-aware interval rule is
+    applied in Python — items with a long alarm lead become due *before* their due_at.
+    """
     now_s = resolve_now(now)
+    now_dt = parse_dt(now_s)
     conn = _connect(db_path)
     try:
-        # lead applied by comparing due_at <= now + lead, i.e. due_at <= threshold
-        threshold = now_s
-        if lead:
-            from datetime import timedelta
-            threshold = to_rfc3339(parse_dt(now_s) + timedelta(seconds=int(lead)))
         rows = conn.execute(
-            "SELECT * FROM items WHERE due_at IS NOT NULL AND due_at <= ? "
+            "SELECT * FROM items WHERE due_at IS NOT NULL "
             "AND state NOT IN ('done','cancelled') "
             "AND (wait_until IS NULL OR wait_until <= ?) ORDER BY due_at ASC",
-            (threshold, now_s),
+            (now_s,),
         ).fetchall()
-        return [_row_to_item(r) for r in rows]
+        out = [_row_to_item(r) for r in rows]
+        return [it for it in out if _due_reached(it, now_dt, lead)]
     finally:
         conn.close()
+
+
+# =================================================================================================
+# Alarm lead times (architecture §4.5) — per-item VALARM-style lead instead of a single global --lead
+# =================================================================================================
+def _parse_ical_duration(s):
+    """Parse an iCalendar duration like '-PT15M' / 'PT1H' / '-P1D' / 'P2W' to seconds (magnitude).
+
+    Returns a non-negative lead in seconds (sign is dropped: a trigger fires *before* the anchor).
+    Returns 0 on anything unparseable so a malformed alarm never crashes the tick loop.
+    """
+    if s is None:
+        return 0
+    if isinstance(s, (int, float)):
+        return abs(int(s))
+    t = str(s).strip().upper()
+    if t.startswith("-"):
+        t = t[1:]
+    elif t.startswith("+"):
+        t = t[1:]
+    if not t.startswith("P"):
+        return 0
+    t = t[1:]
+    total, num = 0, ""
+    in_time = False
+    try:
+        for ch in t:
+            if ch == "T":
+                in_time = True
+                continue
+            if ch.isdigit():
+                num += ch
+                continue
+            if num == "":
+                return 0
+            n = int(num)
+            num = ""
+            if ch == "W":
+                total += n * 7 * 86400
+            elif ch == "D":
+                total += n * 86400
+            elif ch == "H" and in_time:
+                total += n * 3600
+            elif ch == "M" and in_time:
+                total += n * 60
+            elif ch == "S" and in_time:
+                total += n
+            else:
+                return 0
+        return total
+    except (ValueError, TypeError):
+        return 0
+
+
+def _alarm_lead(alarm):
+    """Lead seconds for one alarm entry. Accepts {'lead': int_seconds} or {'trigger': '-PT15M'}."""
+    if isinstance(alarm, dict):
+        if "lead" in alarm:
+            try:
+                return abs(int(alarm["lead"]))
+            except (TypeError, ValueError):
+                return 0
+        if "trigger" in alarm:
+            return _parse_ical_duration(alarm["trigger"])
+        return 0
+    return _parse_ical_duration(alarm)
+
+
+def _item_lead(item, global_lead=0):
+    """Effective lead for an item = max(global --lead, max per-alarm lead). The earliest alarm wins."""
+    lead = int(global_lead or 0)
+    alarms = item.get("alarms")
+    if isinstance(alarms, list):
+        for a in alarms:
+            lead = max(lead, _alarm_lead(a))
+    return lead
+
+
+def _due_reached(item, now_dt, global_lead=0):
+    """True iff due_at - effective_lead <= now (the interval rule; never the now==due equality)."""
+    due = item.get("due_at")
+    if not due:
+        return False
+    from datetime import timedelta
+    due_dt = parse_dt(due)
+    lead = _item_lead(item, global_lead)
+    return (due_dt - timedelta(seconds=lead)) <= now_dt
+
+
+# =================================================================================================
+# RRULE rolling expansion (architecture §2.4) — compute the next occurrence, never materialise the
+# infinite series. Stdlib-only minimal RFC5545 subset: FREQ + INTERVAL + UNTIL, with exdate skip.
+# =================================================================================================
+def _add_months(dt, n):
+    """Add n calendar months, clamping the day to the target month's length (Jan31 +1mo -> Feb28)."""
+    import calendar
+    m0 = dt.month - 1 + n
+    year = dt.year + m0 // 12
+    month = m0 % 12 + 1
+    day = min(dt.day, calendar.monthrange(year, month)[1])
+    return dt.replace(year=year, month=month, day=day)
+
+
+def _parse_rrule(recurrence):
+    """Parse a minimal RRULE into {FREQ, INTERVAL, UNTIL}. Returns None if FREQ unsupported/missing."""
+    if not recurrence:
+        return None
+    parts = {}
+    body = str(recurrence).strip()
+    if body.upper().startswith("RRULE:"):
+        body = body[6:]
+    for kv in body.split(";"):
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            parts[k.strip().upper()] = v.strip()
+    freq = parts.get("FREQ", "").upper()
+    if freq not in ("DAILY", "WEEKLY", "MONTHLY", "YEARLY"):
+        return None
+    try:
+        interval = max(1, int(parts.get("INTERVAL", "1")))
+    except (TypeError, ValueError):
+        interval = 1
+    until = None
+    if parts.get("UNTIL"):
+        try:
+            until = parse_dt(parts["UNTIL"].replace("T", "T").replace("Z", "+00:00")
+                             if "-" in parts["UNTIL"] or ":" in parts["UNTIL"]
+                             else _compact_to_iso(parts["UNTIL"]))
+        except Exception:
+            until = None
+    return {"FREQ": freq, "INTERVAL": interval, "UNTIL": until}
+
+
+def _compact_to_iso(s):
+    """Convert a compact RRULE UNTIL like 20260622T000000Z to RFC3339."""
+    s = s.strip()
+    if "T" in s and len(s) >= 15:
+        d, t = s.split("T", 1)
+        t = t.rstrip("Z")
+        iso = "%s-%s-%sT%s:%s:%s+00:00" % (d[0:4], d[4:6], d[6:8], t[0:2], t[2:4], t[4:6])
+        return iso
+    return "%s-%s-%sT00:00:00+00:00" % (s[0:4], s[4:6], s[6:8])
+
+
+def _step(dt, rule):
+    freq, interval = rule["FREQ"], rule["INTERVAL"]
+    from datetime import timedelta
+    if freq == "DAILY":
+        return dt + timedelta(days=interval)
+    if freq == "WEEKLY":
+        return dt + timedelta(weeks=interval)
+    if freq == "MONTHLY":
+        return _add_months(dt, interval)
+    if freq == "YEARLY":
+        return _add_months(dt, 12 * interval)
+    return None
+
+
+def _next_due(due_dt, recurrence, after_dt, exdate=None):
+    """Smallest recurrence occurrence strictly after `after_dt`. None if rule exhausted/unsupported.
+
+    Rolling semantics (§2.4): on fire we advance to the next *future* occurrence (handles missed
+    fires — a long-overdue daily item fires once now, then re-arms for the next day after now).
+    """
+    rule = _parse_rrule(recurrence)
+    if rule is None:
+        return None
+    ex = set()
+    if exdate:
+        vals = exdate
+        if isinstance(vals, str):
+            try:
+                vals = json.loads(vals)
+            except (json.JSONDecodeError, ValueError):
+                vals = [vals]
+        if isinstance(vals, list):
+            for v in vals:
+                try:
+                    ex.add(to_rfc3339(parse_dt(v)))
+                except Exception:
+                    pass
+    cur = due_dt
+    until = rule["UNTIL"]
+    for _ in range(100000):  # hard cap: never loop forever on a degenerate rule
+        nxt = _step(cur, rule)
+        if nxt is None:
+            return None
+        if until is not None and nxt > until:
+            return None
+        cur = nxt
+        if cur <= after_dt:
+            continue
+        if to_rfc3339(cur) in ex:
+            continue
+        return cur
+    return None
 
 
 # =================================================================================================
@@ -681,41 +907,60 @@ def _default_notify(item):
 
 
 def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor="tick"):
-    """Reconcile due items: claim -> notify (outside tx) -> mark notified | back-off retry."""
+    """Reconcile due items: claim -> notify (outside tx) -> mark notified | back-off retry.
+
+    Concurrency-safe claim (cross-process): the claim UPDATE is exclusive on `claimed_at` (only an
+    unclaimed-or-stale row may be grabbed), and the SELECT skips freshly-claimed rows. Two ticks
+    overlapping (manual tick vs the PT5M heartbeat, or a tick running >5 min) therefore never both
+    dispatch the same item — the in-process RLock alone cannot serialise separate tick processes.
+    Stale claims (older than _CLAIM_TTL, left by a crashed tick) are reclaimed so nothing wedges.
+
+    Alarm-aware: an item fires when due_at - max(global lead, per-alarm lead) <= now (§4.5).
+    Recurring: on successful fire a recurrence (RRULE) item rolls to its next future occurrence and
+    re-arms (notified_at cleared) instead of being permanently marked notified (§2.4).
+    """
     now_s = resolve_now(now)
+    now_dt = parse_dt(now_s)
     notify_fn = notify_fn or _default_notify
     conn = _connect(db_path)
     dispatched, retried, blocked, skipped = [], [], [], []
     try:
         from datetime import timedelta
-        threshold = to_rfc3339(parse_dt(now_s) + timedelta(seconds=int(lead))) if lead else now_s
+        stale = to_rfc3339(now_dt - timedelta(seconds=_CLAIM_TTL))
         rows = conn.execute(
-            "SELECT * FROM items WHERE due_at IS NOT NULL AND due_at <= ? "
+            "SELECT * FROM items WHERE due_at IS NOT NULL "
             "AND state NOT IN ('done','cancelled') "
             "AND notified_at IS NULL "
             "AND (next_retry_at IS NULL OR next_retry_at <= ?) "
-            "AND (wait_until IS NULL OR wait_until <= ?) ORDER BY due_at ASC",
-            (threshold, now_s, now_s),
+            "AND (wait_until IS NULL OR wait_until <= ?) "
+            "AND (claimed_at IS NULL OR claimed_at <= ?) ORDER BY due_at ASC",
+            (now_s, now_s, stale),
         ).fetchall()
 
         for row in rows:
             item_id = row["id"]
-            # atomic claim: only one tick may grab a not-yet-notified item
-            with _Tx(conn):
-                cur = conn.execute(
-                    "UPDATE items SET claimed_at=? WHERE id=? AND notified_at IS NULL",
-                    (now_s, item_id),
-                )
-                claimed = cur.rowcount > 0
-            if not claimed:
-                skipped.append(item_id)
+            item = _row_to_item(row)
+            # alarm-aware interval rule: only items actually due (accounting for per-alarm lead)
+            if not _due_reached(item, now_dt, lead):
                 continue
 
             if dry_run:
                 dispatched.append(item_id)
                 continue
 
-            item = _row_to_item(row)
+            # atomic EXCLUSIVE claim: only an unclaimed-or-stale, not-yet-notified item is grabbed.
+            # A concurrent tick that already claimed it (fresh claimed_at) loses this CAS -> skipped.
+            with _Tx(conn):
+                cur = conn.execute(
+                    "UPDATE items SET claimed_at=? WHERE id=? AND notified_at IS NULL "
+                    "AND (claimed_at IS NULL OR claimed_at <= ?)",
+                    (now_s, item_id, stale),
+                )
+                claimed = cur.rowcount > 0
+            if not claimed:
+                skipped.append(item_id)
+                continue
+
             try:
                 ok = bool(notify_fn(item))
             except Exception as e:  # notify must never crash the tick loop
@@ -724,14 +969,28 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
                 continue
 
             if ok:
+                next_due = _next_due(parse_dt(row["due_at"]), row["recurrence"], now_dt,
+                                     exdate=row["exdate"]) if row["recurrence"] else None
                 with _Tx(conn):
-                    conn.execute(
-                        "UPDATE items SET notified_at=?, next_retry_at=NULL, updated_at=? "
-                        "WHERE id=? AND notified_at IS NULL",
-                        (now_s, now_s, item_id),
-                    )
-                    _append_event(conn, item_id, actor, "notified",
-                                  payload={"channel": "discord"})
+                    if next_due is not None:
+                        # recurring: roll to next occurrence and re-arm (clear delivery bookkeeping)
+                        conn.execute(
+                            "UPDATE items SET due_at=?, notified_at=NULL, claimed_at=NULL, "
+                            "next_retry_at=NULL, retry_count=0, updated_at=? "
+                            "WHERE id=? AND notified_at IS NULL",
+                            (to_rfc3339(next_due), now_s, item_id),
+                        )
+                        _append_event(conn, item_id, actor, "notified",
+                                      payload={"channel": "discord",
+                                               "rolled_to": to_rfc3339(next_due)})
+                    else:
+                        conn.execute(
+                            "UPDATE items SET notified_at=?, next_retry_at=NULL, updated_at=? "
+                            "WHERE id=? AND notified_at IS NULL",
+                            (now_s, now_s, item_id),
+                        )
+                        _append_event(conn, item_id, actor, "notified",
+                                      payload={"channel": "discord"})
                 dispatched.append(item_id)
             else:
                 _record_notify_failure(conn, item_id, now_s, "notify returned falsey",

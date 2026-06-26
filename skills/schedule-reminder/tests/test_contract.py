@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""schedule-reminder acceptance evals E1-E13 (architecture section 6).
+"""schedule-reminder acceptance evals E1-E15 (eval matrix: docs/design-brief.md proof bar; the full
+ARCHITECTURE §6 eval matrix lives in the CodesResearch build notes).
 
 Every test drives the FROZEN CLI via subprocess and asserts JSON output (contract, not internals).
 Each test gets an isolated DB via SCHEDULE_DB_PATH; the clock is injected with --now; the relay is
@@ -368,3 +369,104 @@ def test_snooze_suppresses_due(db, tmp_path):
     stub, log = make_stub(tmp_path)
     res = jout(run(["tick", "--now", "2026-06-25T12:00:00Z"], db, {"SCHEDULE_RELAY_CMD": stub}))
     assert iid not in res["dispatched"]  # snoozed past now -> suppressed
+
+
+# --------------------------------------------------------------- E14 RRULE rolling expansion (§2.4)
+def test_e14_recurrence_rolling(db, tmp_path):
+    # a long-overdue DAILY item fires ONCE now, then rolls to the next future occurrence (re-arms),
+    # never materialising the infinite series. Guards the rolling-next-due capability.
+    iid = jout(run(["add", "--title", "daily", "--due-at", "2026-06-20T00:00:00Z",
+                    "--recurrence", "FREQ=DAILY;INTERVAL=1"], db))["item"]["id"]
+    stub, log = make_stub(tmp_path)
+    res = jout(run(["tick", "--now", "2026-06-25T12:00:00Z"], db, {"SCHEDULE_RELAY_CMD": stub}))
+    assert iid in res["dispatched"]
+    item = jout(run(["get", "--id", iid], db))["item"]
+    assert item["notified_at"] is None  # re-armed, not permanently notified
+    assert item["due_at"] == "2026-06-26T00:00:00.000000+00:00"  # next occurrence after now
+    # same-clock re-tick must NOT re-dispatch (next due is in the future) -> at-least-once preserved
+    res2 = jout(run(["tick", "--now", "2026-06-25T12:00:00Z"], db, {"SCHEDULE_RELAY_CMD": stub}))
+    assert iid not in res2["dispatched"]
+    with open(log, encoding="utf-8") as f:
+        assert len([ln for ln in f if ln.strip()]) == 1  # delivered exactly once this period
+    # advancing the clock past the next occurrence fires the recurrence again
+    res3 = jout(run(["tick", "--now", "2026-06-26T12:00:00Z"], db, {"SCHEDULE_RELAY_CMD": stub}))
+    assert iid in res3["dispatched"]
+
+
+def test_e14_recurrence_until_stops(db, tmp_path):
+    # once UNTIL is passed the rule is exhausted: it fires once, then is permanently notified (no roll)
+    iid = jout(run(["add", "--title", "u", "--due-at", "2026-06-20T00:00:00Z",
+                    "--recurrence", "FREQ=DAILY;UNTIL=20260622T000000Z"], db))["item"]["id"]
+    stub, log = make_stub(tmp_path)
+    res = jout(run(["tick", "--now", "2026-06-25T12:00:00Z"], db, {"SCHEDULE_RELAY_CMD": stub}))
+    assert iid in res["dispatched"]
+    item = jout(run(["get", "--id", iid], db))["item"]
+    assert item["notified_at"] is not None  # exhausted -> terminal notify, did not re-arm
+
+
+# --------------------------------------------------------------- E15 alarms[] per-alarm lead (§4.5)
+def test_e15_alarm_lead(db, tmp_path):
+    # an item with an alarm lead becomes due *before* its due_at; one without does not.
+    lead_id = jout(run(["add", "--title", "lead", "--due-at", "2026-06-25T13:00:00Z",
+                        "--alarms", '[{"lead":3600}]'], db))["item"]["id"]
+    ctl_id = jout(run(["add", "--title", "noalarm", "--due-at", "2026-06-25T13:00:00Z"], db))["item"]["id"]
+    stub, log = make_stub(tmp_path)
+    # now=12:30: lead item (due-3600 = 12:00 <= 12:30) fires; control (due 13:00 > 12:30) does not
+    res = jout(run(["tick", "--now", "2026-06-25T12:30:00Z"], db, {"SCHEDULE_RELAY_CMD": stub}))
+    assert lead_id in res["dispatched"]
+    assert ctl_id not in res["dispatched"]
+
+
+def test_e15_alarm_trigger_ical(db):
+    # iCalendar VALARM trigger form '-PT1H' is equivalent to a 3600s lead (read-only `due` path).
+    iid = jout(run(["add", "--title", "cal", "--due-at", "2026-06-25T13:00:00Z",
+                    "--alarms", '[{"trigger":"-PT1H"}]'], db))["item"]["id"]
+    res = jout(run(["due", "--now", "2026-06-25T12:30:00Z"], db))
+    assert any(i["id"] == iid for i in res["items"])
+    # 11:59 is before due-1H (12:00) -> not yet due
+    res2 = jout(run(["due", "--now", "2026-06-25T11:59:00Z"], db))
+    assert all(i["id"] != iid for i in res2["items"])
+
+
+# --------------------------------------------------------- concurrent tick: exclusive claim (no dup)
+def test_concurrent_tick_exclusive_claim(db, tmp_path):
+    # A second tick overlapping the first must NOT re-dispatch an item the first already claimed.
+    # We simulate the concurrent peer by stamping a *fresh* claimed_at, then assert this tick skips
+    # it; a *stale* claim (crashed tick) is reclaimed. Guards cross-process at-most-... dedupe.
+    iid = jout(run(["add", "--title", "c", "--due-at", "2026-01-01T00:00:00Z"], db))["item"]["id"]
+    stub, log = make_stub(tmp_path)
+    now = "2026-06-25T12:00:00Z"
+
+    def set_claim(ts):
+        con = sqlite3.connect(db)
+        try:
+            con.execute("UPDATE items SET claimed_at=? WHERE id=?", (ts, iid))
+            con.commit()
+        finally:
+            con.close()
+
+    set_claim("2026-06-25T12:00:00.000000+00:00")  # fresh claim by a concurrent tick
+    res = jout(run(["tick", "--now", now], db, {"SCHEDULE_RELAY_CMD": stub}))
+    assert iid not in res["dispatched"]  # exclusive claim respected -> no double fire
+    assert iid in res["skipped"] or iid not in res["dispatched"]
+
+    set_claim("2026-06-25T11:00:00.000000+00:00")  # stale claim (> _CLAIM_TTL ago) -> reclaim
+    res2 = jout(run(["tick", "--now", now], db, {"SCHEDULE_RELAY_CMD": stub}))
+    assert iid in res2["dispatched"]
+
+    with open(log, encoding="utf-8") as f:
+        assert len([ln for ln in f if ln.strip()]) == 1  # delivered exactly once across both ticks
+
+
+# --------------------------------------------------------------- progress invariant 0-100 clamped
+def test_progress_bounds(db):
+    iid = jout(run(["add", "--title", "p"], db))["item"]["id"]
+    for bad in ("99999", "-1", "101"):
+        r = run(["update", "--id", iid, "--set", "progress=%s" % bad], db, check=False)
+        assert r.returncode != 0 and jerr(r)["error_code"] == "ERR_BAD_PROGRESS"
+    r = run(["add", "--title", "p2", "--progress", "150"], db, check=False)
+    assert r.returncode != 0 and jerr(r)["error_code"] == "ERR_BAD_PROGRESS"
+    r = run(["transition", "--id", iid, "--to", "doing", "--progress", "200"], db, check=False)
+    assert r.returncode != 0 and jerr(r)["error_code"] == "ERR_BAD_PROGRESS"
+    ok = jout(run(["update", "--id", iid, "--set", "progress=50"], db))["item"]
+    assert ok["progress"] == 50  # valid still applies

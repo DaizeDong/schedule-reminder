@@ -29,3 +29,6 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# --- self-evolve sandbox artefacts (nested .git + worktree copies + run logs): NEVER commit ---
+.sie/
