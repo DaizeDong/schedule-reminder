@@ -16,7 +16,7 @@
 
 ```bash
 python reminder.py add \
-  --title "Reply to recruiter (ObjectWin)" \
+  --title "Reply to recruiter (Acme Corp)" \
   --kind task --due-at "2026-06-28T17:00:00Z" --priority 1 \
   --source email-monitor --actor email-monitor \
   --idempotency-key "email-monitor:msg-8841" \
