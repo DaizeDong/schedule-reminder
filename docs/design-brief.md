@@ -45,5 +45,6 @@ passed**.
 ## Scope & focus (one job, ≤3 modules)
 
 One job: a persistent schedule/memo base with due reminders and a stable API. Three modules:
-`store.py` (engine), `reminder.py` (CLI contract), `notify.py` (pluggable channel). Recurrence
-expansion, alarm-rule lead times, and MCP wrapping are explicitly out of v0.1 scope (roadmap).
+`store.py` (engine), `reminder.py` (CLI contract), `notify.py` (pluggable channel). v0.2 added RRULE
+rolling recurrence (§2.4) and per-alarm lead times (§4.5) using the existing fields/verbs (contract
+still `api_version 1.0.0`); MCP wrapping remains out of scope (roadmap v0.3).

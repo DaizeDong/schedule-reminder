@@ -23,7 +23,7 @@ description: Persistent store for todos, events, deadlines and progress with pen
 ```
 SQLite (WAL) single file          <- private storage, NEVER touched by downstream
   store.py  (typed functions)     <- in-process, trusted skills MAY import
-    reminder.py <verb> --json     <- the ONLY stable contract; downstream calls via subprocess
+    reminder.py <verb>            <- the ONLY stable contract (JSON always); downstream calls via subprocess
 [Windows task: PT5M heartbeat] -> reminder.py tick -> reconcile due items -> Discord relay
 ```
 
@@ -55,8 +55,10 @@ with `error_code` + exit 1. Inject a clock with `--now`/`SCHEDULE_NOW`; isolate 
 
 `id` (immutable UUIDv7) · `kind` (task|event) · `title` · `state`
 (pending/doing/done/blocked/cancelled) · `progress` 0-100 · `priority` 0-9 · `due_at` (RFC3339 UTC) ·
-`tags[]` · `source` · `idempotency_key` · `relations[]` (depends-on/...) · `ext` (**unknown fields
-preserved** — namespace `x_<skill>_*`). Full table -> `reference/contract.md`.
+`tags[]` · `source` · `idempotency_key` · `relations[]` (depends-on/...) · `recurrence` (RRULE —
+`tick` rolls to the next occurrence) · `alarms[]` (per-alarm lead, e.g. `[{"lead":3600}]` /
+`[{"trigger":"-PT15M"}]`) · `ext` (**unknown fields preserved** — namespace `x_<skill>_*`). Full
+table -> `reference/contract.md`.
 
 ## Hard rules
 

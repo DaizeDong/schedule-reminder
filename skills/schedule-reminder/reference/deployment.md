@@ -24,10 +24,14 @@ pwsh -File scripts/install.ps1 -NoTask    # DB + junction only (skip scheduler)
 The OS task is **only a heartbeat**. It does not decide "is this due" — `tick.py` (via
 `reminder.py tick`) reconciles the local table each run:
 
-1. select items with `due_at <= now`, active, not yet notified, past any retry/wait gate;
-2. atomically claim each (`UPDATE ... WHERE notified_at IS NULL`);
+1. select items due now (active, not yet notified, past any retry/wait gate, not freshly claimed) —
+   "due" accounts for per-item `alarms[]` lead (`due_at - lead <= now`), not just `due_at <= now`;
+2. **exclusively** claim each (`UPDATE ... WHERE notified_at IS NULL AND (claimed_at IS NULL OR
+   claimed_at <= stale)`), so two overlapping ticks never both grab the same item; stale claims left
+   by a crashed tick are reclaimed after `_CLAIM_TTL`;
 3. push **outside the write transaction** via the relay;
-4. on success mark `notified_at` + audit; on failure exponential back-off, then `blocked` + alert.
+4. on success mark `notified_at` + audit (or, for a `recurrence` item, roll `due_at` to the next
+   occurrence and re-arm); on failure exponential back-off, then `blocked` + alert.
 
 This makes **missed-fire catch-up free**: if the machine slept/was off, the next tick dispatches all
 overdue-and-unnotified items at once — reconciliation is idempotent and can catch up *multiple*
@@ -49,6 +53,14 @@ Default = the local Discord relay. Swap without touching logic:
 
 - `SCHEDULE_RELAY_CMD` — any command; reminder text is appended as the final argv (also the test seam).
 - `SCHEDULE_RELAY_SEND` — path to `discord_relay/send.py` (default `the legacy DM notifier script`).
+
+> **Trust note (env = code-exec / arbitrary-write).** `SCHEDULE_RELAY_CMD` runs an arbitrary command
+> on every tick and `SCHEDULE_DB_PATH` writes an arbitrary path — both are **process-level
+> code-execution / arbitrary-write equivalents** (by design, as the channel seam + test isolation).
+> They are safe in the owner's own session, but **never accept or pass them through from a lower-trust
+> context** (untrusted callers, web input, shared CI). There is no shell or command injection (the
+> command is run as a list with the reminder text as a separate argv, no `shell=True`); the risk is
+> simply that *whoever sets the env decides what runs / where it writes*.
 
 ## SQLite version (read this)
 
