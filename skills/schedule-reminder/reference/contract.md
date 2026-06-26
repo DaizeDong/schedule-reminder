@@ -1,9 +1,10 @@
 # schedule-reminder — Frozen external contract (`api_version 1.0.0`)
 
-> This is the **only** surface downstream skills may depend on. Call `reminder.py <verb> --json`
-> via subprocess and parse stdout JSON. **Never** read the `.db` file, build SQL, or import internal
-> tables. Everything below is additive-only within `api_version 1.x`; any delete/rename/semantic
-> change bumps `api_version` and runs a dual-version transition period.
+> This is the **only** surface downstream skills may depend on. Call `reminder.py <verb>` via
+> subprocess and parse stdout JSON (JSON is always emitted — there is no `--json` flag). **Never**
+> read the `.db` file, build SQL, or import internal tables. Everything below is additive-only within
+> `api_version 1.x`; any delete/rename/semantic change bumps `api_version` and runs a dual-version
+> transition period.
 
 Contents: [Invocation](#invocation) · [Verbs](#verbs) · [Item fields](#item-fields) ·
 [States](#states--transitions) · [Error codes](#error-codes) · [Idempotency](#idempotency) ·
@@ -28,7 +29,7 @@ python reminder.py [--db PATH] [--actor NAME] <verb> [args...]
 | Verb | Purpose | Key args | Output |
 |---|---|---|---|
 | `init` | create/upgrade DB (idempotent) | — | `{db_path, schema_user_version}` |
-| `add` | create item | `--title` (req), `--kind`, `--due-at`, `--state`, `--priority`, `--progress`, `--tags a,b`, `--source`, `--idempotency-key`, `--description`, `--ext JSON` | `{item}` |
+| `add` | create item | `--title` (req), `--kind`, `--due-at`, `--state`, `--priority`, `--progress` (0-100), `--tags a,b`, `--source`, `--idempotency-key`, `--description`, `--ext JSON`, `--recurrence RRULE`, `--rdate JSON`, `--exdate JSON`, `--alarms JSON` | `{item}` |
 | `get` | fetch by id | `--id` | `{item}` |
 | `list` / `query` | filter + keyset page | `--state`, `--source`, `--kind`, `--due-before`, `--active`, `--limit`, `--cursor` | `{items[], next_cursor}` |
 | `update` | patch fields (not state) | `--id`, `--set field=value` (repeatable), `--ext JSON`, `--idempotency-key` | `{item}` |
@@ -55,17 +56,17 @@ Every `item` object has exactly these keys (additive-only within `api_version 1.
 | `title` | string | summary (required) |
 | `description` | string\|null | long note |
 | `state` | enum | `pending`/`doing`/`done`/`blocked`/`cancelled` |
-| `progress` | int | 0-100 (`done` forces 100) |
+| `progress` | int | 0-100, enforced on every write (`done` forces 100; out-of-range → `ERR_BAD_PROGRESS`) |
 | `priority` | int | iCalendar 0-9 (1 highest, 0 undefined) |
 | `due_at` | RFC3339\|null | deadline — the reminder anchor |
 | `scheduled_at`/`start_at`/`end_at`/`wait_until` | RFC3339\|null | lifecycle timestamps |
 | `tz` | string\|null | original DTSTART timezone (RRULE DST math) |
-| `recurrence` | string\|null | RRULE (stored; full expansion = roadmap v0.2) |
-| `rdate`/`exdate` | array\|null | extra / excluded dates |
+| `recurrence` | string\|null | RRULE; `tick` rolls a fired item to its next future occurrence (§Recurrence & alarms) |
+| `rdate`/`exdate` | array\|null | extra / excluded dates (exdate occurrences are skipped on roll) |
 | `tags` | array\|null | free tags incl. `from:<skill>` |
 | `project` | string\|null | dotted hierarchy (`Home.Kitchen`) |
 | `relations` | array\|null | `[{type, target_id}]`, type ∈ depends-on/parent/child/blocks/related |
-| `alarms` | array\|null | VALARM-style rules (stored; lead via `--lead` in v0.1) |
+| `alarms` | array\|null | per-alarm lead applied by `due`/`tick`: `[{"lead":3600}]` or `[{"trigger":"-PT15M"}]` |
 | `source` | string\|null | writing skill |
 | `idempotency_key` | string\|null | unique dedupe key |
 | `notified_at`/`next_retry_at`/`retry_count`/`claimed_at` | — | delivery bookkeeping |
@@ -85,10 +86,11 @@ blocker or a `reason`; state changes go through `transition`/`done`/`block` (nev
 
 ## Error codes
 
-`ERR_NOT_FOUND` · `ERR_BAD_INPUT` · `ERR_BAD_KIND` · `ERR_BAD_STATE` · `ERR_BAD_FIELD` ·
-`ERR_BAD_TIME` · `ERR_BAD_JSON` · `ERR_ILLEGAL_TRANSITION` (carries `current`, `to`, `allowed[]`) ·
-`ERR_STATE_CONFLICT` (carries `current`, `expected`) · `ERR_DEPENDENCY_UNMET` (carries `unmet[]`) ·
-`ERR_BLOCK_REASON_REQUIRED` · `ERR_USE_TRANSITION` · `ERR_BUSY` · `ERR_INTERNAL`.
+`ERR_NOT_FOUND` · `ERR_BAD_INPUT` · `ERR_BAD_KIND` · `ERR_BAD_STATE` · `ERR_BAD_PROGRESS` ·
+`ERR_BAD_FIELD` · `ERR_BAD_TIME` · `ERR_BAD_JSON` · `ERR_ILLEGAL_TRANSITION` (carries `current`,
+`to`, `allowed[]`) · `ERR_STATE_CONFLICT` (carries `current`, `expected`) · `ERR_DEPENDENCY_UNMET`
+(carries `unmet[]`) · `ERR_BLOCK_REASON_REQUIRED` · `ERR_USE_TRANSITION` · `ERR_BUSY` ·
+`ERR_INTERNAL`.
 
 ## Idempotency
 
@@ -101,6 +103,19 @@ idempotent. Compose the key from your skill + your own record id, e.g. `email-mo
 UTC RFC3339 with microsecond precision everywhere (string order == time order). `tick`/`due`
 compare in UTC; trigger uses `now >= due_at - lead` (an interval; never `now == due_at`). Inject a
 clock with `--now`/`SCHEDULE_NOW`.
+
+## Recurrence & alarms
+
+- **Alarms (per-item lead).** Each `alarms[]` entry sets how long *before* `due_at` the item fires:
+  `{"lead": <seconds>}` or an iCalendar trigger `{"trigger": "-PT15M"}` (`-P1D`, `-PT1H`, …). The
+  effective lead is `max(--lead, max alarm lead)`; `due`/`tick` then fire when `due_at - lead <= now`.
+  An item with no alarms behaves exactly as before (global `--lead`, default 0).
+- **Recurrence (rolling).** When a `recurrence` (RRULE) item fires in `tick`, it is **not** marked
+  permanently notified — it rolls forward to its next occurrence *after now* and re-arms (so a
+  long-overdue daily item fires once on catch-up, then re-arms for the next day). Supported subset:
+  `FREQ=DAILY|WEEKLY|MONTHLY|YEARLY` + `INTERVAL` + `UNTIL`; `exdate` occurrences are skipped. Once
+  `UNTIL` is passed the rule is exhausted and the item is marked notified (no further roll). The
+  infinite series is never materialised — only the master row is kept and advanced.
 
 ## Unknown fields (MUST-PRESERVE)
 
