@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented here (Keep a Changelog style).
 
+## [0.3.0] - 2026-06-27
+### Added
+- **Agent Center unified relay** (`scripts/relay.py`): the single Discord egress all skills route
+  through. Multi-stream webhooks (`mail/hotspots/demand/promotion/support/crypto/infra/reminders`)
+  with per-message `username` for per-stream identity; registry discovery via `AGENT_CENTER_CONFIG`
+  → `~/.agent-center/registry.json`; unknown-stream/missing-registry falls back to Big Brother DM so
+  no message is lost; mandatory `User-Agent` (Discord/Cloudflare 403s the default urllib UA);
+  `AGENT_CENTER_RELAY_DRYRUN` test seam. `list`/`health` never print webhook secrets.
+- **Daily digest aggregator** (`scripts/digest.py`): realises skill todo.md's single "每日固定定时
+  任务 + 当日总结" — every *installed* skill registers a section contributor; one task assembles all
+  sections into one Big Brother summary. Fail-soft per contributor (timeout/nonzero → skipped +
+  reported to `#infra`); child stdio forced to UTF-8; `register`/`unregister`/`list`/`run --dry-run`.
+- `reference/agent-center.md`: frozen relay + digest contract for downstream skills.
+- Tests: `tests/test_relay.py`, `tests/test_digest.py` (hermetic, +13 cases → 54 total).
+### Notes
+- The reminder contract `api_version` is unchanged (**1.0.0**) — this release only adds new sibling
+  tools; downstream skills already on the base are unaffected.
+
 ## [0.2.0] - 2026-06-25
 ### Added
 - **RRULE rolling recurrence** (architecture §2.4): on fire, a `recurrence` item rolls to its next

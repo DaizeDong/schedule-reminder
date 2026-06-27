@@ -1,8 +1,16 @@
 # Roadmap
 
-Current: **v0.2.0**
+Current: **v0.3.0**
 
-## v0.2.0 (current)
+## v0.3.0 (current) — Agent Center backend
+- **Unified relay** (`relay.py`): the single Discord egress for every skill — multi-stream webhooks
+  with per-stream identity, registry-driven (`~/.agent-center/registry.json`), Big-Brother fallback,
+  mandatory User-Agent.
+- **Daily digest aggregator** (`digest.py`): one daily task assembles every installed skill's
+  当日总结段 into a single Big-Brother summary; pluggable contributors, fail-soft per section.
+- See `reference/agent-center.md`. (reminder contract api_version unchanged → 1.0.0.)
+
+## v0.2.0
 - **RRULE rolling recurrence** (§2.4): fired `recurrence` items roll to the next future occurrence
   and re-arm; minimal stdlib `FREQ`/`INTERVAL`/`UNTIL` subset + `exdate` skip; series never
   materialised. (E14)
