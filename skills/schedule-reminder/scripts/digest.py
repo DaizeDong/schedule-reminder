@@ -104,20 +104,26 @@ def _run_contributor(c: dict, now: str | None) -> tuple[str, str | None]:
     return (r.stdout or "").strip(), None
 
 
-def run(now: str | None = None, dry_run: bool = False) -> int:
+def _assemble(now: str | None):
+    """Run every enabled contributor; return (sections, problems). No I/O side effects."""
     d = _load()
     contribs = [c for c in d.get("contributors", []) if c.get("enabled", True)]
-    date = (now or "").split("T")[0] if now else None
-    header = "📋 当日总结" + (" · " + date if date else "")
     sections, problems = [], []
     for c in contribs:
         text, err = _run_contributor(c, now)
         title = c.get("title", c.get("name", "?"))
         if err:
             problems.append("%s: %s" % (c.get("name", "?"), err))
-            continue
-        if text:
+        elif text:
             sections.append("**%s**\n%s" % (title, text))
+    return contribs, sections, problems
+
+
+def run(now: str | None = None, dry_run: bool = False) -> int:
+    """Assemble + deliver the standalone 当日总结 to Big Brother (used if NOT folded into another push)."""
+    date = (now or "").split("T")[0] if now else None
+    header = "📋 当日总结" + (" · " + date if date else "")
+    contribs, sections, problems = _assemble(now)
     if not contribs:
         body = header + "\n\n（暂无已注册的当日总结贡献者。skill 安装时会自动注册。）"
     elif not sections:
@@ -135,6 +141,22 @@ def run(now: str | None = None, dry_run: bool = False) -> int:
     if problems:
         relay.relay("infra", "每日总结聚合：部分来源失败 -> " + "; ".join(problems), username="digest")
     return 0 if ok else 1
+
+
+def collect(now: str | None = None) -> int:
+    """Print ONLY the assembled skill sections (no header, no send) for embedding into an existing
+    daily push (e.g. sync-config-to-backup.ps1's single merged Notify). Empty output if nothing to
+    contribute, so the host push can conditionally include it. Contributor failures are reported to
+    #infra (non-fatal) just like run()."""
+    _contribs, sections, problems = _assemble(now)
+    if sections:
+        sys.stdout.write("\n\n".join(sections))
+    if problems:
+        try:
+            _relay().relay("infra", "当日总结 collect：部分来源失败 -> " + "; ".join(problems), username="digest")
+        except Exception:
+            pass
+    return 0
 
 
 def _cmd_list() -> int:
@@ -172,6 +194,8 @@ def main(argv=None) -> int:
     p_run = sub.add_parser("run")
     p_run.add_argument("--now", default=None)
     p_run.add_argument("--dry-run", action="store_true")
+    p_col = sub.add_parser("collect", help="print assembled sections only (for embedding), no send")
+    p_col.add_argument("--now", default=None)
     sub.add_parser("list")
     p_reg = sub.add_parser("register")
     p_reg.add_argument("--name", required=True)
@@ -184,6 +208,8 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     if args.op == "run":
         return run(args.now, args.dry_run)
+    if args.op == "collect":
+        return collect(args.now)
     if args.op == "list":
         return _cmd_list()
     if args.op == "register":
