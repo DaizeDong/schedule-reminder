@@ -79,6 +79,25 @@ def test_register_unregister_roundtrip(monkeypatch, tmp_path):
     assert not any(c["name"] == "x" for c in d["contributors"])
 
 
+def test_collect_emits_sections_only(monkeypatch, tmp_path, capsys):
+    _set_contribs(monkeypatch, tmp_path, [
+        {"name": "a", "title": "A", "cmd": [PY, "-c", "print('aa')"], "enabled": True},
+    ])
+    monkeypatch.setattr(relay, "relay", lambda *a, **k: True)
+    rc = digest.collect(now="2026-06-27T00:00:00Z")
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "A" in out and "aa" in out
+    assert "当日总结" not in out  # collect emits sections only, no top header
+
+
+def test_collect_empty_when_no_contributors(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("AGENT_CENTER_DIGEST", str(tmp_path / "none.json"))
+    rc = digest.collect(now="2026-06-27T00:00:00Z")
+    out = capsys.readouterr().out
+    assert rc == 0 and out.strip() == ""
+
+
 def test_run_delivers_via_relay_digest(monkeypatch, tmp_path):
     _set_contribs(monkeypatch, tmp_path, [
         {"name": "a", "title": "A", "cmd": [PY, "-c", "print('body')"], "enabled": True},
