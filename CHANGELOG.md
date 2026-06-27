@@ -13,7 +13,9 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - **Daily digest aggregator** (`scripts/digest.py`): realises skill todo.md's single "每日固定定时
   任务 + 当日总结" — every *installed* skill registers a section contributor; one task assembles all
   sections into one Big Brother summary. Fail-soft per contributor (timeout/nonzero → skipped +
-  reported to `#infra`); child stdio forced to UTF-8; `register`/`unregister`/`list`/`run --dry-run`.
+  reported to `#infra`); child stdio forced to UTF-8; `register`/`unregister`/`list`/`run --dry-run`/
+  `collect` (emit sections only, no send — for folding the skill digest into an existing daily push,
+  e.g. the 22:00 config-backup wrap-up, so the user gets ONE daily summary covering everything).
 - `reference/agent-center.md`: frozen relay + digest contract for downstream skills.
 - Tests: `tests/test_relay.py`, `tests/test_digest.py` (hermetic, +13 cases → 54 total).
 ### Notes
