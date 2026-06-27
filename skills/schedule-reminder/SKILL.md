@@ -77,3 +77,5 @@ This `SKILL.md` is the only always-loaded file. Load one shard on demand:
 - `reference/contract.md` — frozen verbs, fields, states, error codes, idempotency, versioning.
 - `reference/deployment.md` — DB init, heartbeat task, SQLite version, backup, secrets.
 - `reference/integration.md` — copy-paste examples for downstream skills.
+- `reference/agent-center.md` — unified Discord relay (`relay.py`) + daily 当日总结 aggregator
+  (`digest.py`): the single egress + single daily summary every skill plugs into.
