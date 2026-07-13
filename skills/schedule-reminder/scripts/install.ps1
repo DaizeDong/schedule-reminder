@@ -47,9 +47,12 @@ if (-not $NoTask) {
     <TimeTrigger>
       <StartBoundary>$start</StartBoundary>
       <Enabled>true</Enabled>
+      <!-- NO <Duration>: a duration-bounded repetition silently STOPS the heartbeat when it
+           elapses (a <Duration>P1D</Duration> here killed this base's tick after 24h, dead for
+           17 days before anyone noticed). Omitting Duration = repeat forever. StopAtDurationEnd
+           does NOT save you: it only decides whether a *running* task is killed at the end. -->
       <Repetition>
         <Interval>PT5M</Interval>
-        <Duration>P1D</Duration>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </TimeTrigger>

@@ -51,12 +51,31 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import store  # noqa: E402
 
 
+def _write(stream, text):
+    """Write a contract line, tolerating a stream that does not exist.
+
+    The heartbeat task runs us under `pythonw.exe`, which has NO console: CPython then sets
+    `sys.stdout` and `sys.stderr` to **None**. `print()` is None-safe, but `sys.stdout.write()`
+    raises AttributeError -- and `_fail()`'s `sys.stderr.write()` raised again on the way out, so
+    the exception escaped and **every scheduled tick exited 1 even though its work had already
+    completed** (dispatch done, items marked notified, then a crash while reporting). A permanently
+    red task is also a health signal nobody can read: a real failure and a can't-print looked
+    identical. Reporting a result must never fail the operation that produced it.
+    """
+    if stream is None:
+        return
+    try:
+        stream.write(text)
+    except (BrokenPipeError, ValueError, OSError):
+        pass
+
+
 def _emit(payload):
     out = {"api_version": store.API_VERSION,
            "schema_version": store.RECORD_SCHEMA_VERSION,
            "ok": True}
     out.update(payload)
-    sys.stdout.write(json.dumps(out, ensure_ascii=False, default=str) + "\n")
+    _write(sys.stdout, json.dumps(out, ensure_ascii=False, default=str) + "\n")
     return 0
 
 
@@ -69,7 +88,7 @@ def _fail(err):
         # path or other host details. Structured SkillErrors above carry their own safe messages.
         body.update({"error_code": "ERR_INTERNAL",
                      "message": "internal error (%s)" % type(err).__name__})
-    sys.stderr.write(json.dumps(body, ensure_ascii=False, default=str) + "\n")
+    _write(sys.stderr, json.dumps(body, ensure_ascii=False, default=str) + "\n")
     return 1
 
 
