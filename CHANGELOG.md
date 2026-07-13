@@ -2,6 +2,30 @@
 
 All notable changes to this project are documented here (Keep a Changelog style).
 
+## [0.3.1] - 2026-07-13
+### Fixed
+- **The heartbeat had been dead for 17 days — every reminder due since 2026-06-26 silently never
+  fired.** Two independent bugs, both of which broke the base's core promise ("a reminder you set
+  will fire") *without leaving a trace in the DB*:
+  - **Bounded repetition.** `install.ps1` registered the PT5M heartbeat with
+    `<Duration>P1D</Duration>`, so Windows repeated it for exactly 24h and then stopped forever
+    (`NextRun` empty). `StopAtDurationEnd` does **not** save you — it only decides whether a
+    *running* instance is killed at the end of the duration. `<Duration>` is now omitted, which is
+    what makes a repetition indefinite. (email-monitor hit the identical bug and fixed it in its own
+    v0.1.3 — the base was never fixed, so the thing every other skill depends on was the one left
+    broken.)
+  - **`sys.stdout` is `None` under `pythonw.exe`.** The task runs windowless, so CPython sets
+    `sys.stdout`/`sys.stderr` to `None`. `_emit()` wrote with `sys.stdout.write()` →
+    `AttributeError` → `_fail()` wrote with `sys.stderr.write()` → `AttributeError` again → escaped
+    → **exit 1**. Every scheduled tick exited 1 *after already completing its work*, so a real
+    failure and a cannot-print were indistinguishable and the permanently-red task got ignored.
+    Output now goes through a `_write()` helper that no-ops on a missing stream: **reporting a
+    result may never fail the operation that produced it**. (`print()` was always None-safe;
+    `sys.stdout.write()` never was.)
+- +7 regression tests (`tests/test_heartbeat_survival.py`): the registered repetition carries no
+  `<Duration>`, and `_emit`/`_fail` return 0/1 instead of raising when either stream is `None`
+  (while still emitting the same JSON contract when the streams exist). Suite 56 -> 63.
+
 ## [0.3.0] - 2026-06-27
 ### Added
 - **Agent Center unified relay** (`scripts/relay.py`): the single Discord egress all skills route
