@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented here (Keep a Changelog style).
 
+## [0.3.2] - 2026-07-13
+### Fixed
+- **The tick posted reminders to the Big Brother DM, not the Agent Center `#reminders` channel —
+  the implementation had silently diverged from its own architecture doc.** `reference/agent-center.md`
+  has said `schedule-reminder tick --(relay.py send --stream reminders)--> #reminders` since v0.3.0,
+  but `notify.py` still shelled out to the legacy `discord_relay/send.py` (a DM). The
+  `agent-center-hub` / `push.py` exploration that was meant to unify egress was **archived and never
+  adopted** (2026-07-01, decision B = "`relay.py` is the single egress"), and this last mile was
+  never migrated. `notify()` now resolves: `SCHEDULE_RELAY_CMD` (override + test seam) → `relay.py
+  send --stream reminders` → `send.py` (DM) only if `relay.py` is absent.
+  - New env: `SCHEDULE_RELAY_PY`, `SCHEDULE_RELAY_STREAM` (default `reminders`).
+  - ⚠️ **Operational note now documented in `deployment.md`:** a channel post does *not* push to a
+    phone unless that channel is set to *All Messages*; a DM always does. Routing reminders to a
+    channel is only safe once `#reminders` is set to notify.
+- +7 regression tests (`tests/test_notify_routing.py`): the default is the `#reminders` channel and
+  **not** the DM, `SCHEDULE_RELAY_CMD` still wins (or every tick test would push to real Discord),
+  the stream is configurable, the DM remains the fallback when `relay.py` is missing, and a delivery
+  failure returns `False` rather than raising. Suite 63 -> 70.
+
 ## [0.3.1] - 2026-07-13
 ### Fixed
 - **The heartbeat had been dead for 17 days — every reminder due since 2026-06-26 silently never

@@ -49,10 +49,19 @@ Task XML knobs (hardened): `StartWhenAvailable=true`, `UseUnifiedSchedulingEngin
 
 ## Notification channel
 
-Default = the local Discord relay. Swap without touching logic:
+Default = the Agent Center **`#reminders` channel**, via this repo's own `relay.py`
+(`relay.py send --stream reminders`). Resolution order, first that exists wins:
 
-- `SCHEDULE_RELAY_CMD` — any command; reminder text is appended as the final argv (also the test seam).
-- `SCHEDULE_RELAY_SEND` — path to `discord_relay/send.py` (default `the legacy DM notifier script`).
+| # | Env / file | Effect |
+|---|---|---|
+| 1 | `SCHEDULE_RELAY_CMD` | any command; reminder text appended as the final argv (**also the test seam**) |
+| 2 | `relay.py` (`SCHEDULE_RELAY_PY`) | `send --stream <`​`SCHEDULE_RELAY_STREAM`, default `reminders`​`>` → Agent Center channel |
+| 3 | `SCHEDULE_RELAY_SEND` | legacy Big Brother DM (`the legacy DM notifier script`) — only when `relay.py` is absent |
+
+> ⚠️ **A channel post does not push to a phone** unless that channel's Discord notifications are set
+> to *All Messages*; a DM always does. Routing reminders to `#reminders` is only safe once that
+> channel is set to notify — otherwise the reminder is delivered but never seen. (`relay.py` still
+> falls back to the DM for an unconfigured stream, so nothing is silently lost.)
 
 > **Trust note (env = code-exec / arbitrary-write).** `SCHEDULE_RELAY_CMD` runs an arbitrary command
 > on every tick and `SCHEDULE_DB_PATH` writes an arbitrary path — both are **process-level
