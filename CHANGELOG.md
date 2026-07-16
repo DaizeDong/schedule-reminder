@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented here (Keep a Changelog style).
 
+## [0.4.2] - 2026-07-16
+### Changed
+- **Native Big Brother DM — the base no longer shells out to `the legacy DM notifier script`.**
+  New `bigbrother.py` (stdlib `urllib` only) opens the bot->operator DM and posts, reading its
+  token/recipient from the SAME registry as everything else (`reader.bot_token` /
+  `big_brother.user_id`). `relay._big_brother` and `notify.py`'s standalone fallback now call it.
+  This retires the last dependency on the ad-hoc `discord_relay` tooling and makes the skill
+  self-contained for its phone-reaching DM.
+  - **Fixes a latent mis-route:** `relay.digest()` (and the unknown-stream fallback) went through
+    `notify.py` and so landed in the `#reminders` *channel*, not the Big Brother *DM* the design
+    (and `registry.big_brother.transport = "dm"`) called for. They now reach the DM.
+  - **Gotcha encoded in code:** the Bot message-create endpoint WAF-403s a browser User-Agent (code
+    40333) paired with a Bot token; `bigbrother.py` sends the official `DiscordBot (...)` UA for
+    writes. (Reads/GET and webhook POSTs are unaffected, which is why `ingest.py`/`relay.py` use a
+    browser UA.)
+- **`ingest.py` reads the bot token only from `registry.reader.bot_token`** (dropped the
+  `discord_relay/config.json` fallback — the token is now canonical in the registry).
+- **`store.py` health** probes `relay.py` (the real egress) for `relay_ok` instead of the retired
+  `discord_relay/send.py`.
+- +7 tests (`test_bigbrother.py` + reworked `test_notify_routing.py`): dryrun seam, misconfig
+  guards, chunking, and the native-DM fallback routing. Suite 86 → 93.
+
 ## [0.4.1] - 2026-07-16
 ### Changed
 - **relay: suppress Discord link-preview cards by default.** `_post_webhook` now sets `flags=4`

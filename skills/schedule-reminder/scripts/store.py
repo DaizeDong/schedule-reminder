@@ -1090,14 +1090,13 @@ def health(*, db_path=None, check_task=False):
             "install pysqlite3-binary or a newer Python for full safety."
             % (sqlite3.sqlite_version, RECOMMENDED_SQLITE))
 
-    # relay reachability = files present, no token echo
-    relay = os.environ.get("SCHEDULE_RELAY_SEND",
-                           os.path.join(os.path.expanduser("~"), ".claude", "discord_relay",
-                                        "send.py"))
+    # relay reachability = the egress (relay.py) is present, no token echo
+    relay_py = os.environ.get("SCHEDULE_RELAY_PY",
+                              os.path.join(os.path.dirname(os.path.abspath(__file__)), "relay.py"))
     relay_cmd = os.environ.get("SCHEDULE_RELAY_CMD")
-    out["relay_ok"] = bool(relay_cmd) or os.path.isfile(relay)
+    out["relay_ok"] = bool(relay_cmd) or os.path.isfile(relay_py)
     if not out["relay_ok"]:
-        out["warnings"].append("relay not found: set SCHEDULE_RELAY_CMD or install discord_relay")
+        out["warnings"].append("relay not found: relay.py missing and no SCHEDULE_RELAY_CMD set")
 
     if check_task:
         try:

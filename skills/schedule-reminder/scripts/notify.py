@@ -15,7 +15,8 @@ Resolution order (first one that exists wins):
   2. relay.py            — `send --stream <SCHEDULE_RELAY_STREAM|reminders>` (the Agent Center
      egress; relay.py itself falls back to the DM if that stream is unconfigured, so a reminder is
      never silently lost).
-  3. send.py             — legacy Big Brother DM, only if relay.py is missing (standalone install).
+  3. bigbrother DM       — the native Big Brother DM sender (`bigbrother.send_dm`), only if relay.py
+     is missing (standalone install). Replaces the old shell-out to `discord_relay/send.py`.
 
 Contract: notify(text) -> bool  (True = delivered, False = failed; never raises for delivery errors).
 
@@ -23,10 +24,9 @@ Env:
   SCHEDULE_RELAY_CMD     full command to run; reminder text appended as last arg (overrides all)
   SCHEDULE_RELAY_PY      path to relay.py       (default: alongside this file)
   SCHEDULE_RELAY_STREAM  Agent Center stream     (default: "reminders")
-  SCHEDULE_RELAY_SEND    path to discord_relay/send.py (default the legacy DM notifier script)
 
-Secrets: the relay reads its own webhook/token from its own config; this module never reads, logs,
-or echoes any of them.
+Secrets: the relay/bigbrother read their token/webhook from the registry; this module never reads,
+logs, or echoes any of them.
 """
 from __future__ import annotations
 
@@ -46,13 +46,6 @@ def _default_stream():
     return os.environ.get("SCHEDULE_RELAY_STREAM", "reminders")
 
 
-def _default_send_path():
-    return os.environ.get(
-        "SCHEDULE_RELAY_SEND",
-        os.path.join(os.path.expanduser("~"), ".claude", "discord_relay", "send.py"),
-    )
-
-
 def _run(argv):
     r = subprocess.run(argv, capture_output=True, text=True, timeout=30)
     return r.returncode == 0
@@ -70,13 +63,12 @@ def notify(text):
             return _run([sys.executable, relay_py, "send",
                          "--stream", _default_stream(), "--text", text])
 
-        send_py = _default_send_path()  # legacy DM fallback (standalone install without relay.py)
-        if os.path.isfile(send_py):
-            return _run([sys.executable, send_py, text])
-
-        sys.stderr.write("notify: no channel available (relay.py %s, send.py %s)\n"
-                         % (relay_py, send_py))
-        return False
+        # Standalone install without relay.py: deliver via the native Big Brother DM so a reminder
+        # is never dropped. (Replaces the old shell-out to the legacy DM notifier script.)
+        if _HERE not in sys.path:
+            sys.path.insert(0, _HERE)
+        import bigbrother  # noqa: E402  (local sibling module)
+        return bool(bigbrother.send_dm(text))
     except Exception as e:  # delivery failures are signalled by return value, not exceptions
         sys.stderr.write("notify: %s\n" % e)
         return False
