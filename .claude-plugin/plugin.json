@@ -1,6 +1,6 @@
 {
   "name": "schedule-reminder",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Persistent store for todos, events, deadlines and progress with pending/doing/done states; fires due reminders via Discord; stable CLI/JSON API other skills call.",
   "author": {
     "name": "DaizeDong"

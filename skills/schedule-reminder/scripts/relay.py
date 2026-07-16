@@ -93,13 +93,15 @@ def _post_webhook(url: str, payload: dict) -> bool:
 
 
 def _big_brother(text: str) -> bool:
-    """Fallback / digest channel: deliver via the Big Brother DM relay (notify.py)."""
+    """Fallback / digest target: the operator's Big Brother DM (registry.big_brother), delivered by
+    the native `bigbrother` sender. This is the phone-reaching channel — the digest and any
+    unknown-stream fallback land here, as documented in `reference/agent-center.md`."""
     try:
         here = os.path.dirname(os.path.abspath(__file__))
         if here not in sys.path:
             sys.path.insert(0, here)
-        import notify  # noqa: E402  (local sibling module)
-        return bool(notify.notify(text))
+        import bigbrother  # noqa: E402  (local sibling module; stdlib DM sender)
+        return bool(bigbrother.send_dm(text))
     except Exception as e:
         sys.stderr.write("relay: big-brother fallback failed (%s)\n" % e)
         return False

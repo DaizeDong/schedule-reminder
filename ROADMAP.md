@@ -1,8 +1,20 @@
 # Roadmap
 
-Current: **v0.4.0**
+Current: **v0.4.2**
 
-## v0.4.0 (current) — Agent Center two-way bus
+## v0.4.2 (current) — self-contained egress
+- **Native Big Brother DM** (`bigbrother.py`, stdlib): the base opens the operator DM and posts
+  itself, reading `reader.bot_token` / `big_brother.user_id` from the registry — no more shelling to
+  `the legacy DM notifier script`. `relay._big_brother` + `notify.py` fallback use it; fixes the
+  digest/unknown-stream mis-route (now reaches the DM, not the `#reminders` channel). Bot writes send
+  the official `DiscordBot (...)` UA (browser UA is WAF-403'd on message-create). `ingest.py` reads
+  the token only from the registry; `store.py` health probes `relay.py`. Suite 86 → 93.
+
+## v0.4.1 — relay polish
+- **Suppress Discord link-preview cards** (`_post_webhook` sets `flags=4` SUPPRESS_EMBEDS by
+  default; callers can opt back in with `flags=0`). The relay is content-only by design.
+
+## v0.4.0 — Agent Center two-way bus
 - **Inbound poller** (`ingest.py`): the mirror of `relay.py`. Polls every stream channel for new
   **user replies** (neither bot nor webhook), advances per-stream cursors, writes inboxes; first
   contact arms a stream (no history replay).
