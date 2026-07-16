@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here (Keep a Changelog style).
 
+## [0.4.1] - 2026-07-16
+### Changed
+- **relay: suppress Discord link-preview cards by default.** `_post_webhook` now sets `flags=4`
+  (SUPPRESS_EMBEDS) on every webhook message unless the caller overrides it. The relay is
+  content-only by design, and Discord's auto-generated embed cards for urls in a message are pure
+  noise. A caller that genuinely wants embeds can pass `flags=0` in a `--json` payload.
+
 ## [0.4.0] - 2026-07-16
 ### Added
 - **Two-way Agent Center bus — user replies in any stream channel become pool actions.** The mirror

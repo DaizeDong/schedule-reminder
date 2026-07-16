@@ -70,7 +70,13 @@ def load_registry() -> dict:
 
 
 def _post_webhook(url: str, payload: dict) -> bool:
-    """POST a webhook payload. Honors AGENT_CENTER_RELAY_DRYRUN (no network) for tests/CI."""
+    """POST a webhook payload. Honors AGENT_CENTER_RELAY_DRYRUN (no network) for tests/CI.
+
+    Suppress Discord's auto-generated link-preview embeds by default (flags=4 = SUPPRESS_EMBEDS):
+    this relay is content-only by design, and the unsolicited link cards are pure noise. A caller
+    that genuinely wants embeds can pass flags=0 in a --json payload to opt back in.
+    """
+    payload.setdefault("flags", 4)
     if os.environ.get("AGENT_CENTER_RELAY_DRYRUN"):
         sys.stdout.write("DRYRUN webhook <%s> %s\n" % (payload.get("username", "?"),
                                                        (payload.get("content", "") or "")[:80]))
