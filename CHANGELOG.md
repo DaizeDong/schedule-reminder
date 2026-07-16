@@ -2,6 +2,40 @@
 
 All notable changes to this project are documented here (Keep a Changelog style).
 
+## [0.4.0] - 2026-07-16
+### Added
+- **Two-way Agent Center bus — user replies in any stream channel become pool actions.** The mirror
+  of `relay.py`: previously every channel was write-only (skills pushed out, nothing read back). Four
+  new scripts make the bus bidirectional, built entirely as a schedule-reminder upgrade (no new
+  service, no new dependency):
+  - **`llm_chain.py`** — the reusable cost-ordered headless-judgement primitive:
+    `call_chain(prompt, chain=["codex","cc","claude"], providers)` returns the first non-empty answer,
+    falls through on failure, deterministic no-op if the whole chain is down. codex runs
+    `-s read-only --skip-git-repo-check` (a judge never needs write). **All** future headless model
+    calls in this skill go through this, not ad-hoc spawns.
+  - **`ingest.py`** — inbound poller mirroring `relay.py`. `poll_all()` advances a per-stream cursor
+    (`the Agent Center state dir<stream>.last`) and writes `<stream>.inbox` for streams with a **new user
+    reply** (neither `author.bot` nor `webhook_id` — the skill's own confirmations never feed back).
+    First contact **arms** a stream (no history replay). Bot token from `registry.reader.bot_token`
+    else `the legacy notifier config`.
+  - **`dispatch.py`** — two-phase judge-then-execute (anti-hallucination). Gathers the stream's active
+    items as `id | title`, asks the chain for a JSON action plan
+    `{actions:[{op:done|snooze|create,...}], confirm}`, then a **deterministic** executor runs it via
+    `reminder.py` — acting only on ids that were shown to the model, silently skipping any hallucinated
+    id. Per-stream handler: `mail` → reconcile the email-monitor pool; `reminders` → done/snooze any
+    active reminder; others → generic create-a-followup. `--no-post` for dry runs.
+  - **`ingest_tick.py`** — scheduled entrypoint: `poll_all` + dispatch each new reply, logs to
+    `the ingest tick log`.
+- **Scheduled task `AgentCenterIngestTick`** (PT10M) runs `ingest_tick.py`. Retires the ad-hoc
+  `AgentCenterMailTick` (a mail-only loop under `the legacy notifier dir`), now disabled.
+- Docs: `reference/agent-center.md` gains an *Inbound* section; `SKILL.md` and `deployment.md` note
+  the two-way bus and the ingest task.
+- +16 tests (`tests/test_ingest_dispatch.py`): the executor's **anti-hallucination guard** (a plan id
+  that was not shown to the model never reaches `reminder.py`), JSON-plan extraction (fenced / prose-
+  wrapped / nested-brace / garbage→None), thread-key collision avoidance for Chinese titles, per-kind
+  create routing, the dispatch happy-path / unparseable-passthrough / `--no-post` dry run, and the
+  `ingest._is_user` bot+webhook filter. Suite 70 → 86.
+
 ## [0.3.2] - 2026-07-13
 ### Fixed
 - **The tick posted reminders to the Big Brother DM, not the Agent Center `#reminders` channel —

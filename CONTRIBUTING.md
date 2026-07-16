@@ -10,7 +10,7 @@ features. Before changing anything, read [`PHILOSOPHY.md`](PHILOSOPHY.md).
    `api_version` (in `store.py`) and a dual-run transition period.
 2. **Never break backward compatibility.** Schema changes are additive only (`PRAGMA user_version`
    migrations); unknown fields stay MUST-PRESERVE (E12).
-3. **Evaluation-driven.** Write/extend the E1-E13 assertions in `skills/schedule-reminder/tests/`
+3. **Evaluation-driven.** Write/extend the E1-E15 assertions in `skills/schedule-reminder/tests/`
    before the implementation. The suite must stay green; E8/E9/E11/E12 are merge-blocking.
 4. **Secrets never enter the repo.** The DB, `config.json`, and any token are `.gitignore`d. The skill
    must never read, log, or echo a token.

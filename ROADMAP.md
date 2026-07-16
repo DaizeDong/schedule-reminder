@@ -1,8 +1,22 @@
 # Roadmap
 
-Current: **v0.3.0**
+Current: **v0.4.0**
 
-## v0.3.0 (current) — Agent Center backend
+## v0.4.0 (current) — Agent Center two-way bus
+- **Inbound poller** (`ingest.py`): the mirror of `relay.py`. Polls every stream channel for new
+  **user replies** (neither bot nor webhook), advances per-stream cursors, writes inboxes; first
+  contact arms a stream (no history replay).
+- **Judge-then-execute dispatcher** (`dispatch.py`): asks the LLM chain for a JSON action plan, then
+  a **deterministic** executor runs it via `reminder.py` — acting only on ids shown to the model
+  (anti-hallucination). Per-stream handlers: `mail`→email-monitor pool, `reminders`→done/snooze,
+  others→generic follow-up.
+- **Cost-ordered LLM chain** (`llm_chain.py`): `codex → cc → claude`, read-only, first non-empty wins,
+  deterministic no-op if all down. The reusable primitive for every headless judgement in this skill.
+- **Scheduled** `ingest_tick.py` via Windows task `AgentCenterIngestTick` (PT10M); supersedes the
+  retired mail-only `AgentCenterMailTick`. +16 tests → 86. Reminder contract api_version unchanged
+  (1.0.0 — the bus adds no verbs/fields).
+
+## v0.3.0 — Agent Center backend
 - **Unified relay** (`relay.py`): the single Discord egress for every skill — multi-stream webhooks
   with per-stream identity, registry-driven (`the Agent Center registry`), Big-Brother fallback,
   mandatory User-Agent.
@@ -35,8 +49,8 @@ Current: **v0.3.0**
 ## Planned
 - **v0.2.x** — RRULE `BYDAY`/ordinal (`1FR`/`-1SU`) + `COUNT`; `rdate` extra-occurrence merge;
   `VACUUM INTO` backup helper + scheduled cold-snapshot task; idle WAL checkpoint.
-- **v0.3** — optional MCP wrapper over the same `store.py` (only if a cross-client/remote need
+- **v0.5** — optional MCP wrapper over the same `store.py` (only if a cross-client/remote need
   appears); richer `query` filters (tag/project/priority ranges).
-- **v0.3** — agent-skills-eval lift (G1) + held-out trigger-rate optimization (G2) wired into CI.
+- **v0.5** — agent-skills-eval lift (G1) + held-out trigger-rate optimization (G2) wired into CI.
 - **Backlog** — archival/cold-store job for aged done/cancelled items; alternate channels
   (feishu/email) behind the same `notify()` seam.
