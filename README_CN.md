@@ -5,7 +5,7 @@
 [![Claude Code Skill](https://img.shields.io/badge/Claude%20Code-Skill-orange?style=flat)](https://docs.anthropic.com/en/docs/claude-code)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Languages](https://img.shields.io/badge/Languages-EN%20%2F%20CN-blue?style=flat)](#languages)
-[![Roadmap](https://img.shields.io/badge/Roadmap-v0.4.0-purple?style=flat)](ROADMAP.md)
+[![Roadmap](https://img.shields.io/badge/Roadmap-v0.4.2-purple?style=flat)](ROADMAP.md)
 
 [English](README.md) | [中文版](README_CN.md)
 
@@ -90,7 +90,7 @@ API golden、未知字段保留、health、RRULE 滚动重复、per-alarm 提前
 ——relay 出口、每日 digest、心跳存活、notify 路由、以及双向 ingest/dispatch。E8/E9/E11/E12 为阻断合并的红线。
 
 ```bash
-python -m pytest skills/schedule-reminder/tests/ -q   # 86 passed
+python -m pytest skills/schedule-reminder/tests/ -q   # 93 passed
 ```
 
 ## 局限

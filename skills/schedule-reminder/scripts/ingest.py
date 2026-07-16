@@ -8,7 +8,7 @@ bot with read access can pull channel history over REST (no privileged Message C
 REGISTRY (secret; the Agent Center registry or env AGENT_CENTER_CONFIG)
     streams.<name>.channel_id   -- required to poll a stream (absent -> stream skipped)
     streams.<name>.inbound      -- optional; set false to opt a stream out of ingest
-    reader.bot_token            -- optional; else falls back to the legacy notifier config
+    reader.bot_token            -- the Discord bot token (canonical; same one relay/bigbrother use)
 
 STATE (the Agent Center state dir)
     <stream>.last   -- last processed message id per stream (advances every poll)
@@ -39,7 +39,6 @@ _UA = "AgentCenter-Ingest/1.0 (+https://discord.com)"
 _API = "https://discord.com/api/v10"
 _DEFAULT_REGISTRY = os.path.join(os.path.expanduser("~"), ".agent-center", "registry.json")
 _STATE_DIR = os.path.join(os.path.expanduser("~"), ".agent-center", "state")
-_FALLBACK_TOKEN_FILE = os.path.join(os.path.expanduser("~"), ".claude", "discord_relay", "config.json")
 
 
 def registry_path():
@@ -59,14 +58,7 @@ def load_registry():
 
 
 def bot_token(reg):
-    tok = (reg.get("reader") or {}).get("bot_token")
-    if tok:
-        return tok
-    try:
-        with open(_FALLBACK_TOKEN_FILE, encoding="utf-8") as fh:
-            return json.load(fh).get("bot_token")
-    except Exception:
-        return None
+    return (reg.get("reader") or {}).get("bot_token")
 
 
 def _get(url, token):
@@ -138,7 +130,7 @@ def poll_all(reg=None, token=None, log=None):
     reg = reg if reg is not None else load_registry()
     token = token or bot_token(reg)
     if not token:
-        raise RuntimeError("no bot token (registry.reader.bot_token or discord_relay/config.json)")
+        raise RuntimeError("no bot token: set registry.reader.bot_token in the Agent Center registry")
     result = {}
     for stream, ch in _streams(reg).items():
         try:
