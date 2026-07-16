@@ -9,7 +9,8 @@
 | Thing | Where | Notes |
 |---|---|---|
 | DB (3 files) | `the local reminder DB` (+`-wal`, `-shm`) | **local NTFS only** — never OneDrive/GDrive/network (WAL file-lock + sync corruption) |
-| Heartbeat task | Scheduled Task `ScheduleReminderTick` | runs `pythonw reminder.py tick` every 5 min |
+| Heartbeat task (out) | Scheduled Task `ScheduleReminderTick` | runs `pythonw reminder.py tick` every 5 min |
+| Ingest task (in) | Scheduled Task `AgentCenterIngestTick` | runs `pythonw ingest_tick.py` every 10 min; polls Agent Center channels for user replies → dispatch. Supersedes retired `AgentCenterMailTick` |
 | Live skill | junction `~/.claude/skills/schedule-reminder` → repo `skills/schedule-reminder` | edits flow both ways |
 
 ## Install

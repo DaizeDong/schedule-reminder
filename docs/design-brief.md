@@ -37,10 +37,10 @@ datetimes · SQLite < 3.51.3 (WAL-reset bug).
 
 ## Proof bar (acceptance gate + self-evolve signals)
 
-E1-E13, all programmatically adjudicated via the frozen CLI (subprocess + JSON asserts), with
+E1-E15, all programmatically adjudicated via the frozen CLI (subprocess + JSON asserts), with
 injected clock + relay stub. Red-line gates: E8 (concurrent no-corruption + integrity_check), E9
-(concurrent read/write), E11 (API contract golden), E12 (unknown-field preservation). Status: **35
-passed**.
+(concurrent read/write), E11 (API contract golden), E12 (unknown-field preservation). Status: **86
+passed** (E1-E15 acceptance + hermetic relay/digest/heartbeat/notify/ingest-dispatch module tests).
 
 ## Scope & focus (one job, ≤3 modules)
 

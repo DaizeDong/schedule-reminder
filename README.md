@@ -5,7 +5,7 @@ Track todos, events and progress in a crash-safe SQLite store; fire due reminder
 [![Claude Code Skill](https://img.shields.io/badge/Claude%20Code-Skill-orange?style=flat)](https://docs.anthropic.com/en/docs/claude-code)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Languages](https://img.shields.io/badge/Languages-EN%20%2F%20CN-blue?style=flat)](#languages)
-[![Roadmap](https://img.shields.io/badge/Roadmap-v0.3.0-purple?style=flat)](ROADMAP.md)
+[![Roadmap](https://img.shields.io/badge/Roadmap-v0.4.0-purple?style=flat)](ROADMAP.md)
 
 [English](README.md) | [中文版](README_CN.md)
 
@@ -86,7 +86,8 @@ The skill fires when the user wants to track a todo / event / deadline / progres
 SQLite (WAL) single file        <- private storage, downstream NEVER touches it
   store.py (typed functions)    <- in-process; trusted skills may import
     reminder.py <verb> --json   <- the ONLY stable contract (api_version 1.0.0)
-[Windows task: PT5M heartbeat] -> reminder.py tick -> reconcile due -> Discord relay
+[Windows task: PT5M heartbeat] -> reminder.py tick -> reconcile due -> Discord relay (out)
+[Windows task: PT10M ingest]   -> ingest_tick -> poll channels for user replies -> dispatch (in)
 ```
 
 The OS task is only a heartbeat. `tick` reconciles the durable table, so a slept/off machine catches
@@ -96,17 +97,20 @@ triggers, no silent skips.
 - **Contract:** [`skills/schedule-reminder/reference/contract.md`](skills/schedule-reminder/reference/contract.md)
 - **Deployment:** [`skills/schedule-reminder/reference/deployment.md`](skills/schedule-reminder/reference/deployment.md)
 - **Integration (for downstream skills):** [`skills/schedule-reminder/reference/integration.md`](skills/schedule-reminder/reference/integration.md)
+- **Agent Center bus (two-way):** [`skills/schedule-reminder/reference/agent-center.md`](skills/schedule-reminder/reference/agent-center.md) — the outbound relay + daily digest and the inbound reply ingest every skill shares.
 
 ## Tested-real
 
-13 evaluation signals (E1-E13) drive the frozen CLI via subprocess and assert JSON: CRUD, the full
+15 acceptance signals (E1-E15) drive the frozen CLI via subprocess and assert JSON: CRUD, the full
 transition table (legal + illegal), write invariants, due trigger / idempotent tick / missed-fire
 catch-up / retry back-off, concurrent writes with `PRAGMA integrity_check`, concurrent read/write,
-idempotent dedupe, API golden, unknown-field preservation, health. E8/E9/E11/E12 are merge-blocking
-red lines.
+idempotent dedupe, API golden, unknown-field preservation, health, RRULE rolling recurrence, and
+per-alarm lead times. Plus hermetic module tests for the Agent Center bus — relay egress, daily
+digest, heartbeat survival, notify routing, and the two-way ingest/dispatch. E8/E9/E11/E12 are
+merge-blocking red lines.
 
 ```bash
-python -m pytest skills/schedule-reminder/tests/ -q   # 35 passed
+python -m pytest skills/schedule-reminder/tests/ -q   # 86 passed
 ```
 
 ## Limitations
