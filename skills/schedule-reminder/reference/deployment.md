@@ -12,6 +12,7 @@
 | Heartbeat task (out) | Scheduled Task `ScheduleReminderTick` | runs `pythonw reminder.py tick` every 5 min |
 | Ingest task (in) | Scheduled Task `AgentCenterIngestTick` | runs `pythonw ingest_tick.py` every 10 min; polls Agent Center channels for user replies → dispatch. Supersedes retired `AgentCenterMailTick` |
 | Live skill | junction `~/.claude/skills/schedule-reminder` → repo `skills/schedule-reminder` | edits flow both ways |
+| Config home (private) | Agent Center config dir (`AGENT_CENTER_CONFIG`) = a private git repo outside this public repo | registry (webhooks + `reader.bot_token`), routes, design docs. Secrets live here, never in THIS public repo. Daily backup via a scheduled sync task; transient `state/` gitignored. Restore: clone the private companion repo into that config dir, then run its visibility refresh |
 
 ## Install
 
