@@ -30,9 +30,12 @@ python relay.py list                   # configured streams (NEVER prints webhoo
 python relay.py health                 # registry sane? (no network, no secrets)
 ```
 
-- **Registry (secret, never committed)**: discovery = env `AGENT_CENTER_CONFIG`, else
+- **Registry (secrets; never in THIS public repo)**: discovery = env `AGENT_CENTER_CONFIG`, else
   `the Agent Center registry`. Shape: `{"streams":{"<name>":{"webhook":"...","username":"..."}},
-  "big_brother":{...}}`.
+  "reader":{"bot_token":"..."}, "big_brother":{...}}`. `reader.bot_token` is the canonical Discord
+  bot token the inbound ingest reads. `the Agent Center config dir` is version-controlled in a **private**
+  companion repo (`a private companion repo`) for backup + portability — secrets live there,
+  never here. See `deployment.md`.
 - **Per-stream identity**: each message sets `username` so a stream shows its own name/avatar.
 - **Fallback**: unknown stream / missing registry → delivered to Big Brother DM (prefixed
   `[stream]`) so nothing is ever silently lost.
