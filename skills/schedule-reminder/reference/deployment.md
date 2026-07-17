@@ -1,4 +1,4 @@
-# schedule-reminder — Deployment (DB init, heartbeat task, junction)
+# schedule-reminder, Deployment (DB init, heartbeat task, junction)
 
 > One idempotent installer: `scripts/install.ps1`. It creates the DB (WAL + schema), registers a
 > single Windows scheduled task as a **PT5M heartbeat**, junctions the skill into `~/.claude/skills`,
@@ -8,7 +8,7 @@
 
 | Thing | Where | Notes |
 |---|---|---|
-| DB (3 files) | `the local reminder DB` (+`-wal`, `-shm`) | **local NTFS only** — never OneDrive/GDrive/network (WAL file-lock + sync corruption) |
+| DB (3 files) | `the local reminder DB` (+`-wal`, `-shm`) | **local NTFS only**, never OneDrive/GDrive/network (WAL file-lock + sync corruption) |
 | Heartbeat task (out) | Scheduled Task `ScheduleReminderTick` | runs `pythonw reminder.py tick` every 5 min |
 | Ingest task (in) | Scheduled Task `AgentCenterIngestTick` | runs `pythonw ingest_tick.py` every 10 min; polls Agent Center channels for user replies → dispatch. Supersedes retired `AgentCenterMailTick` |
 | Live skill | junction `~/.claude/skills/schedule-reminder` → repo `skills/schedule-reminder` | edits flow both ways |
@@ -23,10 +23,10 @@ pwsh -File scripts/install.ps1 -NoTask    # DB + junction only (skip scheduler)
 
 ## The scheduling model (why a single heartbeat, not per-event triggers)
 
-The OS task is **only a heartbeat**. It does not decide "is this due" — `tick.py` (via
+The OS task is **only a heartbeat**. It does not decide "is this due", `tick.py` (via
 `reminder.py tick`) reconciles the local table each run:
 
-1. select items due now (active, not yet notified, past any retry/wait gate, not freshly claimed) —
+1. select items due now (active, not yet notified, past any retry/wait gate, not freshly claimed) ,
    "due" accounts for per-item `alarms[]` lead (`due_at - lead <= now`), not just `due_at <= now`;
 2. **exclusively** claim each (`UPDATE ... WHERE notified_at IS NULL AND (claimed_at IS NULL OR
    claimed_at <= stale)`), so two overlapping ticks never both grab the same item; stale claims left
@@ -36,7 +36,7 @@ The OS task is **only a heartbeat**. It does not decide "is this due" — `tick.
    occurrence and re-arm); on failure exponential back-off, then `blocked` + alert.
 
 This makes **missed-fire catch-up free**: if the machine slept/was off, the next tick dispatches all
-overdue-and-unnotified items at once — reconciliation is idempotent and can catch up *multiple*
+overdue-and-unnotified items at once, reconciliation is idempotent and can catch up *multiple*
 missed fires, unlike schtasks `StartWhenAvailable` / cron / anacron (one late catch-up at best).
 
 Task XML knobs (hardened): `StartWhenAvailable=true`, `UseUnifiedSchedulingEngine=true`,
@@ -58,15 +58,15 @@ Default = the Agent Center **`#reminders` channel**, via this repo's own `relay.
 |---|---|---|
 | 1 | `SCHEDULE_RELAY_CMD` | any command; reminder text appended as the final argv (**also the test seam**) |
 | 2 | `relay.py` (`SCHEDULE_RELAY_PY`) | `send --stream <`​`SCHEDULE_RELAY_STREAM`, default `reminders`​`>` → Agent Center channel |
-| 3 | `SCHEDULE_RELAY_SEND` | legacy Big Brother DM (`the legacy DM notifier script`) — only when `relay.py` is absent |
+| 3 | `SCHEDULE_RELAY_SEND` | legacy Big Brother DM (`the legacy DM notifier script`), only when `relay.py` is absent |
 
 > ⚠️ **A channel post does not push to a phone** unless that channel's Discord notifications are set
 > to *All Messages*; a DM always does. Routing reminders to `#reminders` is only safe once that
-> channel is set to notify — otherwise the reminder is delivered but never seen. (`relay.py` still
+> channel is set to notify, otherwise the reminder is delivered but never seen. (`relay.py` still
 > falls back to the DM for an unconfigured stream, so nothing is silently lost.)
 
 > **Trust note (env = code-exec / arbitrary-write).** `SCHEDULE_RELAY_CMD` runs an arbitrary command
-> on every tick and `SCHEDULE_DB_PATH` writes an arbitrary path — both are **process-level
+> on every tick and `SCHEDULE_DB_PATH` writes an arbitrary path, both are **process-level
 > code-execution / arbitrary-write equivalents** (by design, as the channel seam + test isolation).
 > They are safe in the owner's own session, but **never accept or pass them through from a lower-trust
 > context** (untrusted callers, web input, shared CI). There is no shell or command injection (the

@@ -107,7 +107,7 @@ class SkillError(Exception):
 
 
 # =================================================================================================
-# Time helpers — all UTC RFC3339, fixed microsecond precision so string order == time order
+# Time helpers, all UTC RFC3339, fixed microsecond precision so string order == time order
 # =================================================================================================
 def now_utc():
     return datetime.now(timezone.utc)
@@ -148,7 +148,7 @@ def resolve_now(now=None):
 
 
 # =================================================================================================
-# UUIDv7 (time-ordered) — Python 3.13 has no uuid.uuid7(); implement RFC 9562.
+# UUIDv7 (time-ordered), Python 3.13 has no uuid.uuid7(); implement RFC 9562.
 # =================================================================================================
 def uuid7():
     ms = int(time.time() * 1000)
@@ -180,7 +180,7 @@ def _connect(db_path=None):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     conn = sqlite3.connect(path, isolation_level=None, timeout=10.0)
     conn.row_factory = sqlite3.Row
-    # Connection-level pragmas (busy_timeout is NOT persistent — must be set per connection).
+    # Connection-level pragmas (busy_timeout is NOT persistent, must be set per connection).
     conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA synchronous = NORMAL")
@@ -391,7 +391,7 @@ def _enforce_terminal_fields(fields, to_state, now):
 
 
 # =================================================================================================
-# Public API — write ops (each = BEGIN IMMEDIATE short tx)
+# Public API, write ops (each = BEGIN IMMEDIATE short tx)
 # =================================================================================================
 def add_item(title, *, kind="task", due_at=None, state="pending", priority=0, progress=0,
              description=None, scheduled_at=None, start_at=None, end_at=None, wait_until=None,
@@ -624,7 +624,7 @@ def snooze(item_id, until, *, actor=None, db_path=None):
 
 
 # =================================================================================================
-# Public API — read ops (no transaction; WAL gives consistent snapshot reads)
+# Public API, read ops (no transaction; WAL gives consistent snapshot reads)
 # =================================================================================================
 def get_item(item_id, *, db_path=None):
     conn = _connect(db_path)
@@ -691,7 +691,7 @@ def due_items(*, now=None, lead=0, db_path=None):
 
 
 # =================================================================================================
-# Alarm lead times (architecture §4.5) — per-item VALARM-style lead instead of a single global --lead
+# Alarm lead times (architecture §4.5), per-item VALARM-style lead instead of a single global --lead
 # =================================================================================================
 def _parse_ical_duration(s):
     """Parse an iCalendar duration like '-PT15M' / 'PT1H' / '-P1D' / 'P2W' to seconds (magnitude).
@@ -778,7 +778,7 @@ def _due_reached(item, now_dt, global_lead=0):
 
 
 # =================================================================================================
-# RRULE rolling expansion (architecture §2.4) — compute the next occurrence, never materialise the
+# RRULE rolling expansion (architecture §2.4), compute the next occurrence, never materialise the
 # infinite series. Stdlib-only minimal RFC5545 subset: FREQ + INTERVAL + UNTIL, with exdate skip.
 # =================================================================================================
 def _add_months(dt, n):
@@ -887,7 +887,7 @@ def _next_due(due_dt, recurrence, after_dt, exdate=None):
 
 
 # =================================================================================================
-# tick — due dispatch reconciliation (at-least-once + idempotent dedupe + back-off retry)
+# tick, due dispatch reconciliation (at-least-once + idempotent dedupe + back-off retry)
 # =================================================================================================
 def _default_notify(item):
     """Bridge to notify.notify; imported lazily to keep store decoupled."""
