@@ -57,16 +57,36 @@ def _read_inbox(stream):
     return open(fp, encoding="utf-8").read() if os.path.exists(fp) else ""
 
 
+def _read_reactions_inbox(stream):
+    fp = ingest._reactions_inbox_file(stream)
+    return open(fp, encoding="utf-8").read() if os.path.exists(fp) else ""
+
+
 def run(only_stream=None, post=True, timeout=180):
-    result = ingest.poll_all(log=_log)
-    streams = [only_stream] if only_stream else list(result.keys())
+    text_result = ingest.poll_all(log=_log)                 # {stream: n_new text replies}
+    rx_result = {}                                          # {stream: n_new emoji reactions}
+    try:
+        rx_result = ingest.poll_all_reactions(log=_log)
+    except Exception as e:
+        _log("tick: reaction poll crashed: %s" % type(e).__name__)
+    active = set(text_result) | set(rx_result)
+    streams = [only_stream] if only_stream else sorted(active)
     handled = {}
     for stream in streams:
-        if only_stream and stream not in result:
-            _log("tick: stream %s had no new replies this poll -> skip" % stream)
+        if only_stream and stream not in active:
+            _log("tick: stream %s had no new replies/reactions this poll -> skip" % stream)
             continue
-        reply = _read_inbox(stream)
-        if not reply.strip():
+        parts = []
+        if stream in text_result:
+            t = _read_inbox(stream)
+            if t.strip():
+                parts.append(t)
+        if stream in rx_result:
+            r = _read_reactions_inbox(stream)
+            if r.strip():
+                parts.append(r)
+        reply = "\n".join(parts).strip()
+        if not reply:
             continue
         try:
             ok = dispatch.dispatch(stream, reply, providers=_PROVIDERS, timeout=timeout,
@@ -75,7 +95,7 @@ def run(only_stream=None, post=True, timeout=180):
         except Exception as e:
             handled[stream] = "error:%s" % type(e).__name__
             _log("tick: dispatch[%s] crashed: %s" % (stream, type(e).__name__))
-    return {"polled": result, "handled": handled}
+    return {"polled": text_result, "reactions": rx_result, "handled": handled}
 
 
 def main():
