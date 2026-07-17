@@ -1,4 +1,4 @@
-# Design Brief — schedule-reminder
+# Design Brief, schedule-reminder
 
 > Step 0 (research-first) was completed in the planning phase. Full rationale and 6-sub-study source
 > coverage live in `CodesResearch/_skill-builds/03-schedule-reminder/ARCHITECTURE.md` (ARCH v1.0).
@@ -6,15 +6,15 @@
 
 ## Best references (match-or-beat)
 
-- **SQLite WAL concurrency** — sqlite.org (whentouse / wal.html), tenthousandmeters & berthub
+- **SQLite WAL concurrency**, sqlite.org (whentouse / wal.html), tenthousandmeters & berthub
   benchmarks, oldmoe, skypilot. Single-writer WAL at 70k-100k tx/s beats most "multi-writer" DBs for
   this local workload.
-- **Data model** — iCalendar VTODO (RFC 5545), Taskwarrior task.md RFC, todo.txt, org-mode. Unified
+- **Data model**, iCalendar VTODO (RFC 5545), Taskwarrior task.md RFC, todo.txt, org-mode. Unified
   `item` record (kind ∈ event/task), immutable UUIDv7 key, iCalendar 0-9 priority, RRULE recurrence,
   STATUS mapping.
-- **Delivery semantics** — microservices.io idempotent-consumer, temporal.io; at-least-once + unique
+- **Delivery semantics**, microservices.io idempotent-consumer, temporal.io; at-least-once + unique
   dedupe (exactly-once is unobtainable).
-- **API/contract** — Claude Skills best-practices, circleci (MCP vs CLI), zuplo/milanjovanovic
+- **API/contract**, Claude Skills best-practices, circleci (MCP vs CLI), zuplo/milanjovanovic
   (additive evolution), sqlite user_version. CLI+JSON is the documentable/versionable/testable
   contract; MCP deferred.
 

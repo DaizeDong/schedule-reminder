@@ -1,7 +1,7 @@
-# schedule-reminder — Frozen external contract (`api_version 1.0.0`)
+# schedule-reminder, Frozen external contract (`api_version 1.0.0`)
 
 > This is the **only** surface downstream skills may depend on. Call `reminder.py <verb>` via
-> subprocess and parse stdout JSON (JSON is always emitted — there is no `--json` flag). **Never**
+> subprocess and parse stdout JSON (JSON is always emitted, there is no `--json` flag). **Never**
 > read the `.db` file, build SQL, or import internal tables. Everything below is additive-only within
 > `api_version 1.x`; any delete/rename/semantic change bumps `api_version` and runs a dual-version
 > transition period.
@@ -28,7 +28,7 @@ python reminder.py [--db PATH] [--actor NAME] <verb> [args...]
 
 | Verb | Purpose | Key args | Output |
 |---|---|---|---|
-| `init` | create/upgrade DB (idempotent) | — | `{db_path, schema_user_version}` |
+| `init` | create/upgrade DB (idempotent) |, | `{db_path, schema_user_version}` |
 | `add` | create item | `--title` (req), `--kind`, `--due-at`, `--state`, `--priority`, `--progress` (0-100), `--tags a,b`, `--source`, `--idempotency-key`, `--description`, `--ext JSON`, `--recurrence RRULE`, `--rdate JSON`, `--exdate JSON`, `--alarms JSON` | `{item}` |
 | `get` | fetch by id | `--id` | `{item}` |
 | `list` / `query` | filter + keyset page | `--state`, `--source`, `--kind`, `--due-before`, `--active`, `--limit`, `--cursor` | `{items[], next_cursor}` |
@@ -42,7 +42,7 @@ python reminder.py [--db PATH] [--actor NAME] <verb> [args...]
 | `events` | audit trail of an item | `--id` | `{events[]}` |
 | `health` | self-check | `--check-task` | `{health{...}}` |
 
-`--actor NAME` (global) records who acted in the audit stream — pass your skill name.
+`--actor NAME` (global) records who acted in the audit stream, pass your skill name.
 
 ## Item fields
 
@@ -50,7 +50,7 @@ Every `item` object has exactly these keys (additive-only within `api_version 1.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `id` | string | immutable UUIDv7 (time-ordered) — the only durable external reference |
+| `id` | string | immutable UUIDv7 (time-ordered), the only durable external reference |
 | `schema_version` | int | per-record schema version (tolerant forward parsing) |
 | `kind` | `task`\|`event` | record kind |
 | `title` | string | summary (required) |
@@ -58,7 +58,7 @@ Every `item` object has exactly these keys (additive-only within `api_version 1.
 | `state` | enum | `pending`/`doing`/`done`/`blocked`/`cancelled` |
 | `progress` | int | 0-100, enforced on every write (`done` forces 100; out-of-range → `ERR_BAD_PROGRESS`) |
 | `priority` | int | iCalendar 0-9 (1 highest, 0 undefined) |
-| `due_at` | RFC3339\|null | deadline — the reminder anchor |
+| `due_at` | RFC3339\|null | deadline, the reminder anchor |
 | `scheduled_at`/`start_at`/`end_at`/`wait_until` | RFC3339\|null | lifecycle timestamps |
 | `tz` | string\|null | original DTSTART timezone (RRULE DST math) |
 | `recurrence` | string\|null | RRULE; `tick` rolls a fired item to its next future occurrence (§Recurrence & alarms) |
@@ -69,7 +69,7 @@ Every `item` object has exactly these keys (additive-only within `api_version 1.
 | `alarms` | array\|null | per-alarm lead applied by `due`/`tick`: `[{"lead":3600}]` or `[{"trigger":"-PT15M"}]` |
 | `source` | string\|null | writing skill |
 | `idempotency_key` | string\|null | unique dedupe key |
-| `notified_at`/`next_retry_at`/`retry_count`/`claimed_at` | — | delivery bookkeeping |
+| `notified_at`/`next_retry_at`/`retry_count`/`claimed_at` |, | delivery bookkeeping |
 | `block_reason` | string\|null | reason when blocked |
 | `created_at`/`updated_at` | RFC3339 | audit timestamps |
 | `ext` | object\|null | **MUST-PRESERVE** unknown-field container |
@@ -95,7 +95,7 @@ blocker or a `reason`; state changes go through `transition`/`done`/`block` (nev
 ## Idempotency
 
 `add`/`update` accept `--idempotency-key`. Re-issuing `add` with the same key returns the **same
-item id** (UPSERT, ext merged) — safe to retry. Reads (`get`/`list`/`query`/`due`) are naturally
+item id** (UPSERT, ext merged), safe to retry. Reads (`get`/`list`/`query`/`due`) are naturally
 idempotent. Compose the key from your skill + your own record id, e.g. `email-monitor:msg-8841`.
 
 ## Time
@@ -111,17 +111,17 @@ clock with `--now`/`SCHEDULE_NOW`.
   effective lead is `max(--lead, max alarm lead)`; `due`/`tick` then fire when `due_at - lead <= now`.
   An item with no alarms behaves exactly as before (global `--lead`, default 0).
 - **Recurrence (rolling).** When a `recurrence` (RRULE) item fires in `tick`, it is **not** marked
-  permanently notified — it rolls forward to its next occurrence *after now* and re-arms (so a
+  permanently notified, it rolls forward to its next occurrence *after now* and re-arms (so a
   long-overdue daily item fires once on catch-up, then re-arms for the next day). Supported subset:
   `FREQ=DAILY|WEEKLY|MONTHLY|YEARLY` + `INTERVAL` + `UNTIL`; `exdate` occurrences are skipped. Once
   `UNTIL` is passed the rule is exhausted and the item is marked notified (no further roll). The
-  infinite series is never materialised — only the master row is kept and advanced.
+  infinite series is never materialised, only the master row is kept and advanced.
 
 ## Unknown fields (MUST-PRESERVE)
 
 Fields the base does not recognise are round-tripped verbatim through `ext`. Namespace downstream
 extensions as `x_<skill>_*` (e.g. `x_promotion_campaign_id`). The base never drops them, even when
-it rewrites other fields — this is what keeps the base safely extensible.
+it rewrites other fields, this is what keeps the base safely extensible.
 
 ## Versioning
 

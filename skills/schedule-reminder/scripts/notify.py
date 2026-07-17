@@ -55,7 +55,7 @@ def notify(text):
     """Deliver `text` via the configured channel. Returns True on success, False on failure."""
     try:
         cmd_env = os.environ.get("SCHEDULE_RELAY_CMD")
-        if cmd_env:  # explicit override / test seam — always wins
+        if cmd_env:  # explicit override / test seam, always wins
             return _run(shlex.split(cmd_env, posix=(os.name != "nt")) + [text])
 
         relay_py = _default_relay_path()

@@ -3,10 +3,10 @@ name: schedule-reminder
 description: Persistent store for todos, events, deadlines and progress with pending/doing/done states; fires due reminders via Discord; stable CLI/JSON API other skills call.
 ---
 
-# schedule-reminder — the T0 schedule/memo base
+# schedule-reminder, the T0 schedule/memo base
 
 > Governing principle (full text in `PHILOSOPHY.md`): **a base is the contract, not the storage.**
-> Downstream skills depend on a frozen CLI/JSON surface, never on the database — so the engine can
+> Downstream skills depend on a frozen CLI/JSON surface, never on the database, so the engine can
 > change forever without breaking them. Correctness (concurrency-safe, crash-safe, backward-compatible)
 > beats features.
 
@@ -16,7 +16,7 @@ description: Persistent store for todos, events, deadlines and progress with pen
   skill (email-monitor, daily-hotspots, demand-mining, promotion-assistant) needs to **write a
   reminder** or **read task progress**.
 - **Stop / route elsewhere:** a one-off "send me a Discord message now" with nothing to persist is
-  just the relay — not this. This base is for state that must survive, be queried, and be reminded.
+  just the relay, not this. This base is for state that must survive, be queried, and be reminded.
 
 ## How it works (one screen)
 
@@ -60,18 +60,18 @@ with `error_code` + exit 1. Inject a clock with `--now`/`SCHEDULE_NOW`; isolate 
 
 `id` (immutable UUIDv7) · `kind` (task|event) · `title` · `state`
 (pending/doing/done/blocked/cancelled) · `progress` 0-100 · `priority` 0-9 · `due_at` (RFC3339 UTC) ·
-`tags[]` · `source` · `idempotency_key` · `relations[]` (depends-on/...) · `recurrence` (RRULE —
+`tags[]` · `source` · `idempotency_key` · `relations[]` (depends-on/...) · `recurrence` (RRULE ,
 `tick` rolls to the next occurrence) · `alarms[]` (per-alarm lead, e.g. `[{"lead":3600}]` /
-`[{"trigger":"-PT15M"}]`) · `ext` (**unknown fields preserved** — namespace `x_<skill>_*`). Full
+`[{"trigger":"-PT15M"}]`) · `ext` (**unknown fields preserved**, namespace `x_<skill>_*`). Full
 table -> `reference/contract.md`.
 
 ## Hard rules
 
-1. **Downstream never reads the DB** — only `reminder.py <verb> --json`. (Lets the engine evolve.)
-2. **DB stays on local NTFS** — never OneDrive/GDrive/network (WAL lock + sync = corruption).
+1. **Downstream never reads the DB**, only `reminder.py <verb> --json`. (Lets the engine evolve.)
+2. **DB stays on local NTFS**, never OneDrive/GDrive/network (WAL lock + sync = corruption).
 3. **State changes go through `transition`/`done`/`block`**, never `update` (state machine guarded).
 4. **Always pass `--source` + `--idempotency-key`** on writes (audit + safe retries).
-5. **Unknown fields are MUST-PRESERVE** — put extras in `--ext` as `x_<skill>_*`; the base round-trips
+5. **Unknown fields are MUST-PRESERVE**, put extras in `--ext` as `x_<skill>_*`; the base round-trips
    them.
 6. **All time is UTC RFC3339**; due trigger is the interval `now >= due_at - lead`, never `==`.
 
@@ -79,9 +79,9 @@ table -> `reference/contract.md`.
 
 This `SKILL.md` is the only always-loaded file. Load one shard on demand:
 
-- `reference/contract.md` — frozen verbs, fields, states, error codes, idempotency, versioning.
-- `reference/deployment.md` — DB init, heartbeat task, SQLite version, backup, secrets.
-- `reference/integration.md` — copy-paste examples for downstream skills.
-- `reference/agent-center.md` — the **two-way** Agent Center bus: outbound relay (`relay.py`) + daily
+- `reference/contract.md`, frozen verbs, fields, states, error codes, idempotency, versioning.
+- `reference/deployment.md`, DB init, heartbeat task, SQLite version, backup, secrets.
+- `reference/integration.md`, copy-paste examples for downstream skills.
+- `reference/agent-center.md`, the **two-way** Agent Center bus: outbound relay (`relay.py`) + daily
   当日总结 aggregator (`digest.py`), and inbound ingest (`ingest.py`/`dispatch.py`/`llm_chain.py`) that
   turns user channel replies into pool mutations. Egress + daily summary + reply ingress in one place.

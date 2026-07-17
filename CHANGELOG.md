@@ -4,7 +4,7 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ## [0.4.2] - 2026-07-16
 ### Changed
-- **Native Big Brother DM — the base no longer shells out to `the legacy DM notifier script`.**
+- **Native Big Brother DM, the base no longer shells out to `the legacy DM notifier script`.**
   New `bigbrother.py` (stdlib `urllib` only) opens the bot->operator DM and posts, reading its
   token/recipient from the SAME registry as everything else (`reader.bot_token` /
   `big_brother.user_id`). `relay._big_brother` and `notify.py`'s standalone fallback now call it.
@@ -18,7 +18,7 @@ All notable changes to this project are documented here (Keep a Changelog style)
     writes. (Reads/GET and webhook POSTs are unaffected, which is why `ingest.py`/`relay.py` use a
     browser UA.)
 - **`ingest.py` reads the bot token only from `registry.reader.bot_token`** (dropped the
-  `discord_relay/config.json` fallback — the token is now canonical in the registry).
+  `discord_relay/config.json` fallback, the token is now canonical in the registry).
 - **`store.py` health** probes `relay.py` (the real egress) for `relay_ok` instead of the retired
   `discord_relay/send.py`.
 - +7 tests (`test_bigbrother.py` + reworked `test_notify_routing.py`): dryrun seam, misconfig
@@ -33,27 +33,27 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ## [0.4.0] - 2026-07-16
 ### Added
-- **Two-way Agent Center bus — user replies in any stream channel become pool actions.** The mirror
+- **Two-way Agent Center bus, user replies in any stream channel become pool actions.** The mirror
   of `relay.py`: previously every channel was write-only (skills pushed out, nothing read back). Four
   new scripts make the bus bidirectional, built entirely as a schedule-reminder upgrade (no new
   service, no new dependency):
-  - **`llm_chain.py`** — the reusable cost-ordered headless-judgement primitive:
+  - **`llm_chain.py`**, the reusable cost-ordered headless-judgement primitive:
     `call_chain(prompt, chain=["codex","cc","claude"], providers)` returns the first non-empty answer,
     falls through on failure, deterministic no-op if the whole chain is down. codex runs
     `-s read-only --skip-git-repo-check` (a judge never needs write). **All** future headless model
     calls in this skill go through this, not ad-hoc spawns.
-  - **`ingest.py`** — inbound poller mirroring `relay.py`. `poll_all()` advances a per-stream cursor
+  - **`ingest.py`**, inbound poller mirroring `relay.py`. `poll_all()` advances a per-stream cursor
     (`the Agent Center state dir<stream>.last`) and writes `<stream>.inbox` for streams with a **new user
-    reply** (neither `author.bot` nor `webhook_id` — the skill's own confirmations never feed back).
+    reply** (neither `author.bot` nor `webhook_id`, the skill's own confirmations never feed back).
     First contact **arms** a stream (no history replay). Bot token from `registry.reader.bot_token`
     else `the legacy notifier config`.
-  - **`dispatch.py`** — two-phase judge-then-execute (anti-hallucination). Gathers the stream's active
+  - **`dispatch.py`**, two-phase judge-then-execute (anti-hallucination). Gathers the stream's active
     items as `id | title`, asks the chain for a JSON action plan
     `{actions:[{op:done|snooze|create,...}], confirm}`, then a **deterministic** executor runs it via
-    `reminder.py` — acting only on ids that were shown to the model, silently skipping any hallucinated
+    `reminder.py`, acting only on ids that were shown to the model, silently skipping any hallucinated
     id. Per-stream handler: `mail` → reconcile the email-monitor pool; `reminders` → done/snooze any
     active reminder; others → generic create-a-followup. `--no-post` for dry runs.
-  - **`ingest_tick.py`** — scheduled entrypoint: `poll_all` + dispatch each new reply, logs to
+  - **`ingest_tick.py`**, scheduled entrypoint: `poll_all` + dispatch each new reply, logs to
     `the ingest tick log`.
 - **Scheduled task `AgentCenterIngestTick`** (PT10M) runs `ingest_tick.py`. Retires the ad-hoc
   `AgentCenterMailTick` (a mail-only loop under `the legacy notifier dir`), now disabled.
@@ -67,7 +67,7 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ## [0.3.2] - 2026-07-13
 ### Fixed
-- **The tick posted reminders to the Big Brother DM, not the Agent Center `#reminders` channel —
+- **The tick posted reminders to the Big Brother DM, not the Agent Center `#reminders` channel ,
   the implementation had silently diverged from its own architecture doc.** `reference/agent-center.md`
   has said `schedule-reminder tick --(relay.py send --stream reminders)--> #reminders` since v0.3.0,
   but `notify.py` still shelled out to the legacy `discord_relay/send.py` (a DM). The
@@ -86,15 +86,15 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ## [0.3.1] - 2026-07-13
 ### Fixed
-- **The heartbeat had been dead for 17 days — every reminder due since 2026-06-26 silently never
+- **The heartbeat had been dead for 17 days, every reminder due since 2026-06-26 silently never
   fired.** Two independent bugs, both of which broke the base's core promise ("a reminder you set
   will fire") *without leaving a trace in the DB*:
   - **Bounded repetition.** `install.ps1` registered the PT5M heartbeat with
     `<Duration>P1D</Duration>`, so Windows repeated it for exactly 24h and then stopped forever
-    (`NextRun` empty). `StopAtDurationEnd` does **not** save you — it only decides whether a
+    (`NextRun` empty). `StopAtDurationEnd` does **not** save you, it only decides whether a
     *running* instance is killed at the end of the duration. `<Duration>` is now omitted, which is
     what makes a repetition indefinite. (email-monitor hit the identical bug and fixed it in its own
-    v0.1.3 — the base was never fixed, so the thing every other skill depends on was the one left
+    v0.1.3, the base was never fixed, so the thing every other skill depends on was the one left
     broken.)
   - **`sys.stdout` is `None` under `pythonw.exe`.** The task runs windowless, so CPython sets
     `sys.stdout`/`sys.stderr` to `None`. `_emit()` wrote with `sys.stdout.write()` →
@@ -117,21 +117,21 @@ All notable changes to this project are documented here (Keep a Changelog style)
   no message is lost; mandatory `User-Agent` (Discord/Cloudflare 403s the default urllib UA);
   `AGENT_CENTER_RELAY_DRYRUN` test seam. `list`/`health` never print webhook secrets.
 - **Daily digest aggregator** (`scripts/digest.py`): realises skill todo.md's single "每日固定定时
-  任务 + 当日总结" — every *installed* skill registers a section contributor; one task assembles all
+  任务 + 当日总结", every *installed* skill registers a section contributor; one task assembles all
   sections into one Big Brother summary. Fail-soft per contributor (timeout/nonzero → skipped +
   reported to `#infra`); child stdio forced to UTF-8; `register`/`unregister`/`list`/`run --dry-run`/
-  `collect` (emit sections only, no send — for folding the skill digest into an existing daily push,
+  `collect` (emit sections only, no send, for folding the skill digest into an existing daily push,
   e.g. the 22:00 config-backup wrap-up, so the user gets ONE daily summary covering everything).
 - `reference/agent-center.md`: frozen relay + digest contract for downstream skills.
 - Tests: `tests/test_relay.py`, `tests/test_digest.py` (hermetic, +13 cases → 54 total).
 ### Notes
-- The reminder contract `api_version` is unchanged (**1.0.0**) — this release only adds new sibling
+- The reminder contract `api_version` is unchanged (**1.0.0**), this release only adds new sibling
   tools; downstream skills already on the base are unaffected.
 
 ## [0.2.0] - 2026-06-25
 ### Added
 - **RRULE rolling recurrence** (architecture §2.4): on fire, a `recurrence` item rolls to its next
-  future occurrence and re-arms instead of being permanently notified — long-overdue items catch up
+  future occurrence and re-arms instead of being permanently notified, long-overdue items catch up
   once, then re-arm. Minimal stdlib RFC5545 subset (`FREQ`/`INTERVAL`/`UNTIL`, `exdate` skip); the
   infinite series is never materialised. (E14)
 - **Per-alarm lead times** (architecture §4.5): `alarms[]` entries (`{"lead":secs}` or iCal
@@ -147,7 +147,7 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - **progress invariant**: `add`/`update`/`transition` now reject out-of-range progress with
   `ERR_BAD_PROGRESS` (previously `update --set progress=99999` was accepted).
 - **Internal error redaction**: the `ERR_INTERNAL` fallback no longer echoes `str(e)` (which could
-  embed the db path) — only the exception type name.
+  embed the db path), only the exception type name.
 - Docs: dangling `ARCHITECTURE.md` section refs repointed to in-repo `docs/design-brief.md`;
   removed the misleading `--json` flag mention (JSON is always emitted); `.sie/` sandbox added to
   `.gitignore`; 9th plugin keyword added for the base-9 GitHub topics target.
