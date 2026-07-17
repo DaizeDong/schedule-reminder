@@ -166,3 +166,67 @@ def test_ingest_streams_respects_inbound_flag():
     }}
     got = ingest._streams(reg)
     assert got == {"a": "1"}
+
+
+# --------------------------------------------------------------------------- reactions (emoji replies)
+def test_emoji_ref_unicode_and_custom():
+    assert ingest._emoji_ref({"name": "✅", "id": None}) == ("✅", "%E2%9C%85")
+    disp, ref = ingest._emoji_ref({"name": "party", "id": "123"})
+    assert disp == ":party:" and ref == "party:123"
+
+
+def test_reaction_events_owner_only(monkeypatch):
+    msgs = [{"id": "m1", "content": "待办:交周报", "timestamp": "t",
+             "reactions": [{"emoji": {"name": "✅", "id": None}, "count": 2, "me": True}]}]
+    monkeypatch.setattr(ingest, "_reactors",
+                        lambda ch, mid, ref, tok, limit=100: [{"id": "OWNER", "bot": False},
+                                                              {"id": "BOTX", "bot": True}])
+    events, keys = ingest.reaction_events("ch", "tok", "OWNER", msgs)
+    assert len(events) == 1
+    assert events[0]["emoji"] == "✅" and events[0]["message_id"] == "m1"
+    assert events[0]["key"] == "m1:✅:OWNER"
+    assert keys == {"m1:✅:OWNER"}
+
+
+def test_reaction_events_skips_bot_only_no_fetch(monkeypatch):
+    # only the bot itself reacted (count=1, me=True): others<=0 -> never even fetch reactors
+    msgs = [{"id": "m1", "content": "x",
+             "reactions": [{"emoji": {"name": "✅", "id": None}, "count": 1, "me": True}]}]
+    called = []
+    monkeypatch.setattr(ingest, "_reactors", lambda *a, **k: called.append(1) or [])
+    events, keys = ingest.reaction_events("ch", "tok", "OWNER", msgs)
+    assert events == [] and keys == set() and called == []
+
+
+def test_reaction_events_wrong_user_filtered(monkeypatch):
+    msgs = [{"id": "m1", "content": "x", "timestamp": "t",
+             "reactions": [{"emoji": {"name": "✅", "id": None}, "count": 1, "me": False}]}]
+    monkeypatch.setattr(ingest, "_reactors", lambda *a, **k: [{"id": "SOMEONE_ELSE", "bot": False}])
+    events, _ = ingest.reaction_events("ch", "tok", "OWNER", msgs)
+    assert events == []  # a reaction by someone who is not the owner is ignored
+
+
+def test_poll_reactions_dedups_across_ticks(tmp_path, monkeypatch):
+    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
+    msgs = [{"id": "m1", "content": "待办:交周报", "timestamp": "2026-01-01T00:00:00Z",
+             "reactions": [{"emoji": {"name": "✅", "id": None}, "count": 1, "me": False}]}]
+    monkeypatch.setattr(ingest, "_fetch", lambda ch, tok, after=None, limit=50: msgs)
+    monkeypatch.setattr(ingest, "_reactors", lambda *a, **k: [{"id": "OWNER", "bot": False}])
+    new1 = ingest.poll_reactions_stream("mail", "ch", "tok", "OWNER")
+    assert len(new1) == 1
+    assert os.path.exists(ingest._reactions_inbox_file("mail"))
+    assert "交周报" in open(ingest._reactions_inbox_file("mail"), encoding="utf-8").read()
+    new2 = ingest.poll_reactions_stream("mail", "ch", "tok", "OWNER")  # same reaction, next tick
+    assert new2 == []  # already seen -> not re-processed
+
+
+def test_arm_reactions_baselines_existing(tmp_path, monkeypatch):
+    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
+    msgs = [{"id": "m1", "content": "x", "timestamp": "t",
+             "reactions": [{"emoji": {"name": "✅", "id": None}, "count": 1, "me": False}]}]
+    monkeypatch.setattr(ingest, "_fetch", lambda ch, tok, after=None, limit=50: msgs)
+    monkeypatch.setattr(ingest, "_reactors", lambda *a, **k: [{"id": "OWNER", "bot": False}])
+    reg = {"streams": {"mail": {"channel_id": "ch"}}, "big_brother": {"user_id": "OWNER"}}
+    ingest.arm_reactions(reg, "tok")
+    # after arming, a poll finds nothing new (existing reaction already baselined as seen)
+    assert ingest.poll_reactions_stream("mail", "ch", "tok", "OWNER") == []
