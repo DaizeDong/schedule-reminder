@@ -1,11 +1,11 @@
-# Agent Center — unified relay + daily digest (frozen surface)
+# Agent Center, unified relay + daily digest (frozen surface)
 
 schedule-reminder is the **single backend** every other skill routes through: state (the reminder
 contract), **outbound Discord** (`relay.py`), and the **daily 当日总结** (`digest.py`). Downstream
 skills call these via subprocess and never re-implement transport or scheduling.
 
 > Design law (same as the base): **the contract is the surface, not the transport.** Skills depend on
-> `relay.py <stream>` / `digest.py`, never on webhooks, bots, or the registry file directly — so the
+> `relay.py <stream>` / `digest.py`, never on webhooks, bots, or the registry file directly, so the
 > Discord wiring can change forever without touching any skill.
 
 ## Topology
@@ -21,7 +21,7 @@ Streams (Agent Center server): `mail · hotspots · demand · promotion · suppo
 reminders`. The aggregated daily summary goes to **Big Brother DM**, not a channel. The bus is
 **two-way**: `relay.py` is the egress, `ingest.py`/`dispatch.py` the ingress (see *Inbound* below).
 
-## relay.py — the single Discord egress
+## relay.py, the single Discord egress
 
 ```
 python relay.py send   --stream <name> (--text T | --json '{"content":..,"username":..}')
@@ -34,16 +34,16 @@ python relay.py health                 # registry sane? (no network, no secrets)
   `the Agent Center registry`. Shape: `{"streams":{"<name>":{"webhook":"...","username":"..."}},
   "reader":{"bot_token":"..."}, "big_brother":{...}}`. `reader.bot_token` is the canonical Discord
   bot token the inbound ingest reads. `the Agent Center config dir` is version-controlled in a **private**
-  companion repo (`a private companion repo`) for backup + portability — secrets live there,
+  companion repo (`a private companion repo`) for backup + portability, secrets live there,
   never here. See `deployment.md`.
 - **Per-stream identity**: each message sets `username` so a stream shows its own name/avatar.
 - **Fallback**: unknown stream / missing registry → delivered to Big Brother DM (prefixed
   `[stream]`) so nothing is ever silently lost.
-- **Gotcha (encoded in code)**: Discord/Cloudflare 403s the default urllib User-Agent — `relay.py`
+- **Gotcha (encoded in code)**: Discord/Cloudflare 403s the default urllib User-Agent, `relay.py`
   always sends a real `User-Agent`.
 - **Test seam**: `AGENT_CENTER_RELAY_DRYRUN=1` skips the network.
 
-## digest.py — the one daily 当日总结
+## digest.py, the one daily 当日总结
 
 One daily task aggregates every *installed* skill's section into a single summary.
 
@@ -62,10 +62,10 @@ python digest.py list
 - **Pluggable**: a skill registers its contributor at install time; uninstalled skills are simply
   absent. This is exactly skill todo.md's "如果这个 skill 安装了，则联动每日的固定定时任务".
 
-## Inbound — user replies become actions (two-way)
+## Inbound, user replies become actions (two-way)
 
 The mirror of `relay.py`: when the user **replies in any stream channel**, that reply is polled,
-judged, and turned into pool mutations, then confirmed back — no separate bot, no new dependency.
+judged, and turned into pool mutations, then confirmed back, no separate bot, no new dependency.
 
 ```
 python ingest.py poll                 # advance per-stream cursor, write <stream>.inbox (read-only)
@@ -77,7 +77,7 @@ python ingest_tick.py                  # scheduled entrypoint: poll_all + dispat
   actionable state (active pool items as `id | title`), asks the **cost-ordered LLM chain**
   (`llm_chain.py`: **codex → cc → claude**, read-only) for a compact JSON *action plan*
   `{actions:[{op:done|snooze|create,...}], confirm}`, then a **deterministic** executor runs it via
-  `reminder.py`. The executor only touches ids that were shown to the model — a hallucinated id is
+  `reminder.py`. The executor only touches ids that were shown to the model, a hallucinated id is
   silently skipped, never acted on.
 - **Per-stream handler** (`STREAMS` in `dispatch.py`): `mail` → reconcile the **email-monitor** task
   pool (done/snooze/create with `source=email-monitor`); `reminders` → done/snooze any active
@@ -87,11 +87,11 @@ python ingest_tick.py                  # scheduled entrypoint: poll_all + dispat
   no-op if the whole chain is down. codex uses `-s read-only --skip-git-repo-check` (the judge never
   needs write access). Use it, don't re-spawn models ad hoc.
 - **User vs bot.** `ingest.py` counts a message as a user reply only when it is neither `author.bot`
-  nor a `webhook_id` post — so the skill's own relay/digest confirmations never feed back on
+  nor a `webhook_id` post, so the skill's own relay/digest confirmations never feed back on
   themselves. Bot token: `registry.reader.bot_token`, else `the legacy notifier config`.
   Same urllib `User-Agent` gotcha as relay (Discord 403s the default).
 - **Cursors & inboxes** live in `the Agent Center state dir<stream>.last` / `.inbox`. First contact with
-  a stream **arms** the cursor (records latest id, processes nothing) — no history replay.
+  a stream **arms** the cursor (records latest id, processes nothing), no history replay.
 - **Schedule**: Windows task **AgentCenterIngestTick** (PT10M) runs `ingest_tick.py`; it supersedes
   the retired ad-hoc `AgentCenterMailTick` (mail-only loop).
 

@@ -1,6 +1,6 @@
 # Contributing to schedule-reminder
 
-This is a **T0 infrastructure base** — four downstream skills depend on its contract. Stability beats
+This is a **T0 infrastructure base**, four downstream skills depend on its contract. Stability beats
 features. Before changing anything, read [`PHILOSOPHY.md`](PHILOSOPHY.md).
 
 ## Golden rules

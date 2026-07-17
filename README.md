@@ -11,14 +11,14 @@ Track todos, events and progress in a crash-safe SQLite store; fire due reminder
 
 ---
 
-## ⭐ Read this first — the design philosophy
+## ⭐ Read this first, the design philosophy
 
 schedule-reminder is a **T0 infrastructure base**: other skills write reminders into it and read task
 progress out of it. So its single governing principle is **"a base is the contract, not the
-storage"** — downstream depends on a frozen CLI/JSON surface (with an `api_version`), never on the
+storage"**, downstream depends on a frozen CLI/JSON surface (with an `api_version`), never on the
 database, so the engine can be rewritten forever without breaking anyone. v0.1 spends its whole
 budget on the guarantees a base must never break: concurrency-safe + crash-safe persistence, a
-guarded state machine, idempotent writes, at-least-once delivery, and MUST-PRESERVE unknown fields —
+guarded state machine, idempotent writes, at-least-once delivery, and MUST-PRESERVE unknown fields ,
 not on flashy features.
 
 📜 **[Read the full design philosophy -> PHILOSOPHY.md](PHILOSOPHY.md)**
@@ -91,13 +91,13 @@ SQLite (WAL) single file        <- private storage, downstream NEVER touches it
 ```
 
 The OS task is only a heartbeat. `tick` reconciles the durable table, so a slept/off machine catches
-up **all** missed reminders on the next run (idempotent, at-least-once + dedupe) — no per-event OS
+up **all** missed reminders on the next run (idempotent, at-least-once + dedupe), no per-event OS
 triggers, no silent skips.
 
 - **Contract:** [`skills/schedule-reminder/reference/contract.md`](skills/schedule-reminder/reference/contract.md)
 - **Deployment:** [`skills/schedule-reminder/reference/deployment.md`](skills/schedule-reminder/reference/deployment.md)
 - **Integration (for downstream skills):** [`skills/schedule-reminder/reference/integration.md`](skills/schedule-reminder/reference/integration.md)
-- **Agent Center bus (two-way):** [`skills/schedule-reminder/reference/agent-center.md`](skills/schedule-reminder/reference/agent-center.md) — the outbound relay + daily digest and the inbound reply ingest every skill shares.
+- **Agent Center bus (two-way):** [`skills/schedule-reminder/reference/agent-center.md`](skills/schedule-reminder/reference/agent-center.md), the outbound relay + daily digest and the inbound reply ingest every skill shares.
 
 ## Tested-real
 
@@ -105,7 +105,7 @@ triggers, no silent skips.
 transition table (legal + illegal), write invariants, due trigger / idempotent tick / missed-fire
 catch-up / retry back-off, concurrent writes with `PRAGMA integrity_check`, concurrent read/write,
 idempotent dedupe, API golden, unknown-field preservation, health, RRULE rolling recurrence, and
-per-alarm lead times. Plus hermetic module tests for the Agent Center bus — relay egress, daily
+per-alarm lead times. Plus hermetic module tests for the Agent Center bus, relay egress, daily
 digest, heartbeat survival, notify routing, and the two-way ingest/dispatch. E8/E9/E11/E12 are
 merge-blocking red lines.
 
@@ -122,7 +122,7 @@ python -m pytest skills/schedule-reminder/tests/ -q   # 93 passed
 - **Recurrence/RRULE expansion is stored but not yet expanded** (roadmap v0.2); the `recurrence`
   field round-trips today.
 - **Windows-first deployment** (scheduled task via `install.ps1`); cron line provided for Unix.
-- **DB must stay on local NTFS** — never a OneDrive/GDrive/network path (WAL lock + sync corruption).
+- **DB must stay on local NTFS**, never a OneDrive/GDrive/network path (WAL lock + sync corruption).
 
 ## Languages
 

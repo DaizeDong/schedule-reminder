@@ -46,7 +46,7 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-# Discord 403s the default urllib UA — a real User-Agent is mandatory.
+# Discord 403s the default urllib UA, a real User-Agent is mandatory.
 _UA = "AgentCenter-Relay/1.0 (+https://discord.com)"
 _DEFAULT_REGISTRY = os.path.join(os.path.expanduser("~"), ".agent-center", "registry.json")
 
@@ -134,7 +134,7 @@ def _cmd_list() -> int:
     if not streams:
         print(json.dumps({"ok": False, "registry": registry_path(), "streams": []}))
         return 1
-    # NEVER print webhook URLs — only safe metadata.
+    # NEVER print webhook URLs, only safe metadata.
     out = {name: {k: v for k, v in s.items() if k != "webhook"} for name, s in streams.items()}
     print(json.dumps({"ok": True, "registry": registry_path(),
                       "guild_id": reg.get("guild_id"), "streams": out}, ensure_ascii=False, indent=2))

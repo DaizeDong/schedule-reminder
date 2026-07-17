@@ -190,7 +190,7 @@ def _cmd_unregister(args) -> int:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="digest.py", description="Agent Center daily digest aggregator")
-    sub = ap.add_subparsers(dest="op", required=True)  # NB: not "cmd" — would collide with register --cmd
+    sub = ap.add_subparsers(dest="op", required=True)  # NB: not "cmd", would collide with register --cmd
     p_run = sub.add_parser("run")
     p_run.add_argument("--now", default=None)
     p_run.add_argument("--dry-run", action="store_true")
