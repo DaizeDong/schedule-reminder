@@ -163,29 +163,47 @@ def main(argv=None) -> int:
     p_send.add_argument("--stream", required=True)
     g = p_send.add_mutually_exclusive_group(required=True)
     g.add_argument("--text")
+    # Windows PowerShell 5.1 mangles a non-ASCII argv (em/CJK -> mojibake) when it invokes python.exe,
+    # so a PS caller must base64-encode the UTF-8 bytes and pass them here instead of --text/--json.
+    g.add_argument("--text-b64", dest="text_b64", help="base64 of UTF-8 text (PowerShell-safe)")
     g.add_argument("--json", dest="json_payload", help='{"content":..,"username":..}')
+    g.add_argument("--json-b64", dest="json_b64", help="base64 of UTF-8 JSON (PowerShell-safe)")
     p_send.add_argument("--username", default=None)
     p_dig = sub.add_parser("digest", help="send aggregated daily summary to Big Brother")
-    p_dig.add_argument("--text", required=True)
+    gd = p_dig.add_mutually_exclusive_group(required=True)
+    gd.add_argument("--text")
+    gd.add_argument("--text-b64", dest="text_b64", help="base64 of UTF-8 text (PowerShell-safe)")
     sub.add_parser("list", help="list configured streams (no secrets)")
     sub.add_parser("health", help="check registry health (no network, no secrets)")
     args = ap.parse_args(argv)
+
+    def _b64(s):
+        import base64
+        return base64.b64decode(s).decode("utf-8")
 
     if args.cmd == "list":
         return _cmd_list()
     if args.cmd == "health":
         return _cmd_health()
     if args.cmd == "digest":
-        return 0 if digest(args.text) else 1
+        text = _b64(args.text_b64) if getattr(args, "text_b64", None) else args.text
+        return 0 if digest(text) else 1
     if args.cmd == "send":
-        if args.json_payload:
+        payload = None
+        if args.json_b64:
+            payload = _b64(args.json_b64)
+        elif args.json_payload:
+            payload = args.json_payload
+        if payload is not None:
             try:
-                obj = json.loads(args.json_payload)
+                obj = json.loads(payload)
             except Exception as e:
                 sys.stderr.write("relay: bad --json (%s)\n" % e)
                 return 2
             content = obj.get("content", "")
             username = obj.get("username") or args.username
+        elif args.text_b64:
+            content, username = _b64(args.text_b64), args.username
         else:
             content, username = args.text, args.username
         return 0 if relay(args.stream, content, username) else 1
