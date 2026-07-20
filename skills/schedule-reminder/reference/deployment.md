@@ -40,7 +40,7 @@ overdue-and-unnotified items at once, reconciliation is idempotent and can catch
 missed fires, unlike schtasks `StartWhenAvailable` / cron / anacron (one late catch-up at best).
 
 Task XML knobs (hardened): `StartWhenAvailable=true`, `UseUnifiedSchedulingEngine=true`,
-`Repetition Interval=PT5M Duration=P1D`, `MultipleInstancesPolicy=IgnoreNew` (no overlap),
+`Repetition Interval=PT5M` (NO RepetitionDuration; a bounded Duration like P1D silently STOPS the tick after that window and blanks NextRun, so omit it for a forever-repeat, matching install.ps1), `MultipleInstancesPolicy=IgnoreNew` (no overlap),
 `DisallowStartIfOnBatteries=false`, `StopIfGoingOnBatteries=false`.
 
 ## cron (macOS / Linux)
