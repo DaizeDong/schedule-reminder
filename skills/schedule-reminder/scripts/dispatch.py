@@ -13,7 +13,7 @@ schedule-reminder base -> done/snooze), 'generic' (create a follow-up task + con
 
 CLI:  dispatch.py --stream mail            # reads the mail inbox state file
       dispatch.py --stream mail --reply "..."   # explicit reply text
-Stdlib only (+ sibling modules llm_chain, relay).
+Stdlib + sibling modules llm_chain (now a thin shim over the shared `llmcall` pip package) and relay.
 """
 import argparse
 import hashlib
