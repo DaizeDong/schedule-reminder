@@ -33,7 +33,7 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 _LOG = os.path.join(os.path.expanduser("~"), ".agent-center", "state", "ingest_tick.log")
-_PROVIDERS = {"codex": {"model": "gpt-5.5", "reasoning": "high"},
+_PROVIDERS = {"codex": {"model": "gpt-5.6-sol", "reasoning": "max"},
               "cc": {"model": "claude-opus-4-8"}, "claude": {"model": "claude-opus-4-8"}}
 
 
