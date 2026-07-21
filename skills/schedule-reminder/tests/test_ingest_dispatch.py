@@ -119,7 +119,7 @@ def test_execute_create_source_by_kind(monkeypatch):
 # --------------------------------------------------------------------------- dispatch flow (stubbed)
 def test_dispatch_happy_path(monkeypatch):
     monkeypatch.setattr(dispatch, "get_state", lambda cfg: [{"id": "i1", "title": "t1"}])
-    monkeypatch.setattr(dispatch.llm_chain, "call_chain",
+    monkeypatch.setattr(dispatch, "call_chain",
                         lambda *a, **k: '{"actions":[{"op":"done","id":"i1"}],"confirm":"完成1项"}')
     _, fake = _rem_recorder()
     monkeypatch.setattr(dispatch, "_rem", fake)
@@ -132,7 +132,7 @@ def test_dispatch_happy_path(monkeypatch):
 
 def test_dispatch_unparseable_plan_passthrough(monkeypatch):
     monkeypatch.setattr(dispatch, "get_state", lambda cfg: [])
-    monkeypatch.setattr(dispatch.llm_chain, "call_chain", lambda *a, **k: "sorry i cannot help")
+    monkeypatch.setattr(dispatch, "call_chain", lambda *a, **k: "sorry i cannot help")
     posted = []
     monkeypatch.setattr(dispatch.relay, "relay", lambda stream, text: posted.append((stream, text)) or True)
     ok = dispatch.dispatch("support", "some reply")
@@ -142,7 +142,7 @@ def test_dispatch_unparseable_plan_passthrough(monkeypatch):
 
 def test_dispatch_no_post_is_dry(monkeypatch):
     monkeypatch.setattr(dispatch, "get_state", lambda cfg: [])
-    monkeypatch.setattr(dispatch.llm_chain, "call_chain",
+    monkeypatch.setattr(dispatch, "call_chain",
                         lambda *a, **k: '{"actions":[],"confirm":"noop"}')
     called = []
     monkeypatch.setattr(dispatch.relay, "relay", lambda *a, **k: called.append(a) or True)
