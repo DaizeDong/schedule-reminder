@@ -13,7 +13,7 @@ schedule-reminder base -> done/snooze), 'generic' (create a follow-up task + con
 
 CLI:  dispatch.py --stream mail            # reads the mail inbox state file
       dispatch.py --stream mail --reply "..."   # explicit reply text
-Stdlib + sibling modules llm_chain (now a thin shim over the shared `llmcall` pip package) and relay.
+Stdlib + the shared `llmcall` pip package (call_chain, str|None) + the sibling relay module.
 """
 import argparse
 import hashlib
@@ -26,7 +26,7 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
-import llm_chain  # noqa: E402
+from llmcall import call_chain  # noqa: E402  (patched in tests as dispatch.call_chain)
 import relay      # noqa: E402
 
 for _s in (sys.stdout, sys.stderr):
@@ -193,7 +193,7 @@ def dispatch(stream, reply, chain=None, providers=None, timeout=180, log=None, p
     cfg = STREAMS.get(stream, _DEFAULT_CFG)
     items = get_state(cfg)
     prompt = build_prompt(stream, cfg, reply, items)
-    raw = llm_chain.call_chain(prompt, chain=chain, providers=providers, timeout=timeout, log=log)
+    raw = call_chain(prompt, chain=chain, providers=providers, timeout=timeout, log=log)
     plan = _extract_json(raw)
     if not plan:
         _post(stream, "收到你的回复,但自动解析失败,已留待人工处理。原文:%s" % reply.strip()[:200], post, log)
