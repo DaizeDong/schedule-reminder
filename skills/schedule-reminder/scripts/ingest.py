@@ -5,7 +5,7 @@ The inbound mirror of relay.py. relay.py POSTs skill output to each stream's web
 this module GETs each stream's channel for new USER replies (in). Webhooks are send-only, but a
 bot with read access can pull channel history over REST (no privileged Message Content Intent).
 
-REGISTRY (secret; the Agent Center registry or env AGENT_CENTER_CONFIG)
+REGISTRY (secret; env AGENT_CENTER_CONFIG, else the registry file in the Agent Center config dir)
     streams.<name>.channel_id   -- required to poll a stream (absent -> stream skipped)
     streams.<name>.inbound      -- optional; set false to opt a stream out of ingest
     reader.bot_token            -- the Discord bot token (canonical; same one relay/bigbrother use)

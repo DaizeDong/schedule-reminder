@@ -16,7 +16,7 @@ Resolution order (first one that exists wins):
      egress; relay.py itself falls back to the DM if that stream is unconfigured, so a reminder is
      never silently lost).
   3. bigbrother DM       — the native Big Brother DM sender (`bigbrother.send_dm`), only if relay.py
-     is missing (standalone install). Replaces the old shell-out to `discord_relay/send.py`.
+     is missing (standalone install). Replaces the old shell-out to the legacy DM notifier script.
 
 Contract: notify(text) -> bool  (True = delivered, False = failed; never raises for delivery errors).
 
