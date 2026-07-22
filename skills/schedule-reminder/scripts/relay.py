@@ -8,7 +8,7 @@ WHY THIS EXISTS
     bot vs anything else) can change forever without touching any skill.
 
 REGISTRY (secret, never committed)
-    Discovery order: env AGENT_CENTER_CONFIG, else the Agent Center registry.
+    Discovery order: env AGENT_CENTER_CONFIG, else the registry file in the Agent Center config dir.
     Shape: {"streams": {"<name>": {"webhook": "...", "username": "..."}}, "big_brother": {...}}
     Each stream posts to its webhook; per-message `username` gives the stream its identity in Discord.
 

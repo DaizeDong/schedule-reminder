@@ -11,7 +11,7 @@ Precedence (first that exists wins):
      tick test in test_contract.py would start pushing to real Discord).
   2. relay.py send --stream reminders
   3. bigbrother.send_dm  -- the native Big Brother DM, only when relay.py is absent (standalone
-     install). Replaces the retired shell-out to discord_relay/send.py.
+     install). Replaces the retired shell-out to the legacy DM notifier script.
 
 Run: pytest -q
 """

@@ -11,7 +11,7 @@ For a user reply in a stream channel, this:
 Per-stream behaviour (STREAMS): 'pool' (mail -> email-monitor task pool), 'reminder' (the
 schedule-reminder base -> done/snooze), 'generic' (create a follow-up task + confirm).
 
-CLI:  dispatch.py --stream mail            # reads the mail inbox state file
+CLI:  dispatch.py --stream mail            # reads mail.inbox from the Agent Center state dir
       dispatch.py --stream mail --reply "..."   # explicit reply text
 Stdlib + the shared `llmcall` pip package (call_chain, str|None) + the sibling relay module.
 """

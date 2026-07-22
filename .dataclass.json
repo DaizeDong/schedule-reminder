@@ -15,9 +15,9 @@
     "",
     "Enforced by tools/data_boundary.py in .githooks and in CI."
   ],
-  "_audited": "2026-07-16 -- swept for real-run output written back into this repo (every open(...,'a'), json.dump, write_text; every tracked *.jsonl / state / cache / report). This skill's writers all resolve OUTSIDE the repo, or it has no writers. No DATA-class path found. Re-audited on adding the v0.4.0 two-way bus: ingest.py/ingest_tick.py write only under the Agent Center state dir (cursors/inboxes/ingest_tick.log); llm_chain.py uses a tempfile.mkstemp scratch file it deletes; dispatch.py makes no direct file writes (only reminder.py, whose DB already lives outside the repo). An empty list here is a CONCLUSION, not a default: it distinguishes 'audited, nothing to declare' from 'nobody has looked'.",
+  "_audited": "2026-07-16 -- swept for real-run output written back into this repo (every open(...,'a'), json.dump, write_text; every tracked *.jsonl / state / cache / report). This skill's writers all resolve OUTSIDE the repo, or it has no writers. No DATA-class path found. Re-audited on adding the v0.4.0 two-way bus: ingest.py/ingest_tick.py write only under the Agent Center state dir OUTSIDE this repo (cursors/inboxes/ingest tick log); llm_chain.py uses a tempfile.mkstemp scratch file it deletes; dispatch.py makes no direct file writes (only reminder.py, whose DB already lives outside the repo). An empty list here is a CONCLUSION, not a default: it distinguishes 'audited, nothing to declare' from 'nobody has looked'.",
   "data": [],
   "data_sealed": [],
   "fixture": [],
-  "_data_home": "the reminder data dir/data/   (override with $SCHEDULE_REMINDER_DATA_DIR). If this skill ever needs to record real-run output, it goes THERE -- never back into this repo."
+  "_data_home": "$SCHEDULE_REMINDER_DATA_DIR -- a private dir OUTSIDE this repo. If this skill ever needs to record real-run output, it goes THERE -- never back into this repo."
 }

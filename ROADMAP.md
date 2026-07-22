@@ -5,7 +5,7 @@ Current: **v0.4.2**
 ## v0.4.2 (current), self-contained egress
 - **Native Big Brother DM** (`bigbrother.py`, stdlib): the base opens the operator DM and posts
   itself, reading `reader.bot_token` / `big_brother.user_id` from the registry, no more shelling to
-  `the legacy DM notifier script`. `relay._big_brother` + `notify.py` fallback use it; fixes the
+  the legacy DM notifier script. `relay._big_brother` + `notify.py` fallback use it; fixes the
   digest/unknown-stream mis-route (now reaches the DM, not the `#reminders` channel). Bot writes send
   the official `DiscordBot (...)` UA (browser UA is WAF-403'd on message-create). `ingest.py` reads
   the token only from the registry; `store.py` health probes `relay.py`. Suite 86 → 93.
@@ -30,7 +30,7 @@ Current: **v0.4.2**
 
 ## v0.3.0, Agent Center backend
 - **Unified relay** (`relay.py`): the single Discord egress for every skill, multi-stream webhooks
-  with per-stream identity, registry-driven (`the Agent Center registry`), Big-Brother fallback,
+  with per-stream identity, registry-driven (registry file via `AGENT_CENTER_CONFIG`), Big-Brother fallback,
   mandatory User-Agent.
 - **Daily digest aggregator** (`digest.py`): one daily task assembles every installed skill's
   当日总结段 into a single Big-Brother summary; pluggable contributors, fail-soft per section.

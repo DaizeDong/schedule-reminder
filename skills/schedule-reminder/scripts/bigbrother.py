@@ -3,7 +3,7 @@
 
 The Agent Center digest (and any last-resort fallback) pushes to the operator's Discord DM, which is
 the only channel that reliably reaches a phone. This used to shell out to an ad-hoc
-`the legacy DM notifier script` (which needed the `requests` package and its own `config.json`).
+legacy DM notifier script (which needed the `requests` package and its own config file).
 This module folds that capability into the skill: it opens the bot->user DM and posts, using stdlib
 `urllib` and the SAME registry every other Agent Center path reads.
 
