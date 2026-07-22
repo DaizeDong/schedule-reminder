@@ -4,11 +4,11 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ## [0.4.2] - 2026-07-16
 ### Changed
-- **Native Big Brother DM, the base no longer shells out to `the legacy DM notifier script`.**
+- **Native Big Brother DM, the base no longer shells out to the legacy DM notifier script.**
   New `bigbrother.py` (stdlib `urllib` only) opens the bot->operator DM and posts, reading its
   token/recipient from the SAME registry as everything else (`reader.bot_token` /
   `big_brother.user_id`). `relay._big_brother` and `notify.py`'s standalone fallback now call it.
-  This retires the last dependency on the ad-hoc `discord_relay` tooling and makes the skill
+  This retires the last dependency on the ad-hoc legacy DM notifier tooling and makes the skill
   self-contained for its phone-reaching DM.
   - **Fixes a latent mis-route:** `relay.digest()` (and the unknown-stream fallback) went through
     `notify.py` and so landed in the `#reminders` *channel*, not the Big Brother *DM* the design
@@ -18,9 +18,9 @@ All notable changes to this project are documented here (Keep a Changelog style)
     writes. (Reads/GET and webhook POSTs are unaffected, which is why `ingest.py`/`relay.py` use a
     browser UA.)
 - **`ingest.py` reads the bot token only from `registry.reader.bot_token`** (dropped the
-  `discord_relay/config.json` fallback, the token is now canonical in the registry).
+  legacy notifier config fallback, the token is now canonical in the registry).
 - **`store.py` health** probes `relay.py` (the real egress) for `relay_ok` instead of the retired
-  `discord_relay/send.py`.
+  legacy DM notifier script.
 - +7 tests (`test_bigbrother.py` + reworked `test_notify_routing.py`): dryrun seam, misconfig
   guards, chunking, and the native-DM fallback routing. Suite 86 → 93.
 
@@ -43,10 +43,10 @@ All notable changes to this project are documented here (Keep a Changelog style)
     `-s read-only --skip-git-repo-check` (a judge never needs write). **All** future headless model
     calls in this skill go through this, not ad-hoc spawns.
   - **`ingest.py`**, inbound poller mirroring `relay.py`. `poll_all()` advances a per-stream cursor
-    (`the Agent Center state dir<stream>.last`) and writes `<stream>.inbox` for streams with a **new user
+    (`<state-dir>/<stream>.last` under the Agent Center config dir) and writes `<stream>.inbox` for streams with a **new user
     reply** (neither `author.bot` nor `webhook_id`, the skill's own confirmations never feed back).
     First contact **arms** a stream (no history replay). Bot token from `registry.reader.bot_token`
-    else `the legacy notifier config`.
+    else the legacy notifier config file.
   - **`dispatch.py`**, two-phase judge-then-execute (anti-hallucination). Gathers the stream's active
     items as `id | title`, asks the chain for a JSON action plan
     `{actions:[{op:done|snooze|create,...}], confirm}`, then a **deterministic** executor runs it via
@@ -54,9 +54,9 @@ All notable changes to this project are documented here (Keep a Changelog style)
     id. Per-stream handler: `mail` → reconcile the email-monitor pool; `reminders` → done/snooze any
     active reminder; others → generic create-a-followup. `--no-post` for dry runs.
   - **`ingest_tick.py`**, scheduled entrypoint: `poll_all` + dispatch each new reply, logs to
-    `the ingest tick log`.
+    the ingest tick log under the Agent Center state dir.
 - **Scheduled task `AgentCenterIngestTick`** (PT10M) runs `ingest_tick.py`. Retires the ad-hoc
-  `AgentCenterMailTick` (a mail-only loop under `the legacy notifier dir`), now disabled.
+  `AgentCenterMailTick` (a mail-only loop under the legacy notifier dir), now disabled.
 - Docs: `reference/agent-center.md` gains an *Inbound* section; `SKILL.md` and `deployment.md` note
   the two-way bus and the ingest task.
 - +16 tests (`tests/test_ingest_dispatch.py`): the executor's **anti-hallucination guard** (a plan id
@@ -70,7 +70,7 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - **The tick posted reminders to the Big Brother DM, not the Agent Center `#reminders` channel ,
   the implementation had silently diverged from its own architecture doc.** `reference/agent-center.md`
   has said `schedule-reminder tick --(relay.py send --stream reminders)--> #reminders` since v0.3.0,
-  but `notify.py` still shelled out to the legacy `discord_relay/send.py` (a DM). The
+  but `notify.py` still shelled out to the legacy DM notifier script (a DM). The
   `agent-center-hub` / `push.py` exploration that was meant to unify egress was **archived and never
   adopted** (2026-07-01, decision B = "`relay.py` is the single egress"), and this last mile was
   never migrated. `notify()` now resolves: `SCHEDULE_RELAY_CMD` (override + test seam) → `relay.py
@@ -113,7 +113,7 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - **Agent Center unified relay** (`scripts/relay.py`): the single Discord egress all skills route
   through. Multi-stream webhooks (`mail/hotspots/demand/promotion/support/crypto/infra/reminders`)
   with per-message `username` for per-stream identity; registry discovery via `AGENT_CENTER_CONFIG`
-  → `the Agent Center registry`; unknown-stream/missing-registry falls back to Big Brother DM so
+  → the registry file (its default lives outside this repo); unknown-stream/missing-registry falls back to Big Brother DM so
   no message is lost; mandatory `User-Agent` (Discord/Cloudflare 403s the default urllib UA);
   `AGENT_CENTER_RELAY_DRYRUN` test seam. `list`/`health` never print webhook secrets.
 - **Daily digest aggregator** (`scripts/digest.py`): realises skill todo.md's single "每日固定定时

@@ -30,12 +30,12 @@ python relay.py list                   # configured streams (NEVER prints webhoo
 python relay.py health                 # registry sane? (no network, no secrets)
 ```
 
-- **Registry (secrets; never in THIS public repo)**: discovery = env `AGENT_CENTER_CONFIG`, else
-  `the Agent Center registry`. Shape: `{"streams":{"<name>":{"webhook":"...","username":"..."}},
+- **Registry (secrets; never in THIS public repo)**: discovery = env `AGENT_CENTER_CONFIG`, else a
+  registry file in the Agent Center config dir (outside this repo). Shape:
+  `{"streams":{"<name>":{"webhook":"...","username":"..."}},
   "reader":{"bot_token":"..."}, "big_brother":{...}}`. `reader.bot_token` is the canonical Discord
-  bot token the inbound ingest reads. `the Agent Center config dir` is version-controlled in a **private**
-  companion repo (`a private companion repo`) for backup + portability, secrets live there,
-  never here. See `deployment.md`.
+  bot token the inbound ingest reads. That config dir is version-controlled in a **private**
+  companion repo for backup + portability, secrets live there, never here. See `deployment.md`.
 - **Per-stream identity**: each message sets `username` so a stream shows its own name/avatar.
 - **Fallback**: unknown stream / missing registry → delivered to Big Brother DM (prefixed
   `[stream]`) so nothing is ever silently lost.
@@ -54,7 +54,7 @@ python digest.py unregister --name N
 python digest.py list
 ```
 
-- **Contributors file**: discovery = env `AGENT_CENTER_DIGEST`, else `the Agent Center digest file`.
+- **Contributors file**: discovery = env `AGENT_CENTER_DIGEST`, else a digest file in the Agent Center config dir.
 - **A contributor** is a command that prints its 当日总结段 (markdown) to stdout and exits 0. Empty
   stdout → section skipped. Failure/timeout/nonzero → section skipped and reported to `#infra`
   (never aborts the whole digest). Child stdio is forced to UTF-8 (Windows GBG hosts otherwise
@@ -88,9 +88,9 @@ python ingest_tick.py                  # scheduled entrypoint: poll_all + dispat
   needs write access). Use it, don't re-spawn models ad hoc.
 - **User vs bot.** `ingest.py` counts a message as a user reply only when it is neither `author.bot`
   nor a `webhook_id` post, so the skill's own relay/digest confirmations never feed back on
-  themselves. Bot token: `registry.reader.bot_token`, else `the legacy notifier config`.
+  themselves. Bot token: `registry.reader.bot_token`, else the legacy notifier config file.
   Same urllib `User-Agent` gotcha as relay (Discord 403s the default).
-- **Cursors & inboxes** live in `the Agent Center state dir<stream>.last` / `.inbox`. First contact with
+- **Cursors & inboxes** live in `<state-dir>/<stream>.last` / `.inbox` under the Agent Center config dir. First contact with
   a stream **arms** the cursor (records latest id, processes nothing), no history replay.
 - **Schedule**: Windows task **AgentCenterIngestTick** (PT10M) runs `ingest_tick.py`; it supersedes
   the retired ad-hoc `AgentCenterMailTick` (mail-only loop).
@@ -99,7 +99,7 @@ python ingest_tick.py                  # scheduled entrypoint: poll_all + dispat
 
 ```python
 import subprocess, sys, os
-REMINDER_DIR = os.path.expanduser("the skill scripts dir")  # or probe
+REMINDER_DIR = os.path.join(os.path.expanduser("~/.claude/skills/schedule-reminder"), "scripts")  # or probe
 def push(stream, text, username=None):
     cmd = [sys.executable, os.path.join(REMINDER_DIR, "relay.py"), "send", "--stream", stream, "--text", text]
     if username: cmd += ["--username", username]

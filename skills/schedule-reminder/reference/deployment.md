@@ -8,11 +8,11 @@
 
 | Thing | Where | Notes |
 |---|---|---|
-| DB (3 files) | `the local reminder DB` (+`-wal`, `-shm`) | **local NTFS only**, never OneDrive/GDrive/network (WAL file-lock + sync corruption) |
+| DB (3 files) | local reminder DB (`$SCHEDULE_DB_PATH`; default under the user's home) (+`-wal`, `-shm`) | **local NTFS only**, never OneDrive/GDrive/network (WAL file-lock + sync corruption) |
 | Heartbeat task (out) | Scheduled Task `ScheduleReminderTick` | runs `pythonw reminder.py tick` every 5 min |
 | Ingest task (in) | Scheduled Task `AgentCenterIngestTick` | runs `pythonw ingest_tick.py` every 10 min; polls Agent Center channels for user replies → dispatch. Supersedes retired `AgentCenterMailTick` |
 | Live skill | junction `~/.claude/skills/schedule-reminder` → repo `skills/schedule-reminder` | edits flow both ways |
-| Config home (private) | `the Agent Center config dir` = private git repo `a private companion repo` | registry (webhooks + `reader.bot_token`), routes, design docs. Secrets live here, never in THIS public repo. Daily backup via task `SyncAgentCenterConfig`; transient `state/` gitignored. Restore: `git clone … the Agent Center config dir` then `refresh_visibility.py` |
+| Config home (private) | Agent Center config dir (`AGENT_CENTER_CONFIG`) = a private git repo outside this public repo | registry (webhooks + `reader.bot_token`), routes, design docs. Secrets live here, never in THIS public repo. Daily backup via a scheduled sync task; transient `state/` gitignored. Restore: clone the private companion repo into that config dir, then run its visibility refresh |
 
 ## Install
 
@@ -58,7 +58,7 @@ Default = the Agent Center **`#reminders` channel**, via this repo's own `relay.
 |---|---|---|
 | 1 | `SCHEDULE_RELAY_CMD` | any command; reminder text appended as the final argv (**also the test seam**) |
 | 2 | `relay.py` (`SCHEDULE_RELAY_PY`) | `send --stream <`​`SCHEDULE_RELAY_STREAM`, default `reminders`​`>` → Agent Center channel |
-| 3 | `SCHEDULE_RELAY_SEND` | legacy Big Brother DM (`the legacy DM notifier script`), only when `relay.py` is absent |
+| 3 | `SCHEDULE_RELAY_SEND` | legacy Big Brother DM (the legacy DM notifier script), only when `relay.py` is absent |
 
 > ⚠️ **A channel post does not push to a phone** unless that channel's Discord notifications are set
 > to *All Messages*; a DM always does. Routing reminders to `#reminders` is only safe once that
@@ -85,7 +85,7 @@ changing Python: `pip install pysqlite3-binary` (auto-detected, preferred when p
 A WAL DB is three files; a live raw copy can be inconsistent. Export a cold snapshot instead:
 
 ```bash
-sqlite3 the local reminder DB "VACUUM INTO 'backup.sqlite3'"
+sqlite3 "$SCHEDULE_DB_PATH" "VACUUM INTO 'backup.sqlite3'"
 ```
 
 Keep the DB and its `-wal`/`-shm` out of any real-time sync/backup snapshot.

@@ -7,7 +7,7 @@ DESIGN (from skill todo.md: "联动每日的固定定时任务，里面可以增
     one summary, and delivers it via Big Brother DM (relay.digest). Skills that aren't installed are
     simply absent from the contributor list — fully pluggable, exactly as the original design intended.
 
-CONTRIBUTORS FILE (discovery: env AGENT_CENTER_DIGEST, else the Agent Center digest file)
+CONTRIBUTORS FILE (discovery: env AGENT_CENTER_DIGEST, else a digest file in the Agent Center config dir)
     {"contributors":[
        {"name":"email","title":"📬 当日邮件","cmd":["python","<abs>/em_summary.py","--section"],
         "timeout":120,"enabled":true},
