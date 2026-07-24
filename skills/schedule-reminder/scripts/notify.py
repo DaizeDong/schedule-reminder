@@ -47,7 +47,9 @@ def _default_stream():
 
 
 def _run(argv):
-    r = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    # encoding="utf-8": text=True otherwise decodes the child's stdout with the locale codepage
+    # (GBK on a zh-CN box); harmless here since only the return code is used, but keep it consistent.
+    r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
     return r.returncode == 0
 
 
