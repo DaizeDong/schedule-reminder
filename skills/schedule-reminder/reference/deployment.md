@@ -26,7 +26,7 @@ pwsh -File scripts/install.ps1 -NoTask    # DB + junction only (skip scheduler)
 The OS task is **only a heartbeat**. It does not decide "is this due", `tick.py` (via
 `reminder.py tick`) reconciles the local table each run:
 
-1. select items due now (active, not yet notified, past any retry/wait gate, not freshly claimed) ,
+1. select items due now (active, not yet notified, past any retry/wait gate, not freshly claimed):
    "due" accounts for per-item `alarms[]` lead (`due_at - lead <= now`), not just `due_at <= now`;
 2. **exclusively** claim each (`UPDATE ... WHERE notified_at IS NULL AND (claimed_at IS NULL OR
    claimed_at <= stale)`), so two overlapping ticks never both grab the same item; stale claims left

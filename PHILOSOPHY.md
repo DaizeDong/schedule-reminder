@@ -11,7 +11,7 @@ it can never break.
 
 - **Symptom patch:** let each downstream skill read/write the database directly (markdown files, a
   shared JSONL, raw SQL). Fast to start.
-- **Root cause:** the moment four skills couple to the storage layout, the storage can never change ,
+- **Root cause:** the moment four skills couple to the storage layout, the storage can never change,
   every schema tweak is a breaking change across the fleet, and concurrent writers corrupt shared
   files.
 - **Decision it produced:** three layers, SQLite (private) → `store.py` (in-process) →

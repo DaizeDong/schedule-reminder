@@ -77,5 +77,5 @@ item = call("add", "--title", "X", "--source", "my-skill",
 ## Versioning promise
 
 The verb set, item field set, and state enum are golden-tested (E11). Within `api_version 1.x` you
-get **only additive** changes. A breaking change bumps `api_version` and ships a dual-run period ,
+get **only additive** changes. A breaking change bumps `api_version` and ships a dual-run period,
 pin to the `api_version` in the envelope if you need to be strict.
