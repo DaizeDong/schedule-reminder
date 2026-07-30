@@ -28,7 +28,7 @@ python reminder.py [--db PATH] [--actor NAME] <verb> [args...]
 
 | Verb | Purpose | Key args | Output |
 |---|---|---|---|
-| `init` | create/upgrade DB (idempotent) |, | `{db_path, schema_user_version}` |
+| `init` | create/upgrade DB (idempotent) | none | `{db_path, schema_user_version}` |
 | `add` | create item | `--title` (req), `--kind`, `--due-at`, `--state`, `--priority`, `--progress` (0-100), `--tags a,b`, `--source`, `--idempotency-key`, `--description`, `--ext JSON`, `--recurrence RRULE`, `--rdate JSON`, `--exdate JSON`, `--alarms JSON` | `{item}` |
 | `get` | fetch by id | `--id` | `{item}` |
 | `list` / `query` | filter + keyset page | `--state`, `--source`, `--kind`, `--due-before`, `--active`, `--limit`, `--cursor` | `{items[], next_cursor}` |
@@ -69,7 +69,7 @@ Every `item` object has exactly these keys (additive-only within `api_version 1.
 | `alarms` | array\|null | per-alarm lead applied by `due`/`tick`: `[{"lead":3600}]` or `[{"trigger":"-PT15M"}]` |
 | `source` | string\|null | writing skill |
 | `idempotency_key` | string\|null | unique dedupe key |
-| `notified_at`/`next_retry_at`/`retry_count`/`claimed_at` |, | delivery bookkeeping |
+| `notified_at`/`next_retry_at`/`retry_count`/`claimed_at` | varies | delivery bookkeeping |
 | `block_reason` | string\|null | reason when blocked |
 | `created_at`/`updated_at` | RFC3339 | audit timestamps |
 | `ext` | object\|null | **MUST-PRESERVE** unknown-field container |
