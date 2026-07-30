@@ -67,7 +67,7 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ## [0.3.2] - 2026-07-13
 ### Fixed
-- **The tick posted reminders to the Big Brother DM, not the Agent Center `#reminders` channel ,
+- **The tick posted reminders to the Big Brother DM, not the Agent Center `#reminders` channel;
   the implementation had silently diverged from its own architecture doc.** `reference/agent-center.md`
   has said `schedule-reminder tick --(relay.py send --stream reminders)--> #reminders` since v0.3.0,
   but `notify.py` still shelled out to the legacy DM notifier script (a DM). The

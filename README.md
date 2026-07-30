@@ -18,7 +18,7 @@ progress out of it. So its single governing principle is **"a base is the contra
 storage"**, downstream depends on a frozen CLI/JSON surface (with an `api_version`), never on the
 database, so the engine can be rewritten forever without breaking anyone. v0.1 spends its whole
 budget on the guarantees a base must never break: concurrency-safe + crash-safe persistence, a
-guarded state machine, idempotent writes, at-least-once delivery, and MUST-PRESERVE unknown fields ,
+guarded state machine, idempotent writes, at-least-once delivery, and MUST-PRESERVE unknown fields,
 not on flashy features.
 
 📜 **[Read the full design philosophy -> PHILOSOPHY.md](PHILOSOPHY.md)**

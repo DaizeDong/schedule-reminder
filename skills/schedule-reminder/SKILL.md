@@ -60,7 +60,7 @@ with `error_code` + exit 1. Inject a clock with `--now`/`SCHEDULE_NOW`; isolate 
 
 `id` (immutable UUIDv7) · `kind` (task|event) · `title` · `state`
 (pending/doing/done/blocked/cancelled) · `progress` 0-100 · `priority` 0-9 · `due_at` (RFC3339 UTC) ·
-`tags[]` · `source` · `idempotency_key` · `relations[]` (depends-on/...) · `recurrence` (RRULE ,
+`tags[]` · `source` · `idempotency_key` · `relations[]` (depends-on/...) · `recurrence` (RRULE,
 `tick` rolls to the next occurrence) · `alarms[]` (per-alarm lead, e.g. `[{"lead":3600}]` /
 `[{"trigger":"-PT15M"}]`) · `ext` (**unknown fields preserved**, namespace `x_<skill>_*`). Full
 table -> `reference/contract.md`.
