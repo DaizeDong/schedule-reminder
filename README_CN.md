@@ -64,6 +64,15 @@ python reminder.py tick --now 2026-06-28T17:00:00Z   # 调度器每 5 分钟跑�
 
 当用户想追踪 待办 / 事件 / 截止 / 进度 / 提醒 / 备忘，或另一个 skill 需要写提醒、读任务进度时触发。
 
+## 示例输出
+
+```json
+{"api_version":"1.0.0","schema_version":1,"ok":true,
+ "item":{"id":"019f0035-f0e1-700d-95f8-020c880c543a","kind":"task","title":"Reply to recruiter",
+         "state":"pending","progress":0,"priority":1,"due_at":"2026-06-28T17:00:00.000000+00:00",
+         "source":"me","idempotency_key":"me:1","ext":null,"...":"..."}}
+```
+
 ## 架构（三层）
 
 ```
