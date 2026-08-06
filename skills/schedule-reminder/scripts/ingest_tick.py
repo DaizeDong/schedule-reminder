@@ -72,6 +72,24 @@ def run(only_stream=None, post=True, timeout=180):
     active = set(text_result) | set(rx_result)
     streams = [only_stream] if only_stream else sorted(active)
     handled = {}
+
+    # Ack the user's own message with 👀 as soon as it is picked up (swapped to ✅ after dispatch),
+    # so the judgment chain's ~60-70s of thinking is visibly "received" instead of silence.
+    # Best effort throughout: a failed reaction must never affect whether the reply gets processed.
+    acked = {}
+    try:
+        token = ingest.bot_token(ingest.load_registry())
+    except Exception:
+        token = None
+    if token:
+        for stream in streams:
+            ch_ids = getattr(ingest, "LAST_POLL_IDS", {}).get(stream)
+            if not ch_ids:
+                continue
+            ch, mids = ch_ids
+            for mid in mids:
+                if ingest.ack_seen(ch, mid, token):
+                    acked.setdefault(stream, (ch, []))[1].append(mid)
     for stream in streams:
         if only_stream and stream not in active:
             _log("tick: stream %s had no new replies/reactions this poll -> skip" % stream)
@@ -95,6 +113,16 @@ def run(only_stream=None, post=True, timeout=180):
         except Exception as e:
             handled[stream] = "error:%s" % type(e).__name__
             _log("tick: dispatch[%s] crashed: %s" % (stream, type(e).__name__))
+        finally:
+            # Swap 👀 -> ✅ once this stream is done, whatever the verdict: the mark means "processed",
+            # not "succeeded" (the channel confirmation message carries the actual outcome).
+            if token and stream in acked:
+                ch, mids = acked[stream]
+                for mid in mids:
+                    try:
+                        ingest.ack_done(ch, mid, token)
+                    except Exception:
+                        pass
     return {"polled": text_result, "reactions": rx_result, "handled": handled}
 
 
