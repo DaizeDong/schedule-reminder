@@ -26,6 +26,8 @@ import argparse
 import json
 import os
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -37,6 +39,9 @@ for _s in (sys.stdout, sys.stderr):
 
 _UA = "AgentCenter-Ingest/1.0 (+https://discord.com)"
 _API = "https://discord.com/api/v10"
+# Populated by poll_all(): {stream: (channel_id, [msg_id, ...])} for the messages picked up this
+# tick, so the caller can ack them with a reaction. Side-channel, not part of poll_all's return.
+LAST_POLL_IDS = {}
 _DEFAULT_REGISTRY = os.path.join(os.path.expanduser("~"), ".agent-center", "registry.json")
 _STATE_DIR = os.path.join(os.path.expanduser("~"), ".agent-center", "state")
 
@@ -132,11 +137,16 @@ def poll_all(reg=None, token=None, log=None):
     if not token:
         raise RuntimeError("no bot token: set registry.reader.bot_token in the Agent Center registry")
     result = {}
+    # Side-channel for the ack-reaction feature: {stream: (channel_id, [msg_id, ...])}. Kept OUT of
+    # the return value so poll_all's {stream: count} contract stays intact for existing callers.
+    global LAST_POLL_IDS
+    LAST_POLL_IDS = {}
     for stream, ch in _streams(reg).items():
         try:
             users = poll_stream(stream, ch, token)
             if users:
                 result[stream] = len(users)
+                LAST_POLL_IDS[stream] = (ch, [m["id"] for m in users if m.get("id")])
                 if log:
                     log("ingest: %s -> %d new reply(ies)" % (stream, len(users)))
         except Exception as e:
@@ -255,6 +265,65 @@ def poll_reactions_stream(stream, channel_id, token, owner, limit=50):
                     f.write("被反应的推送内容: %s\n" % e["content"])
                 f.write("---\n")
     return new
+
+
+# ------------------------------------------------------- ack reactions (bot -> user, outbound)
+# Progress signal on the USER's own message: 👀 the moment a reply is picked up, swapped to ✅ once
+# dispatch finished. Without it the judgment chain's ~60-70s of silence is indistinguishable from
+# "never received it".
+#
+# SAFE against self-feedback by construction: reaction_events() subtracts rx["me"] (Discord's
+# "this bot reacted" flag) and additionally drops any reactor with u["bot"] or uid != owner. So a
+# bot-authored ✅ can never be read back as the owner confirming "done". Do NOT relax those two
+# filters without revisiting this.
+_ACK_SEEN = "\U0001F440"   # 👀 received, working on it
+_ACK_DONE = "✅"       # ✅ finished
+
+def _reaction_call(channel_id, msg_id, emoji, token, method, attempts=3):
+    """PUT/DELETE the bot's own reaction (@me). Best effort: never raises, never blocks the tick.
+
+    Retries on 429: back-to-back reaction writes on the SAME message (the ✅-then-remove-👀 swap)
+    reliably trip Discord's per-route rate limit, and a silently swallowed 429 used to leave BOTH
+    emoji on the message. Honors retry_after when Discord supplies it.
+    """
+    ref = urllib.parse.quote(emoji)
+    url = "%s/channels/%s/messages/%s/reactions/%s/@me" % (_API, channel_id, msg_id, ref)
+    for i in range(attempts):
+        req = urllib.request.Request(url, method=method,
+                                     headers={"Authorization": "Bot %s" % token, "User-Agent": _UA})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return r.status in (200, 204)
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and i < attempts - 1:
+                wait = 1.0
+                try:
+                    wait = float(json.loads(e.read().decode("utf-8")).get("retry_after") or 1.0)
+                except Exception:
+                    pass
+                time.sleep(min(wait + 0.25, 5.0))
+                continue
+            return False
+        except Exception:
+            if i < attempts - 1:
+                time.sleep(0.5)
+                continue
+            return False
+    return False
+
+
+def ack_seen(channel_id, msg_id, token):
+    """Mark a just-picked-up user message as being worked on."""
+    return _reaction_call(channel_id, msg_id, _ACK_SEEN, token, "PUT")
+
+
+def ack_done(channel_id, msg_id, token):
+    """Swap 👀 -> ✅ after dispatch. Add first, then remove, so the message is never un-marked.
+    The small gap between the two writes keeps the same-message rate limit from eating the DELETE."""
+    ok = _reaction_call(channel_id, msg_id, _ACK_DONE, token, "PUT")
+    time.sleep(0.35)
+    _reaction_call(channel_id, msg_id, _ACK_SEEN, token, "DELETE")
+    return ok
 
 
 def poll_all_reactions(reg=None, token=None, log=None):
