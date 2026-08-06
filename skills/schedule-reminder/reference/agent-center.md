@@ -94,6 +94,62 @@ python ingest_tick.py                  # scheduled entrypoint: poll_all + dispat
   a stream **arms** the cursor (records latest id, processes nothing), no history replay.
 - **Schedule**: Windows task **AgentCenterIngestTick** (PT10M) runs `ingest_tick.py`; it supersedes
   the retired ad-hoc `AgentCenterMailTick` (mail-only loop).
+- **Owner only, fail closed.** A text reply counts only when its author is
+  `registry.big_brother.user_id`, the same person the reaction path has always required. If no owner
+  is configured `poll_all` RAISES instead of falling back to "anyone in the channel": these replies
+  can start real execution, so an unresolvable owner has to close the gate rather than open it.
+
+## Execution, when a reply asks for something to HAPPEN
+
+The ops above all change a RECORD. `agent` and `stop` change the WORLD, and exist because a bus
+without them answers "make X stop" with a to-do titled "make X stop". That is not hypothetical: a
+misrouted daily poster survived three objections over four days that way, each one dutifully filed.
+
+```
+python agent_tick.py                # scheduled: reap dead runs, then launch at most one
+python agent_tick.py --stop <id>    # cancel + kill a tree ('*' = whichever is running)
+python agent_run.py --id <id>       # run one order to a terminal state (--no-post = dry)
+python agent_task.py list           # the queue, no secrets
+```
+
+- **A work order is an ordinary pool item** (`source=agent-center:work`, `due_at` NULL so a running
+  order never trips the reminder notifier). `ext` holds only short fixed `x_agent_exec_*` fields;
+  the request text, prompts, per-round transcripts and check output are files in a run directory
+  under the Agent Center config dir, because `--ext` arrives as a process argument and Windows caps
+  a command line near 32767 characters.
+- **Judge, then hand off.** `dispatch` decides between record and world, emits
+  `{"op":"agent","request":...}` or `{"op":"stop","id":...}`, and the deterministic executor
+  enqueues or cancels. `agent` carries no item id, so the anti-hallucination rule simply does not
+  apply to it; `stop` is checked against the orders that are actually running. The channel
+  confirmation appends the dispatched ids itself, so a vague model summary cannot hide a live agent.
+- **A round is act, verify, review, decide.** The agent must return a command that exits non-zero
+  when the job is NOT done; `agent_run` executes that command and records the real output. Only a
+  passing check reaches an independent reviewer, on a different provider, which answers DONE or
+  CONTINUE. A task that genuinely cannot be checked by a command falls back to review alone, and the
+  terminal report says so rather than looking like the stronger case.
+- **No progress rotates the approach, it does not stop the order.** Three rounds sharing one
+  signature (normalized check output plus the content hashes of the changed files) mean the attempt
+  is not moving. The next approach gets a fresh directory, a different provider, and the problem
+  plus the current state of the world WITHOUT the reasoning that failed. Two rotations that both
+  stall end it as stalled. There is no round or wall-clock ceiling; evidence ends a run.
+- **Liveness is `(pid, process creation time)`.** Windows recycles pids, so a pid-only probe reads a
+  recycled number as the live holder, and `os.kill(pid, 0)` is not an existence check there at all.
+  A run whose process is gone is REPORTED and never silently requeued. Kills use the process TREE.
+- **The runner is detached** (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`),
+  measured to outlive both a normal parent exit and the scheduler terminating the parent at its
+  execution time limit, which is what lets a 2 minute tick own an hours-long job. Do NOT add
+  `CREATE_BREAKAWAY_FROM_JOB`: inside a task it raises access denied. Serial by design, one runner at
+  a time, because two agents in one working tree corrupt it.
+- **Three llmcall deviations, each a measured hazard, all in `agent_run.py`'s header.** Point
+  `LLMCALL_AGENT_RUNNER` at the shim BEFORE importing llmcall (it freezes the path at import, and the
+  machine default re-runs codex inside the delegate, doubling every side effect). Act on a SINGLE
+  provider so the reported provider is the true one. Never use `schema=`/`extract=` with
+  `mode="agent"`, since a parse miss re-invokes the provider and re-does the work.
+- **Terminal reports carry evidence**, the changed files, the command, its actual output, and the
+  reviewer's verdict. The word 已处理 is banned from them by test; it is the word that made four days
+  of doing nothing look like four days of handling it.
+- **Schedule**: Windows task **AgentCenterWorkTick** (PT2M) runs `agent_tick.py`, separate from the
+  inbound tick so neither can starve the other.
 
 ## How a downstream skill integrates (copy-paste)
 

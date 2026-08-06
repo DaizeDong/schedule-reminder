@@ -461,6 +461,100 @@ def test_unrunnable_check_counts_as_a_failure(tmp_path):
     assert rc != 0, "a check that cannot run has not passed"
 
 
+# --------------------------------------------------------------------------- the check runner
+# The most dangerous function here. Every honesty guarantee in this tier reduces to "run_verify
+# returns nonzero when the job is not done"; a runner that quietly returns 0 turns the whole design
+# back into the thing it replaced. Each case below is a real behaviour that was measured, not
+# assumed, and two of them were wrong in the first implementation.
+@pytest.mark.skipif(not _WINDOWS, reason="the check runner uses PowerShell on Windows")
+class TestRunVerify:
+
+    def test_native_exit_code_survives_exactly(self, tmp_path):
+        """`powershell -Command` collapses any native nonzero to 1; the real code must not."""
+        rc, _ = agent_run.run_verify('python -c "import sys; sys.exit(3)"', str(tmp_path))
+        assert rc == 3
+
+    def test_success_is_zero(self, tmp_path):
+        rc, _ = agent_run.run_verify('python -c "import sys; sys.exit(0)"', str(tmp_path))
+        assert rc == 0
+
+    def test_noisy_but_successful_command_still_passes(self, tmp_path):
+        rc, out = agent_run.run_verify(
+            'python -c "import sys; sys.stderr.write(\'warning: noisy\'); sys.exit(0)"',
+            str(tmp_path))
+        assert rc == 0 and "noisy" in out
+
+    def test_a_check_that_captures_stderr_still_passes(self, tmp_path):
+        """The redirected form is where the Continue preference earns its place, and checks reach
+        for it constantly (`... 2>&1 | Select-String ...`). Measured: under Stop this exact command
+        returns 1 for a program that exited 0, so a correct fix would be rejected forever. Bare
+        native stderr is NOT enough to show this; PowerShell only turns it into an error record once
+        it is redirected, which is why the plainer test above cannot catch a Stop regression."""
+        rc, _ = agent_run.run_verify(
+            '$o = python -c "import sys; sys.stderr.write(\'warn\'); sys.exit(0)" 2>&1; '
+            'exit $LASTEXITCODE', str(tmp_path))
+        assert rc == 0
+
+    def test_a_cmdlet_failure_is_not_reported_as_success(self, tmp_path):
+        """THE dangerous case. Re-raising only $LASTEXITCODE returns 0 here, so a check that failed
+        would read as a check that passed, which is precisely the disease this tier treats."""
+        rc, _ = agent_run.run_verify("Get-ChildItem NoSuchPathXYZ", str(tmp_path))
+        assert rc != 0
+
+    def test_powershell_syntax_is_accepted(self, tmp_path):
+        """The first live run produced exactly this shape and cmd answered
+        "& was unexpected at this time.", recording a correct fix as a failure."""
+        rc, _ = agent_run.run_verify("& { if ($true) { exit 0 } else { exit 1 } }", str(tmp_path))
+        assert rc == 0
+
+    def test_nested_quotes_survive(self, tmp_path):
+        """Real checks are full of them, which is why the command goes through a file and not argv."""
+        rc, out = agent_run.run_verify(
+            'python -c "import sys; print(\'ok\' if \'a\' in [\'a\'] else \'no\'); sys.exit(0)"',
+            str(tmp_path))
+        assert rc == 0 and "ok" in out
+
+    def test_a_bash_ism_fails_loudly(self, tmp_path):
+        """PowerShell 5.1 has no && . Failing is the safe direction; passing would not be."""
+        rc, _ = agent_run.run_verify("echo a && echo b", str(tmp_path))
+        assert rc != 0
+
+    def test_chinese_output_is_not_mojibake(self, tmp_path):
+        """The check output is quoted verbatim into the channel report, so a console-codepage
+        round trip would deliver garbage as evidence."""
+        rc, out = agent_run.run_verify("Write-Output '断言失败:任务仍启用'", str(tmp_path))
+        assert rc == 0 and out == "断言失败:任务仍启用"
+
+    def test_an_explicit_exit_wins_over_a_swallowed_error(self, tmp_path):
+        """Documented precedence, pinned so it stays a decision rather than a surprise: a check that
+        catches its own error and then asserts a verdict is believed."""
+        rc, _ = agent_run.run_verify(
+            "try { throw 'internal' } catch { }; exit 0", str(tmp_path))
+        assert rc == 0
+
+    def test_a_swallowed_error_without_a_verdict_is_a_failure(self, tmp_path):
+        """The other half of the same rule. A caught terminating error still lands in $Error, so a
+        check that neither exits nor propagates is judged failed. Safe direction: it costs a round
+        and can never manufacture a success."""
+        rc, _ = agent_run.run_verify(
+            "try { throw 'internal' } catch { }; Write-Output done", str(tmp_path))
+        assert rc != 0
+
+    def test_it_runs_in_the_given_workspace(self, tmp_path):
+        (tmp_path / "marker.txt").write_text("x", encoding="utf-8")
+        rc, _ = agent_run.run_verify(
+            'python -c "import os,sys; sys.exit(0 if os.path.isfile(\'marker.txt\') else 1)"',
+            str(tmp_path))
+        assert rc == 0
+
+
+def test_the_prompt_names_the_shell():
+    p = agent_run.act_prompt("do it", "C:\\work")
+    assert agent_run.VERIFY_SHELL in p
+    if _WINDOWS:
+        assert "&&" in p, "the prompt must warn that PowerShell 5.1 has no && "
+
+
 def test_report_is_chunked_below_the_discord_limit(monkeypatch):
     sent = []
     monkeypatch.setattr(agent_run.relay, "relay", lambda s, t: sent.append(t) or True)

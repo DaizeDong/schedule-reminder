@@ -45,6 +45,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -190,17 +191,82 @@ def detect_changes(workspace, claimed):
     return sorted({str(c).strip() for c in (claimed or []) if str(c).strip()}), "self-reported"
 
 
+# The check runs in POWERSHELL on Windows, not cmd. Measured, in that order of discovery:
+#
+#   subprocess shell=True is cmd.exe, and the first real run produced a PowerShell check that cmd
+#   answered with "& was unexpected at this time." A correct fix was recorded as a failure. The
+#   direction was safe (nothing was wrongly declared done) but it burns a round every time and can
+#   burn all of them, so the shell must be stated rather than guessed.
+#
+#   Exit codes do not survive `powershell -Command` naively: `python -c "sys.exit(3)"` comes back as
+#   1, because PowerShell collapses any native nonzero. Re-raising $LASTEXITCODE fixes natives, but
+#   a pure cmdlet failure then returns 0, which is the DANGEROUS direction (a failing check read as
+#   passing). Checking $? does not help: it reports on the script block invocation, not on what ran
+#   inside it. $Error.Count after a Clear does, and native stderr does not pollute it (verified with
+#   a noisy native exiting 0, and with a real pytest run).
+#
+#   The command goes into a temp .ps1 rather than -Command, because real checks carry nested quotes
+#   that no argv escaping survives intact. UTF-8 with BOM: PowerShell 5.1 decodes a BOM-less file as
+#   ANSI and would mangle a Chinese check. The console encoding lines are the same ones the machine
+#   agent runner carries; without them Chinese in the check OUTPUT comes back mojibake, and that
+#   output is quoted verbatim into the channel report.
+#
+# RESULTING PRECEDENCE, in the order it is decided: an explicit `exit N` inside the check wins and
+# short circuits everything after it (measured: `& { exit 0 }` ends the session immediately, so the
+# $Error net below is never consulted, which is correct because the check asserted its own verdict);
+# then a native exit code; then any error record; then 0. One consequence worth knowing: a check
+# that swallows an error with try/catch and does NOT exit explicitly is judged FAILED, because a
+# caught terminating error still lands in $Error. That is the safe direction (it costs a round, it
+# cannot manufacture a success) and an explicit exit overrides it. $Error.Clear() is load bearing
+# for the same reason: the UTF-8 header runs inside a try/catch, and without the clear a header
+# failure would make every later check return 1 (measured both ways).
+_PS_WRAPPER = (
+    'try { $u = New-Object System.Text.UTF8Encoding $false; '
+    '[Console]::OutputEncoding = $u; $OutputEncoding = $u } catch { }\n'
+    '$env:PYTHONIOENCODING = "utf-8"\n'
+    # Stop would turn a REDIRECTED native stderr line into a terminating error: measured, a program
+    # exiting 0 whose output is captured with `2>&1` comes back as rc 1, rejecting correct work
+    # forever. Bare native stderr is unaffected, which is why this needs its own test.
+    '$ErrorActionPreference = "Continue"\n'
+    '$global:LASTEXITCODE = 0\n'
+    '$Error.Clear()\n'
+    '& {\n%s\n}\n'
+    'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n'
+    'if ($Error.Count -gt 0) { exit 1 }\n'
+    'exit 0\n'
+)
+
+VERIFY_SHELL = "PowerShell 5.1" if sys.platform == "win32" else "sh"
+
+
 def run_verify(cmd, workspace):
-    """Execute the check. Returns (rc, output). rc 127 marks a check that could not be run at all,
-    which is a failure like any other: an unrunnable check has not passed."""
+    """Execute the check. Returns (rc, output). A check that cannot be run at all is a failure like
+    any other: an unrunnable check has not passed, so it never returns 0."""
+    script = None
     try:
-        p = subprocess.run(cmd, cwd=workspace, shell=True, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=VERIFY_TIMEOUT, **_NOWINDOW)
+        if sys.platform == "win32":
+            fd, script = tempfile.mkstemp(prefix="agent_verify_", suffix=".ps1")
+            os.close(fd)
+            with open(script, "w", encoding="utf-8-sig", newline="\r\n") as f:
+                f.write(_PS_WRAPPER % cmd)
+            argv = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script]
+            p = subprocess.run(argv, cwd=workspace, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=VERIFY_TIMEOUT,
+                               **_NOWINDOW)
+        else:
+            p = subprocess.run(cmd, cwd=workspace, shell=True, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=VERIFY_TIMEOUT)
         return p.returncode, ((p.stdout or "") + (p.stderr or "")).strip()
     except subprocess.TimeoutExpired:
         return 124, "verify command timed out after %ds" % VERIFY_TIMEOUT
     except Exception as e:
         return 127, "verify command could not run: %s" % e
+    finally:
+        if script:
+            try:
+                os.remove(script)
+            except OSError:
+                pass
 
 
 # --------------------------------------------------------------------------- prompts
@@ -214,7 +280,12 @@ _TAIL_SPEC = (
     "  好的例子: 查询计划任务状态并断言它已禁用; 跑相关测试; grep 断言新的默认值已生效。\n"
     "  不可接受: echo、任何恒为真的命令、任何只打印而不判断的命令。\n"
     "  这条命令会由系统亲自执行,你的自述不作数。\n"
+    # Stating the shell is not pedantry. The first real run answered with a PowerShell check, cmd
+    # replied "& was unexpected at this time.", and a correct fix was recorded as a failure.
+    "  执行环境是 %s,工作目录就是上面那个目录。注意 PowerShell 5.1 【不支持】 && 和 ||,"
+    "用 ; 或 if 代替。非零退出即判定未完成。\n"
     "如果这个任务【本质上】无法用一条命令验证,把 verify 设为 null,并在 summary 里说明为什么无法验证。"
+    % VERIFY_SHELL
 )
 
 

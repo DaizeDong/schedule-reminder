@@ -1,0 +1,58 @@
+# The skill's own acceptance suite, in CI.
+#
+# WHY THIS FILE EXISTS AT ALL
+# ---------------------------
+# Three workflows guarded this repo and not one of them ran the tests. The guards check prose,
+# secrets and data placement; the 99 tests that pin the frozen contract, the state machine, the
+# heartbeat's survival under pythonw and the anti-hallucination executor ran only when somebody
+# remembered to type the command from CONTRIBUTING.md. So the repo's most load-bearing checks were
+# also its only unenforced ones, which is the same shape as a vendored gate wired into nothing: a
+# reader sees a green badge row and reasonably concludes the suite is enforced.
+#
+# It became urgent with the execution tier. That code decides whether an agent with full authority
+# on the machine has finished, and its most important test is a NEGATIVE CONTROL: poison the check
+# command so it exits non-zero and prove the round refuses to close. A suite like that is worth
+# nothing if it only runs on the days someone thinks to run it.
+#
+# Tree only, no history: a test that failed last year and has since been fixed is not a live defect.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install test deps
+        run: python -m pip install --quiet pytest
+
+      # NOT wrapped in `if [ -d ... ]`, for the reason the pii-guard workflow spells out: a step
+      # that skips itself when its own subject is missing reports success for a run that examined
+      # nothing.
+      #
+      # `-p no:cacheprovider` is not cosmetic. A same-size edit to a source file inside the same
+      # second leaves a stale .pyc that Python considers valid, because the freshness check is
+      # (mtime seconds, size) and both can be unchanged. That really happened while this suite was
+      # being written: the tests ran against bytecode from a mutant that had already been reverted
+      # on disk. Disabling the cache removes the failure mode from CI entirely.
+      - name: Acceptance suite
+        run: |
+          test -d skills/schedule-reminder/tests || { echo "::error::the test suite is MISSING -- an absent suite is not a passing suite"; exit 1; }
+          python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider
+          # (no `|| true`: every nonzero status here is a failure, including collection errors.)
+
+      # Guards against the suite quietly shrinking to nothing, which would otherwise look exactly
+      # like a suite that passes. The floor is raised deliberately when tests are added, never
+      # lowered to make a red build green.
+      - name: The suite must not have evaporated
+        run: |
+          n=$(python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider --collect-only 2>/dev/null | grep -c '::' || true)
+          echo "collected $n tests"
+          test "$n" -ge 151 || { echo "::error::only $n tests collected, expected at least 151 -- tests were removed or collection broke"; exit 1; }

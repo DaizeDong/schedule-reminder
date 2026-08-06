@@ -26,11 +26,16 @@ SQLite (WAL) single file          <- private storage, NEVER touched by downstrea
     reminder.py <verb>            <- the ONLY stable contract (JSON always); downstream calls via subprocess
 [Windows task: PT5M heartbeat] -> reminder.py tick -> reconcile due items -> Discord relay (out)
 [Windows task: PT10M ingest]   -> ingest_tick    -> poll channels for user replies -> dispatch (in)
+[Windows task: PT2M work]      -> agent_tick     -> reap the dead, launch one work order (do)
 ```
 
 The Agent Center bus is **two-way**: `relay.py`/`digest.py` push out; `ingest.py`/`dispatch.py` pull
 user replies back in and turn them into pool mutations via the codex→cc→claude judge chain
 (`llm_chain.py`). See `reference/agent-center.md`.
+
+A reply may also ask for something to **happen** rather than be recorded. That path is a third
+scheduled task and a queue of work orders on this same pool, with a runner that has to hand back a
+check which could have failed. Details in the same shard.
 
 The OS task is only a heartbeat; `tick` reconciles the local table, so a slept/off machine catches
 up **all** missed reminders on the next run (idempotent, at-least-once + dedupe).
@@ -85,3 +90,5 @@ This `SKILL.md` is the only always-loaded file. Load one shard on demand:
 - `reference/agent-center.md`, the **two-way** Agent Center bus: outbound relay (`relay.py`) + daily
   当日总结 aggregator (`digest.py`), and inbound ingest (`ingest.py`/`dispatch.py`/`llm_chain.py`) that
   turns user channel replies into pool mutations. Egress + daily summary + reply ingress in one place.
+  Also the execution tier (`agent_task.py`/`agent_run.py`/`agent_tick.py`) reached by the `agent` and
+  `stop` ops, including why a work order is owner-only and how a run is proved finished.
