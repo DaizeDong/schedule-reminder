@@ -1,8 +1,20 @@
 # Roadmap
 
-Current: **v0.4.2**
+Current: **v0.5.0**
 
-## v0.4.2 (current), self-contained egress
+## v0.5.0 (current), the bus can act
+- **Execution tier** (`agent_task.py` / `agent_run.py` / `agent_tick.py`): a reply that asks for
+  something to HAPPEN becomes a work order on this same pool, drained by its own PT2M task
+  (`AgentCenterWorkTick`) into a detached runner. A round is act, verify, review, decide; the agent
+  must hand back a check that could have failed, this side runs it, and only a passing check reaches
+  an independent reviewer on another provider. No progress rotates the approach instead of ending the
+  order, and nothing is ever reported done on the agent's own say-so.
+- **`dispatch` gains `agent` and `stop`**, and its prompt now separates a change to the record from a
+  change to the world. Inbound text replies are owner-only and fail closed.
+- Checks run in PowerShell on Windows with exact exit-code propagation; the first live run proved cmd
+  was rejecting correct work. Suite 99 to 151, all seventeen mutations caught, and CI finally runs it.
+
+## v0.4.2, self-contained egress
 - **Native Big Brother DM** (`bigbrother.py`, stdlib): the base opens the operator DM and posts
   itself, reading `reader.bot_token` / `big_brother.user_id` from the registry, no more shelling to
   the legacy DM notifier script. `relay._big_brother` + `notify.py` fallback use it; fixes the

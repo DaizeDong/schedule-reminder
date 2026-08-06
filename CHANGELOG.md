@@ -2,6 +2,68 @@
 
 All notable changes to this project are documented here (Keep a Changelog style).
 
+## [0.5.0] - 2026-08-06
+### Added
+- **An executor for the inbound bus, so a reply can make something happen.** Until now a reply could
+  only change a RECORD. When a scheduled job began posting into the wrong channel, three objections
+  over four days produced two to-do items and one "no matching active item" while the job kept
+  posting. Every reply was processed and nothing was done. The gap was not a missing fourth pool
+  operation: judgement is synchronous, read only and bounded by a ten minute tick, while real work is
+  asynchronous, write capable and unbounded in time. Those are two machines, and only one existed.
+  - **`agent_task.py`**, the work order. An ordinary pool item (`source=agent-center:work`), so it
+    inherits durability across reboot, the audit event stream, and the state machine whose compare
+    and swap is exactly the lock a queue needs. `ext` holds only short fixed `x_agent_exec_*` fields;
+    the request, prompts, transcripts and check output are files in a run directory outside this
+    repo, because `--ext` reaches `reminder.py` as a process argument and Windows caps a command line
+    near 32767 characters. `due_at` stays NULL so a merely-running order cannot trigger the notifier.
+  - **`agent_run.py`**, one order to a terminal state: act, verify, review, decide. The agent must
+    hand back a command that exits non-zero when the job is NOT done; this module runs that command
+    itself, and only a passing check reaches an independent reviewer on a different provider. Three
+    rounds sharing a signature (normalized check output plus the changed files' content hashes) mean
+    no progress, which ROTATES THE APPROACH rather than ending the order: fresh directory, different
+    provider, the problem and the current world but not the reasoning that failed. Two rotations that
+    both stall end it as stalled. No round or wall-clock ceiling; evidence ends a run.
+  - **`agent_tick.py`**, reap then dispatch. Liveness is `(pid, process creation time)`, because
+    Windows recycles pids and both existing pid locks in this fleet read a recycled number as the
+    live holder. A dead run is reported and never silently requeued. The runner is launched
+    `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`, measured to survive both a
+    normal parent exit and the scheduler terminating the parent at its execution time limit;
+    `CREATE_BREAKAWAY_FROM_JOB` is deliberately absent because inside a task it raises access denied.
+  - **`dispatch.py` gains `agent` and `stop`.** `agent` carries no item id, so it cannot hallucinate
+    one; `stop` is validated against the orders actually running. The confirmation appends the
+    dispatched ids deterministically, so a vague model summary cannot hide a live agent. The judging
+    prompt now separates a change to the RECORD from a change to the WORLD by name, including the
+    counterexample that answering "make X stop" with a to-do is wrong.
+  - **Scheduled task `AgentCenterWorkTick`** (PT2M), separate from the inbound tick so an hours-long
+    job cannot starve reply ingestion. Its `<Repetition>` carries no `<Duration>`, which is what stops
+    a repeating task from silently dying after 24 hours.
+### Changed
+- **Inbound text replies are owner-only, and fail CLOSED.** `_is_user` now takes the owner and
+  `poll_all` RAISES when `registry.big_brother.user_id` is unset instead of falling back to anyone
+  who can post in the channel. The reaction path always required the owner; the text path did not,
+  and a text reply can now start real execution on this machine.
+- **Checks run in PowerShell on Windows, not cmd.** Found by the first live run: the agent produced a
+  PowerShell check, `shell=True` handed it to cmd, and cmd answered `& was unexpected at this time.`,
+  recording a correct fix as a failure. The direction was safe but it burns a round every time. The
+  command now goes through a temp UTF-8-with-BOM `.ps1` (nested quotes survive nothing else, and a
+  BOM-less file is decoded as ANSI), and the wrapper re-raises `$LASTEXITCODE` and then inspects
+  `$Error`, because `powershell -Command` collapses any native nonzero to 1 while a bare cmdlet
+  failure returns 0, which is the dangerous direction. The prompt states the shell.
+### Fixed
+- **`ingest`/`ingest_tick` acknowledge a picked-up reply** with an eyes reaction, swapped to a check
+  after dispatch, so the judgement chain's minute of silence stops looking like a lost message.
+  Retries on 429, since the two same-message reaction writes reliably trip the per-route limit.
+### Testing
+- +52 tests (`test_agent_exec.py`), suite 99 to 151. Every property above was mutation-checked:
+  seventeen deliberate defects were introduced one at a time and each was caught by a failing test,
+  including the negative control that poisons the check command and proves a failing check refuses to
+  close a round.
+- **CI now runs the acceptance suite** (`.github/workflows/tests.yml`). Three workflows guarded this
+  repo and none of them ran the tests, so its most load-bearing checks were also its only unenforced
+  ones. The job pins a floor on the collected count, so a suite that evaporates cannot look like a
+  suite that passes, and disables the bytecode cache: a same-size source edit inside one second
+  leaves a `.pyc` Python considers valid, which really did make a reverted mutant keep running.
+
 ## [0.4.2] - 2026-07-16
 ### Changed
 - **Native Big Brother DM, the base no longer shells out to the legacy DM notifier script.**
