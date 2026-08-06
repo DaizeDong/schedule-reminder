@@ -312,9 +312,15 @@ def review_prompt(request, summary, changed, changed_via, cmd, rc, out):
     return "\n".join([
         "你在独立复核另一个 agent 刚刚完成的工作。你没有参与这项工作。",
         "只回答一个词开头的结论: DONE 或 CONTINUE:<一句话说明还差什么>。",
-        "判 DONE 要严格:只有当原始请求【确实被满足】时才判 DONE。",
-        "验证命令通过并不等于请求被满足 - 一条弱到无法失败的验证命令,或者一条验证了"
-        "别的东西的命令,都应该判 CONTINUE 并指出来。",
+        "判 DONE 要严格,同时看两件事:",
+        "(1) 原始请求是否【确实被满足】。验证命令通过并不等于请求被满足 - 一条弱到无法失败的"
+        "验证命令,或者一条验证了别的东西的命令,都应该判 CONTINUE 并指出来。",
+        # Added after a live run: the agent was asked to remove a hardcoded default and also deleted
+        # an unrelated lookup table, changing behaviour well outside the request. The check it wrote
+        # passed, and a reviewer that only asked "was the request satisfied" said DONE. Scope is a
+        # second question and has to be asked as one.
+        "(2) 有没有【顺手改坏请求之外的东西】。删掉了请求没让删的功能、改变了无关行为、"
+        "为了让检查通过而绕开问题,都判 CONTINUE 并指出具体是哪一处。请求之外的东西应当保持原样。",
         "", "原始请求:", (request or "").strip()[:2000],
         "", "执行者的自述:", (summary or "(无)")[:1000],
         "", "实际改动的文件(来源: %s):" % changed_via, ", ".join(changed[:40]) or "(无)",
