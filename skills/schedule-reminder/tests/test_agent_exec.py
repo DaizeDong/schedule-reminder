@@ -278,6 +278,20 @@ def test_act_prompt_forbids_a_check_that_cannot_fail():
     assert "非零退出" in p and "echo" in p
 
 
+def test_review_prompt_asks_about_scope_not_just_satisfaction():
+    """From a live run: the agent was asked to remove a hardcoded default and also deleted an
+    unrelated lookup table. Its check passed, and a reviewer asked only whether the request was
+    satisfied said DONE. Collateral damage is a separate question and has to be asked as one."""
+    p = agent_run.review_prompt("req", "sum", ["a.py"], "git", "cmd", 0, "out")
+    assert "请求之外" in p and "CONTINUE" in p
+
+
+def test_review_prompt_shows_the_real_output_and_its_provenance():
+    p = agent_run.review_prompt("req", "sum", ["a.py"], "self-reported", "the-cmd", 3, "REALOUT")
+    assert "REALOUT" in p and "the-cmd" in p and "3" in p
+    assert "self-reported" in p, "a self-reported change list is weaker evidence and must say so"
+
+
 # --------------------------------------------------------------------------- the JSON tail
 def test_parse_tail_prefers_the_last_object():
     text = ('例子: {"verify": "echo hi", "summary": "示例"}\n'
