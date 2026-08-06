@@ -30,8 +30,21 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Install test deps
-        run: python -m pip install --quiet pytest
+      # requirements.txt, not just pytest. dispatch.py imports llmcall at module scope, so a runner
+      # without it cannot even COLLECT two of the test files. That was true since v0.4.0 and nobody
+      # saw it, because nothing ran the suite anywhere except one developer machine that happened to
+      # have the package installed. The first green-to-red transition after wiring this workflow up
+      # was exactly that, which is the argument for the workflow in one line.
+      #
+      # Installing the real dependency rather than stubbing around it is deliberate: CI should
+      # exercise the import path production uses, otherwise it certifies a configuration that does
+      # not exist anywhere.
+      - name: Install deps
+        run: |
+          test -f requirements.txt || { echo "::error::requirements.txt is MISSING"; exit 1; }
+          python -m pip install --quiet -r requirements.txt
+          python -m pip install --quiet pytest
+          python -c "import llmcall; print('llmcall ok')"
 
       # NOT wrapped in `if [ -d ... ]`, for the reason the pii-guard workflow spells out: a step
       # that skips itself when its own subject is missing reports success for a run that examined
