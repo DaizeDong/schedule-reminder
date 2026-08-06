@@ -580,6 +580,29 @@ def test_runner_points_llmcall_at_the_shim():
     """Left at its machine default, the delegate retries cc then CODEX then claude, so the cc leg of
     an agentic call runs codex a second time and every edit happens twice."""
     assert os.environ.get("LLMCALL_AGENT_RUNNER") == agent_run._SHIM
-    assert agent_run.APPROACH_CHAINS[0] == ["codex"], "the acting chain must be a single provider"
-    assert agent_run.REVIEW_CHAIN[0] != agent_run.APPROACH_CHAINS[0][0], \
-        "the reviewer must not be the actor"
+
+
+def test_every_approach_acts_on_exactly_one_provider():
+    """A cost ladder is right for judgement and wrong for actions: falling through mid-session would
+    hand the same job to a second agent on top of the first one's half-finished edits."""
+    assert agent_run.APPROACH_CHAINS, "there must be at least one way to act"
+    for chain in agent_run.APPROACH_CHAINS:
+        assert len(chain) == 1, "acting must not fall through providers: %r" % (chain,)
+
+
+def test_the_reviewer_is_never_the_actor():
+    assert agent_run.REVIEW_CHAIN[0] != agent_run.APPROACH_CHAINS[0][0]
+    assert sorted(agent_run.REVIEW_CHAIN) == sorted(c[0] for c in agent_run.APPROACH_CHAINS), \
+        "the review chain must be a rotation of the acting order, not an independent list that can " \
+        "drift and keep naming a provider the fleet has routed around"
+
+
+def test_the_acting_order_follows_llmcall_routing(monkeypatch):
+    """Excluding a provider fleet-wide must also stop this tier from opening every work order
+    against it. Hardcoding the ladder here is how a switch ends up half thrown."""
+    monkeypatch.setenv("LLMCALL_CHAIN", "cc,claude")
+    assert agent_run._approach_chains() == (["cc"], ["claude"])
+    monkeypatch.setenv("LLMCALL_CHAIN", "claude")
+    assert agent_run._approach_chains() == (["claude"],)
+    monkeypatch.delenv("LLMCALL_CHAIN", raising=False)
+    assert agent_run._approach_chains() == (["codex"], ["cc"], ["claude"])

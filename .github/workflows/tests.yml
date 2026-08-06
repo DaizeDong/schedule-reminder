@@ -68,4 +68,4 @@ jobs:
         run: |
           n=$(python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider --collect-only 2>/dev/null | grep -c '::' || true)
           echo "collected $n tests"
-          test "$n" -ge 153 || { echo "::error::only $n tests collected, expected at least 153 -- tests were removed or collection broke"; exit 1; }
+          test "$n" -ge 156 || { echo "::error::only $n tests collected, expected at least 156 -- tests were removed or collection broke"; exit 1; }
