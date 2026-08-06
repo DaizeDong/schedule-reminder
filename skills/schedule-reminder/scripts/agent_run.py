@@ -67,14 +67,30 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-# Approach 0 acts with codex (in-process workspace-write sandbox, its own quota pool). A rotation
-# moves to a different model family through the shim, which reaches claude directly. Rotating the
-# PROVIDER as well as the prompt is what makes a rotation a genuinely different attempt rather than
-# the same model rephrasing itself.
-APPROACH_CHAINS = (["codex"], ["cc"], ["claude"])
-# The reviewer must not be the actor. codex sits last so it is reached only when nothing else is up,
-# and the report always names who reviewed so a same-family review is visible rather than assumed.
-REVIEW_CHAIN = ["cc", "claude", "codex"]
+# One approach per available provider, in llmcall's order. Rotating the PROVIDER as well as the
+# prompt is what makes a rotation a genuinely different attempt rather than the same model rephrasing
+# itself, and each approach acts on a SINGLE provider so the reported provider is the true one and
+# the side effects happen once.
+#
+# Derived from llmcall.active_chain() rather than hardcoded, so excluding a provider there (an
+# outage, a quota, a suspended account) also stops this tier from opening every work order against
+# a dead endpoint. Falls back to the literal ladder when llmcall cannot be imported at all, which is
+# a broken install rather than a routing decision.
+def _approach_chains():
+    try:
+        import llmcall
+        names = [n for n in llmcall.active_chain() if n]
+    except Exception:
+        names = ["codex", "cc", "claude"]
+    return tuple([n] for n in names) or (["codex"],)
+
+
+APPROACH_CHAINS = _approach_chains()
+# The reviewer must not be the actor, so the review chain is the acting order rotated by one: the
+# first approach's provider ends up LAST here and is reached only if nothing else answers. The report
+# always names who reviewed, so a review that fell back to the same family is visible rather than
+# assumed.
+REVIEW_CHAIN = [c[0] for c in APPROACH_CHAINS[1:]] + [c[0] for c in APPROACH_CHAINS[:1]]
 
 ACT_TIMEOUT = int(os.environ.get("AGENT_EXEC_ACT_TIMEOUT") or 1800)
 REVIEW_TIMEOUT = int(os.environ.get("AGENT_EXEC_REVIEW_TIMEOUT") or 420)
