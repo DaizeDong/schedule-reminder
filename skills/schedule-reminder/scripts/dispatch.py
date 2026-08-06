@@ -11,6 +11,13 @@ For a user reply in a stream channel, this:
 Per-stream behaviour (STREAMS): 'pool' (mail -> email-monitor task pool), 'reminder' (the
 schedule-reminder base -> done/snooze), 'generic' (create a follow-up task + confirm).
 
+TWO OPS DO NOT TOUCH THE POOL AT ALL. 'agent' enqueues a work order for the execution tier
+(agent_task/agent_run/agent_tick) and 'stop' cancels a running one. They exist because a bus that
+can only mutate records answers "make X stop" with a to-do titled "make X stop", which is what
+happened for four days while the thing kept running. 'agent' carries no item id, so it cannot
+hallucinate one; 'stop' is validated against the orders that are actually running, the same
+allowlist discipline as done/snooze.
+
 CLI:  dispatch.py --stream mail            # reads mail.inbox from the Agent Center state dir
       dispatch.py --stream mail --reply "..."   # explicit reply text
 Stdlib + the shared `llmcall` pip package (call_chain, str|None) + the sibling relay module.
@@ -27,7 +34,9 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 from llmcall import call_chain  # noqa: E402  (patched in tests as dispatch.call_chain)
-import relay      # noqa: E402
+import agent_task  # noqa: E402
+import agent_tick  # noqa: E402
+import relay       # noqa: E402
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -87,26 +96,55 @@ def get_state(cfg):
     return []  # generic
 
 
-def build_prompt(stream, cfg, reply, items):
+def get_work():
+    """Work orders the 'stop' op may target. Deliberately NOT filtered by stream: the user says
+    "stop" in whichever channel they happen to be reading."""
+    try:
+        return agent_task.running()
+    except Exception:
+        return []
+
+
+def build_prompt(stream, cfg, reply, items, work=None):
     listing = "\n".join("  %s | %s" % (it["id"], it["title"]) for it in items) or "  (none)"
+    running = "\n".join("  %s | %s" % (it["id"], it.get("title") or "") for it in (work or [])) \
+        or "  (none)"
     return (
         "You process a user's reply in the Agent Center Discord channel '%s' (%s).\n"
-        "The user writes natural-language updates to act on their items. Decide an ACTION PLAN.\n\n"
+        "The user writes natural-language updates. Decide an ACTION PLAN.\n\n"
         "Active items you MAY act on (reference each by its EXACT id):\n%s\n\n"
+        "Agent work orders currently RUNNING (the only ids 'stop' may target):\n%s\n\n"
         "User reply:\n%s\n\n"
+        "FIRST decide what kind of thing the reply asks for.\n"
+        "  A change to the RECORD (this item is handled, postpone it, remember to do this later)\n"
+        "    -> 'done' / 'snooze' / 'create'.\n"
+        "  A change to the WORLD (make it stop, fix that bug, turn it off, go do it, 别发了,\n"
+        "    停掉, 把这个修了, 去做) -> 'agent'. This runs a real agent on this machine.\n"
+        "  CRITICAL: answering 'make X stop' or 'fix this bug' with a to-do item is WRONG. Those\n"
+        "  are the world, not the record. A to-do is a note that nobody will execute; 'agent' is\n"
+        "  the only op that makes something actually happen. When in doubt between 'create' and\n"
+        "  'agent' for a request phrased as an instruction, choose 'agent'.\n\n"
         "Rules:\n"
         "- 'done' an item when the reply says it is handled/confirmed/cancelled/ignore/不用管/不急/搞定/已确认.\n"
         "- 'snooze' with an ISO8601 UTC 'until' when the reply asks to postpone/reschedule (推迟/改期).\n"
-        "- 'create' a new task when the reply states a NEW to-do not already in the list; 'title' in\n"
-        "  Simplified Chinese starting with '需回复:' or '待办:'. Do NOT duplicate an existing item.\n"
+        "- 'create' a new task ONLY when the reply records something to remember, not something to\n"
+        "  do now; 'title' in Simplified Chinese starting with '需回复:' or '待办:'. Never duplicate.\n"
+        "- 'agent' when the reply asks for work to be performed. 'request' must restate the ask in\n"
+        "  full, with enough context that someone who never read this channel could act on it;\n"
+        "  quote the concrete symptom if the reply refers to one. Optional 'workspace' is an\n"
+        "  absolute directory path when you know which repository the work belongs in.\n"
+        "- 'stop' when the reply asks to abort work in progress (停/别跑了/取消/stop). Its 'id' MUST\n"
+        "  come from the running list above; use \"*\" to mean whichever order is running.\n"
         "- Only 'done'/'snooze' items whose id appears in the list above, using the exact id. If a\n"
         "  reply line has no clear matching item, do nothing for it (mention it in confirm).\n"
         "- A line may map to several items only if the user clearly means all of them.\n"
         "Return ONLY compact JSON (no prose, no code fence):\n"
         '{"actions":[{"op":"done","id":"..."},{"op":"snooze","id":"...","until":"2026-..Z"},'
-        '{"op":"create","title":"需回复:...","due_at":null}],'
-        '"confirm":"中文一句话:完成N项(简述)、推迟M项、新建K项;未动:…"}\n'
-        % (stream, cfg["desc"], listing, reply.strip())
+        '{"op":"create","title":"需回复:...","due_at":null},'
+        '{"op":"agent","request":"完整复述用户要做的事","workspace":null,"why":"一句话"},'
+        '{"op":"stop","id":"..."}],'
+        '"confirm":"中文一句话:完成N项(简述)、推迟M项、新建K项、派活K项;未动:…"}\n'
+        % (stream, cfg["desc"], listing, running, reply.strip())
     )
 
 
@@ -143,12 +181,34 @@ def _thread_key(title):
     return "manual:%s-%s" % (slug, h) if slug else "manual:%s" % h
 
 
-def execute(stream, cfg, plan, items, log=None):
+def execute(stream, cfg, plan, items, log=None, work=None):
     allowed = {it["id"] for it in items}
+    running_ids = {it["id"] for it in (work or [])}
     done = snoozed = created = 0
-    skipped = []
+    enqueued, stopped, skipped = [], [], []
     for act in (plan.get("actions") or []):
         op = (act.get("op") or "").lower()
+        if op == "agent":
+            # No id to validate: an 'agent' op names work, not an existing record, so there is
+            # nothing for the model to hallucinate. What IS checked is that it asked for something.
+            request = (act.get("request") or "").strip()
+            if not request:
+                skipped.append("agent?empty")
+                continue
+            item = agent_task.enqueue(stream, request, workspace=act.get("workspace"))
+            if item.get("_err"):
+                skipped.append("agent?%s" % str(item["_err"])[:24])
+            else:
+                enqueued.append(item["id"])
+            continue
+        if op == "stop":
+            iid = (act.get("id") or "").strip()
+            if iid != "*" and iid not in running_ids:
+                skipped.append("stop?%s" % iid[:8])
+                continue
+            for r in agent_tick.stop(iid, note="用户在频道里要求停止"):
+                stopped.append(r["id"])
+            continue
         if op in ("done", "dismiss"):
             iid = act.get("id")
             if iid in allowed and _rem("done", "--id", iid).get("item", {}).get("state") == "done":
@@ -177,8 +237,10 @@ def execute(stream, cfg, plan, items, log=None):
             if not _rem(*args).get("_err"):
                 created += 1
     if log:
-        log("execute[%s]: done=%d snooze=%d create=%d skip=%s" % (stream, done, snoozed, created, skipped))
-    return {"done": done, "snoozed": snoozed, "created": created, "skipped": skipped}
+        log("execute[%s]: done=%d snooze=%d create=%d agent=%d stop=%d skip=%s"
+            % (stream, done, snoozed, created, len(enqueued), len(stopped), skipped))
+    return {"done": done, "snoozed": snoozed, "created": created,
+            "enqueued": enqueued, "stopped": stopped, "skipped": skipped}
 
 
 def _post(stream, text, post, log):
@@ -192,7 +254,8 @@ def _post(stream, text, post, log):
 def dispatch(stream, reply, chain=None, providers=None, timeout=180, log=None, post=True):
     cfg = STREAMS.get(stream, _DEFAULT_CFG)
     items = get_state(cfg)
-    prompt = build_prompt(stream, cfg, reply, items)
+    work = get_work()
+    prompt = build_prompt(stream, cfg, reply, items, work)
     raw = call_chain(prompt, chain=chain, providers=providers, timeout=timeout, log=log)
     plan = _extract_json(raw)
     if not plan:
@@ -200,9 +263,17 @@ def dispatch(stream, reply, chain=None, providers=None, timeout=180, log=None, p
         if log:
             log("dispatch[%s]: chain/plan failed -> passthrough" % stream)
         return False
-    res = execute(stream, cfg, plan, items, log=log)
+    res = execute(stream, cfg, plan, items, log=log, work=work)
     confirm = (plan.get("confirm") or "").strip() or (
-        "已处理:完成%d、推迟%d、新建%d。" % (res["done"], res["snoozed"], res["created"]))
+        "收到:完成%d、推迟%d、新建%d。" % (res["done"], res["snoozed"], res["created"]))
+    # The model writes the summary, but what was DISPATCHED is appended deterministically. A vague
+    # confirm must not be able to hide the fact that a real agent is now running on this machine,
+    # and the id is what the user needs in order to stop it.
+    if res["enqueued"]:
+        confirm += "\n🤖 已派活 %d 个工作单:%s。开始执行,完成或卡住都会回这个频道报告(回「停 <id>」可中止)。" % (
+            len(res["enqueued"]), ", ".join("`%s`" % i[:8] for i in res["enqueued"]))
+    if res["stopped"]:
+        confirm += "\n🛑 已停止:%s。" % ", ".join("`%s`" % i[:8] for i in res["stopped"])
     _post(stream, confirm, post, log)
     return True
 

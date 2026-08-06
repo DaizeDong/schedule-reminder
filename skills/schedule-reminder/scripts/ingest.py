@@ -79,10 +79,20 @@ def _fetch(channel_id, token, after=None, limit=50):
     return _get("%s/channels/%s/messages?%s" % (_API, channel_id, urllib.parse.urlencode(q)), token)
 
 
-def _is_user(m):
-    """A genuine human reply: not a bot, not a webhook post (our own alerts/confirmations)."""
+def _is_user(m, owner=None):
+    """A genuine human reply: not a bot, not a webhook post (our own alerts/confirmations).
+
+    With `owner` given, it must ALSO be that specific person. A reply can now enqueue real execution
+    on this machine, so "any human in the channel" is the wrong audience; the reaction path has
+    always narrowed to the owner and the text path used not to. Callers that hold a registry pass
+    the owner and MUST NOT fall back to None when it is unset (see poll_all): an unresolvable owner
+    has to close this gate, not open it."""
     a = m.get("author") or {}
-    return not a.get("bot", False) and not m.get("webhook_id")
+    if a.get("bot", False) or m.get("webhook_id"):
+        return False
+    if owner is not None and str(a.get("id") or "") != str(owner):
+        return False
+    return True
 
 
 def _last_file(stream):
@@ -101,7 +111,7 @@ def _streams(reg):
     return out
 
 
-def poll_stream(stream, channel_id, token):
+def poll_stream(stream, channel_id, token, owner=None):
     """Return list of new user-reply message dicts (oldest first); advance last id; write inbox."""
     os.makedirs(_STATE_DIR, exist_ok=True)
     lf = _last_file(stream)
@@ -118,7 +128,7 @@ def poll_stream(stream, channel_id, token):
         return []
     with open(lf, "w") as f:
         f.write(msgs[0]["id"])  # newest first
-    users = [m for m in reversed(msgs) if _is_user(m)]  # oldest first
+    users = [m for m in reversed(msgs) if _is_user(m, owner)]  # oldest first
     if users:
         with open(_inbox_file(stream), "w", encoding="utf-8") as f:
             for m in users:
@@ -136,6 +146,13 @@ def poll_all(reg=None, token=None, log=None):
     token = token or bot_token(reg)
     if not token:
         raise RuntimeError("no bot token: set registry.reader.bot_token in the Agent Center registry")
+    # Fail CLOSED on an unresolvable owner. A reply can enqueue execution on this machine, so an
+    # unset owner must stop the poll rather than quietly widen it to everyone who can post in the
+    # channel. This mirrors the missing-token guard directly above.
+    owner = owner_id(reg)
+    if not owner:
+        raise RuntimeError("no owner: set registry.big_brother.user_id; inbound replies are "
+                           "owner-only because they can start real work")
     result = {}
     # Side-channel for the ack-reaction feature: {stream: (channel_id, [msg_id, ...])}. Kept OUT of
     # the return value so poll_all's {stream: count} contract stays intact for existing callers.
@@ -143,7 +160,7 @@ def poll_all(reg=None, token=None, log=None):
     LAST_POLL_IDS = {}
     for stream, ch in _streams(reg).items():
         try:
-            users = poll_stream(stream, ch, token)
+            users = poll_stream(stream, ch, token, owner)
             if users:
                 result[stream] = len(users)
                 LAST_POLL_IDS[stream] = (ch, [m["id"] for m in users if m.get("id")])
