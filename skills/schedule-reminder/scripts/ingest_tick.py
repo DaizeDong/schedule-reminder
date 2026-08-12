@@ -25,6 +25,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 import ingest    # noqa: E402
 import dispatch  # noqa: E402
+import commands  # noqa: E402
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -90,13 +91,39 @@ def run(only_stream=None, post=True, timeout=180):
             for mid in mids:
                 if ingest.ack_seen(ch, mid, token):
                     acked.setdefault(stream, (ch, []))[1].append(mid)
+    reg = {}
+    try:
+        reg = ingest.load_registry()
+    except Exception as e:
+        _log("tick: registry unreadable (%s); command handlers disabled this tick"
+             % type(e).__name__)
+    handled_cmds = {}
+
     for stream in streams:
         if only_stream and stream not in active:
             _log("tick: stream %s had no new replies/reactions this poll -> skip" % stream)
             continue
         parts = []
         if stream in text_result:
-            t = _read_inbox(stream)
+            # Deterministic command handlers get first refusal, per message. What they claim is
+            # already answered in the channel and must not also be judged by the chain; what they
+            # do not claim carries on exactly as before. The inbox on disk still holds the whole
+            # batch either way, so nothing the bus read is missing from the record.
+            ch, msgs = ingest.LAST_POLL_MSGS.get(stream, (None, []))
+            t = ""
+            if msgs and ch:
+                try:
+                    claimed, remaining, results = commands.route(msgs, stream, ch, reg,
+                                                                 log=_log, post=post)
+                    if results:
+                        handled_cmds[stream] = results
+                    t = ingest.format_messages(remaining) if remaining else ""
+                except Exception as e:
+                    _log("tick: command routing crashed for %s (%s); falling back to the chain"
+                         % (stream, type(e).__name__))
+                    t = _read_inbox(stream)
+            else:
+                t = _read_inbox(stream)
             if t.strip():
                 parts.append(t)
         if stream in rx_result:
@@ -108,7 +135,8 @@ def run(only_stream=None, post=True, timeout=180):
             continue
         try:
             ok = dispatch.dispatch(stream, reply, providers=_PROVIDERS, timeout=timeout,
-                                   log=_log, post=post)
+                                   log=_log, post=post,
+                                   channel_id=ingest.CHANNEL_OF.get(stream))
             handled[stream] = "ok" if ok else "passthrough"
         except Exception as e:
             handled[stream] = "error:%s" % type(e).__name__
@@ -123,7 +151,8 @@ def run(only_stream=None, post=True, timeout=180):
                         ingest.ack_done(ch, mid, token)
                     except Exception:
                         pass
-    return {"polled": text_result, "reactions": rx_result, "handled": handled}
+    return {"polled": text_result, "reactions": rx_result, "handled": handled,
+            "commands": handled_cmds}
 
 
 def main():
