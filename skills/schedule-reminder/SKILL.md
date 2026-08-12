@@ -25,13 +25,17 @@ SQLite (WAL) single file          <- private storage, NEVER touched by downstrea
   store.py  (typed functions)     <- in-process, trusted skills MAY import
     reminder.py <verb>            <- the ONLY stable contract (JSON always); downstream calls via subprocess
 [Windows task: PT5M heartbeat] -> reminder.py tick -> reconcile due items -> Discord relay (out)
-[Windows task: PT10M ingest]   -> ingest_tick    -> poll channels for user replies -> dispatch (in)
+[Windows task: PT10M ingest]   -> ingest_tick    -> poll every readable channel -> commands.py
+                                                    (deterministic) or dispatch (LLM judge)  (in)
 [Windows task: PT2M work]      -> agent_tick     -> reap the dead, launch one work order (do)
 ```
 
-The Agent Center bus is **two-way**: `relay.py`/`digest.py` push out; `ingest.py`/`dispatch.py` pull
-user replies back in and turn them into pool mutations via the codex→cc→claude judge chain
-(`llm_chain.py`). See `reference/agent-center.md`.
+The Agent Center bus is **two-way**: `relay.py`/`digest.py` push out; `ingest.py`/`commands.py`/
+`dispatch.py` pull user messages back in. A message matching a registered command is answered
+deterministically by that handler; everything else goes to the codex→cc→claude judge chain
+(`llm_chain.py`) and becomes pool mutations. Both halves are single points on purpose: one
+enumeration of which channels are read, one egress for everything sent. See
+`reference/agent-center.md`.
 
 A reply may also ask for something to **happen** rather than be recorded. That path is a third
 scheduled task and a queue of work orders on this same pool, with a runner that has to hand back a

@@ -87,7 +87,8 @@ SQLite (WAL) single file        <- private storage, downstream NEVER touches it
   store.py (typed functions)    <- in-process; trusted skills may import
     reminder.py <verb> --json   <- the ONLY stable contract (api_version 1.0.0)
 [Windows task: PT5M heartbeat] -> reminder.py tick -> reconcile due -> Discord relay (out)
-[Windows task: PT10M ingest]   -> ingest_tick -> poll channels for user replies -> dispatch (in)
+[Windows task: PT10M ingest]   -> ingest_tick -> poll every readable channel -> a registered
+                                  command handler, else dispatch (LLM judge)              (in)
 ```
 
 The OS task is only a heartbeat. `tick` reconciles the durable table, so a slept/off machine catches
@@ -97,7 +98,7 @@ triggers, no silent skips.
 - **Contract:** [`skills/schedule-reminder/reference/contract.md`](skills/schedule-reminder/reference/contract.md)
 - **Deployment:** [`skills/schedule-reminder/reference/deployment.md`](skills/schedule-reminder/reference/deployment.md)
 - **Integration (for downstream skills):** [`skills/schedule-reminder/reference/integration.md`](skills/schedule-reminder/reference/integration.md)
-- **Agent Center bus (two-way):** [`skills/schedule-reminder/reference/agent-center.md`](skills/schedule-reminder/reference/agent-center.md), the outbound relay + daily digest and the inbound reply ingest every skill shares.
+- **Agent Center bus (two-way):** [`skills/schedule-reminder/reference/agent-center.md`](skills/schedule-reminder/reference/agent-center.md), the outbound relay + daily digest and the inbound ingest every skill shares. One enumeration of which channels are read, one egress for everything sent, and a registry of deterministic command handlers so a tool never has to write a second poller.
 
 ## Tested-real
 

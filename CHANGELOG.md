@@ -2,6 +2,52 @@
 
 All notable changes to this project are documented here (Keep a Changelog style).
 
+## [0.6.0] - 2026-08-12
+### Fixed
+- **A message could be read by the bus and then seen by nobody.** An instruction typed in the
+  server's own default channel sat unnoticed for three days. Nothing failed: the channel was not in
+  the registry, so the inbound bus never polled it, while a second bot that swept the whole guild on
+  its own timer DID read it, found no command prefix it recognised, skipped it, and advanced its own
+  cursor past it. Two readers with two channel lists and two sets of cursors, neither aware of the
+  other, and a message that fell between them left no error, no inbox entry and no log line. The
+  root cause was not a missing registry entry. It was that "which channels do we read" had two
+  answers.
+  - **One enumeration** (`ingest.channels()`): every registered stream, plus every other readable
+    text channel in the guild, plus the operator's DM. A channel created next month is read without
+    anyone remembering to register it. Opting out is explicit (`inbound: false`) and survives
+    discovery, so the sweep cannot add back a channel the owner excluded.
+  - **One invariant**, now stated in the code and locked by tests: a message the bus reads is either
+    claimed by a handler or written to an inbox, never neither. `poll_stream` writes the cursor and
+    the inbox in one place; `commands.route` returns `(claimed, remaining)` and the two must add up.
+  - **Cursors are keyed on the channel id**, not the stream name, since a discovered channel's name
+    is whatever a human typed and a rename would orphan the cursor and replay that channel's
+    history. The two older name-keyed schemes are adopted once, taking the NEWEST position, and
+    whatever the merge stepped over is written to `<key>.migrated.inbox` for a human instead of
+    being dispatched: repeating an action already taken is worse than reporting a gap.
+
+### Added
+- **`commands.py`, a registry of deterministic command handlers** tried per message BEFORE the
+  judgment chain. A command is now a registration rather than a service: declare a trigger regex and
+  an `exec` in `registry.commands`, and the bus hands over the message on stdin as UTF-8 json and
+  reads the exit code. Writing a second poller is no longer how a tool gets a Discord front end.
+  - Nothing is passed on argv (Windows PowerShell mangles non-ASCII argv, and commands get typed in
+    Chinese); the child's `PYTHONIOENCODING` is pinned for the same reason.
+  - A bare `python` in `exec` is rewritten to the running interpreter, because a scheduled task's
+    PATH on Windows routinely holds only the WindowsApps alias, a stub that resolves and runs
+    nothing. A handler that silently never executes looks exactly like a bus that stopped reading.
+  - A failing handler still CLAIMS its message and the failure is reported in the channel. Feeding a
+    broken command to a model that will file it as a to-do is a second wrong answer, not a recovery.
+- **`relay.send()` and a bot transport**: file attachments and an explicit `channel_id`, so the one
+  egress can finally do the two things that kept forcing callers to write their own Discord client
+  (a webhook is bound to one channel and cannot carry a file). Transport is chosen from what the
+  caller asks for, never configured. The frozen `relay(stream, content, username)` surface is
+  unchanged and still uses the webhook, keeping each stream's identity.
+  - A bot send has no Big Brother fallback and returns False: it is addressed at one specific
+    channel, and rerouting the answer to "what you just typed in #here" into a DM is worse than a
+    visible failure.
+- Confirmations now go back to the channel a message came from even when that channel has no
+  webhook. They used to fall back to a DM, which reads as the bot ignoring you.
+
 ## [0.5.0] - 2026-08-06
 ### Added
 - **An executor for the inbound bus, so a reply can make something happen.** Until now a reply could

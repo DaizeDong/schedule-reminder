@@ -80,7 +80,8 @@ SQLite (WAL) 单文件             <- 私有存储，下游绝不直接碰
   store.py (带类型函数)         <- 同进程；可信 skill 可 import
     reminder.py <verb> --json   <- 唯一稳定契约 (api_version 1.0.0)
 [Windows 任务: PT5M 心跳]  -> reminder.py tick -> 对账到期项 -> Discord relay (出)
-[Windows 任务: PT10M 入站] -> ingest_tick -> 轮询频道用户回复 -> dispatch (入)
+[Windows 任务: PT10M 入站] -> ingest_tick -> 轮询每个可读频道 -> 命中已注册命令则交给它的
+                              处理器,否则交给 dispatch(LLM 判断)                    (入)
 ```
 
 OS 任务只是心跳。`tick` 对账持久表，所以休眠/关机的机器下次运行时会一次性补发**所有**错过的提醒（幂等、至少
@@ -89,7 +90,7 @@ OS 任务只是心跳。`tick` 对账持久表，所以休眠/关机的机器下
 - **契约**：[`skills/schedule-reminder/reference/contract.md`](skills/schedule-reminder/reference/contract.md)
 - **部署**：[`skills/schedule-reminder/reference/deployment.md`](skills/schedule-reminder/reference/deployment.md)
 - **集成（写给下游 skill）**：[`skills/schedule-reminder/reference/integration.md`](skills/schedule-reminder/reference/integration.md)
-- **Agent Center 总线（双向）**：[`skills/schedule-reminder/reference/agent-center.md`](skills/schedule-reminder/reference/agent-center.md), 出站 relay + 每日 digest，以及入站回复 ingest，所有 skill 共用。
+- **Agent Center 总线（双向）**：[`skills/schedule-reminder/reference/agent-center.md`](skills/schedule-reminder/reference/agent-center.md), 出站 relay + 每日 digest，以及入站 ingest，所有 skill 共用。「读哪些频道」只有一份枚举，「往外发」只有一个出口，命令处理器改为注册制，任何工具都不必再写第二个轮询器。
 
 ## 真实可用（已测）
 

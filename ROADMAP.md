@@ -1,8 +1,22 @@
 # Roadmap
 
-Current: **v0.5.0**
+Current: **v0.6.0**
 
-## v0.5.0 (current), the bus can act
+## v0.6.0 (current), one reader and one writer
+- **One enumeration of which channels are read** (`ingest.channels()`): registered streams, plus
+  every other readable text channel in the guild, plus the operator DM. This replaced a second
+  reader that swept the guild on its own timer with its own cursors. The two disagreed about which
+  channels exist, and a message in one list and not the other was consumed by the reader that could
+  not act on it and never seen by the one that could, leaving no error and no record.
+- **The invariant that comes with it**: a message the bus reads is either claimed by a handler or
+  written to an inbox. Never neither.
+- **A registry of deterministic command handlers** (`commands.py`), tried per message before the
+  judgment chain. Declaring a trigger and an `exec` is how a tool gets a Discord front end; writing
+  a poller is not.
+- **The egress can finally do what forced callers to fork it**: attachments and an explicit channel,
+  over a bot transport, chosen automatically from what the caller asks for.
+
+## v0.5.0, the bus can act
 - **Execution tier** (`agent_task.py` / `agent_run.py` / `agent_tick.py`): a reply that asks for
   something to HAPPEN becomes a work order on this same pool, drained by its own PT2M task
   (`AgentCenterWorkTick`) into a detached runner. A round is act, verify, review, decide; the agent

@@ -14,21 +14,48 @@ skills call these via subprocess and never re-implement transport or scheduling.
 OUT:  each skill  --(relay.py send --stream X)-->  Agent Center #X channel  (per-stream webhook + identity)
       each skill  --(digest section contributor)-->  digest.py  --(one summary)-->  Big Brother DM
       schedule-reminder tick  --(relay.py send --stream reminders)-->  #reminders
-IN:   user reply in #X  --(ingest_tick: poll -> dispatch)-->  reminder.py mutations  --(relay confirm)--> #X
+IN:   user writes in #X --(ingest_tick: poll)--> commands.py claims it?  --yes--> handler answers in #X
+                                                                        --no --> dispatch (LLM judge)
+                                                                                 -> reminder.py mutations
+                                                                                 --(relay confirm)--> #X
 ```
 
 Streams (Agent Center server): `mail · hotspots · demand · promotion · support · crypto · infra ·
-reminders`. The aggregated daily summary goes to **Big Brother DM**, not a channel. The bus is
-**two-way**: `relay.py` is the egress, `ingest.py`/`dispatch.py` the ingress (see *Inbound* below).
+reminders · general · ops`, plus `commands · guestbook · archive` which are registered but opted out
+of reading. The aggregated daily summary goes to **Big Brother DM**, not a channel. The bus is
+**two-way**: `relay.py` is the egress, `ingest.py`/`commands.py`/`dispatch.py` the ingress.
+
+**One reader, one writer.** Both halves are single points on purpose, and both were once forked:
+
+- Reading forked when a second bot did its own guild sweep on its own timer with its own cursors.
+  The two readers kept different channel lists, and a message in one list and not the other was
+  consumed by the reader that could not act on it and never seen by the one that could. It left no
+  error, no inbox entry and no log line. See *Inbound*.
+- Writing forked every time a job needed something the webhook could not do (an attachment, or
+  answering in whichever channel asked). Three separate hand written Discord clients grew that way,
+  each re-solving the credentials, the multipart encoding and the 403 on a default User-Agent.
+
+Adding a capability to the one egress retires a fork out there; adding a channel to the one
+enumeration means nothing has to remember it separately.
 
 ## relay.py, the single Discord egress
 
 ```
 python relay.py send   --stream <name> (--text T | --json '{"content":..,"username":..}')
+python relay.py send   --channel-id ID --text T [--file PATH ...]   # bot transport
 python relay.py digest --text T        # aggregated summary -> Big Brother DM
 python relay.py list                   # configured streams (NEVER prints webhook URLs)
 python relay.py health                 # registry sane? (no network, no secrets)
 ```
+
+- **Two transports, chosen from what the caller asks for, never configured.** `files` given, or
+  `channel_id` given → the bot (`registry.reader.bot_token`). Otherwise → the stream's webhook.
+  A webhook carries the per-stream identity and needs no permissions, but it is bound to one
+  channel and cannot carry a file, so answering where a command was typed and posting an image are
+  both impossible on it. Callers never have to know which transport they are on.
+- **A bot send has no Big Brother fallback and returns False.** It is addressed at one specific
+  channel; silently rerouting "the answer to what you just typed in #here" into a DM is worse than
+  a visible failure the caller can report in place.
 
 - **Registry (secrets; never in THIS public repo)**: discovery = env `AGENT_CENTER_CONFIG`, else a
   registry file in the Agent Center config dir (outside this repo). Shape:
@@ -64,14 +91,71 @@ python digest.py list
 
 ## Inbound, user replies become actions (two-way)
 
-The mirror of `relay.py`: when the user **replies in any stream channel**, that reply is polled,
-judged, and turned into pool mutations, then confirmed back, no separate bot, no new dependency.
+The mirror of `relay.py`: when the user **writes in any channel the bus can read**, that message is
+polled, routed, and turned into pool mutations or a rendered answer, then confirmed back. No
+separate bot, no new dependency.
 
 ```
-python ingest.py poll                 # advance per-stream cursor, write <stream>.inbox (read-only)
+python ingest.py poll                  # advance each channel's cursor, write <key>.inbox (read-only)
+python ingest.py list                  # registered streams AND what guild discovery adds
 python dispatch.py --stream <name>     # judge one stream's inbox -> execute -> confirm (--no-post = dry)
-python ingest_tick.py                  # scheduled entrypoint: poll_all + dispatch each new reply
+python ingest_tick.py                  # scheduled entrypoint: poll -> commands -> dispatch
 ```
+
+### Which channels are read, and the invariant that comes with it
+
+`ingest.channels()` is the ONE answer, and it is deliberately wider than the registry: every
+registered stream whose `inbound` is not false, **plus every other readable text channel in the
+guild**, plus the operator's DM (where the digest lands, so where replies to it get typed). A
+channel created next month works without anyone remembering to register it.
+
+That width is the fix for a real incident. The registry listed the channels the system PUSHES to;
+it never listed the server's own default channel. An instruction typed there was read only by the
+backdrop bot, which understood one command prefix, skipped anything else, and advanced its cursor
+past it anyway. The bus never looked. The message was not mishandled, it was never SEEN, and that
+leaves nothing behind to notice.
+
+So the bus now holds an invariant, and the code is arranged to keep it true:
+
+> **A message the bus reads is either claimed by a handler or written to an inbox. Never neither.**
+
+- `poll_stream` writes the cursor and the inbox in one function, and the inbox records the whole
+  batch including messages a handler is about to claim: the durable trace of what was seen is kept
+  separately from the decision about what to act on.
+- `commands.route` returns `(claimed, remaining)` and the two must add up to the input.
+- **Opting out is explicit and survives discovery**: `inbound: false` means the bus does not read
+  the channel at all and the guild sweep may not add it back (an archive channel; a reference
+  channel full of example commands). `listen: false` means read it, but run no command handlers.
+- **Cursors are keyed on the CHANNEL ID**, not the stream name: a discovered channel's name is
+  whatever a human typed, and a rename would orphan a name-keyed cursor and replay that channel's
+  history. Cursors from the two older name-keyed schemes are adopted once, taking the NEWEST of
+  them; whatever the merge stepped over is written to `<key>.migrated.inbox` for a human rather
+  than dispatched, because repeating an action already taken is worse than reporting a gap.
+
+### Commands, the deterministic half
+
+Some messages are commands, not conversation. `commands.py` tries them per message BEFORE the
+judgment chain, and a claimed message never reaches a model.
+
+```jsonc
+// registry.commands
+"gradient": {
+  "trigger": "^\\s*(?:gradient|bg|背景)\\b",   // python regex, matched per message
+  "exec": ["python", "~/path/to/tool.py", "handle"],
+  "timeout": 300
+}
+```
+
+- The bus writes one UTF-8 json object to the handler's **stdin**
+  (`{text, channel_id, stream, message_id, timestamp}`) and reads its **exit code**: 0 means it
+  answered in the channel, anything else means the bus reports the failure there instead. Nothing
+  goes on argv, because Windows PowerShell mangles non-ASCII argv and commands get typed in Chinese.
+  For the same reason the child's `PYTHONIOENCODING` is pinned to utf-8.
+- A bare `python` in `exec` is rewritten to the running interpreter: a scheduled task's PATH on
+  Windows routinely holds only the WindowsApps alias, a stub that resolves and then runs nothing.
+- **A failing handler still claims its message.** Re-routing a broken `gradient x3` into a model
+  that will file it as a to-do is not a recovery, it is a second wrong answer.
+- Registering a command is how a tool gets a Discord front end now. Writing a second poller is not.
 
 - **Judge, then execute (two-phase, anti-hallucination).** `dispatch.py` gathers the stream's
   actionable state (active pool items as `id | title`), asks the **cost-ordered LLM chain**
@@ -90,8 +174,11 @@ python ingest_tick.py                  # scheduled entrypoint: poll_all + dispat
   nor a `webhook_id` post, so the skill's own relay/digest confirmations never feed back on
   themselves. Bot token: `registry.reader.bot_token`, else the legacy notifier config file.
   Same urllib `User-Agent` gotcha as relay (Discord 403s the default).
-- **Cursors & inboxes** live in `<state-dir>/<stream>.last` / `.inbox` under the Agent Center config dir. First contact with
-  a stream **arms** the cursor (records latest id, processes nothing), no history replay.
+- **Cursors & inboxes** live in `<state-dir>/<channel-id>.last` and `<state-dir>/<key>.inbox` under
+  the Agent Center config dir, where `<key>` is the stream name for registered streams and the
+  channel id for discovered ones. First contact with a channel **arms** the cursor (records latest
+  id, processes nothing): back-processing a newly discovered channel would replay its whole visible
+  history through the judgment chain and could enqueue real work from months-old messages.
 - **Schedule**: Windows task **AgentCenterIngestTick** (PT10M) runs `ingest_tick.py`; it supersedes
   the retired ad-hoc `AgentCenterMailTick` (mail-only loop).
 - **Owner only, fail closed.** A text reply counts only when its author is
