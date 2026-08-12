@@ -5,14 +5,33 @@ The inbound mirror of relay.py. relay.py POSTs skill output to each stream's web
 this module GETs each stream's channel for new USER replies (in). Webhooks are send-only, but a
 bot with read access can pull channel history over REST (no privileged Message Content Intent).
 
+ONE ANSWER TO "WHICH CHANNELS DO WE READ" (see channels())
+    The bus reads every registered stream AND every other readable text channel in the guild. That
+    second half is not a convenience, it is the fix for a specific failure. Two readers used to
+    disagree about this question: ingest polled the registry whitelist, while the backdrop bot
+    discovered the guild. The server's own default channel was in one list and not the other, so an
+    instruction typed there was read by the bot that only understood `gradient`, discarded for not
+    matching, and had the cursor advanced past it. Nothing else ever looked. The message did not
+    fail to be handled, it failed to be SEEN, which leaves no trace anywhere.
+
+    So: one enumeration, one cursor per channel, and the invariant in poll_stream, which is that a
+    message the bus read is either claimed by a handler or written to an inbox. Never neither.
+
 REGISTRY (secret; env AGENT_CENTER_CONFIG, else the registry file in the Agent Center config dir)
-    streams.<name>.channel_id   -- required to poll a stream (absent -> stream skipped)
-    streams.<name>.inbound      -- optional; set false to opt a stream out of ingest
+    streams.<name>.channel_id   -- required to poll a REGISTERED stream (absent -> not pollable)
+    streams.<name>.inbound      -- optional; false = the bus does not read this channel at all, and
+                                   guild discovery may not add it back (an archive the owner keeps
+                                   for themselves, or a reference channel full of example commands)
     reader.bot_token            -- the Discord bot token (canonical; same one relay/bigbrother use)
 
 STATE (the Agent Center state dir)
-    <stream>.last   -- last processed message id per stream (advances every poll)
-    <stream>.inbox  -- newest batch of user replies for that stream (consumed by dispatch)
+    <channel_id>.last  -- last processed message id, keyed on the CHANNEL not the stream name.
+                          A discovered channel's name is whatever a human typed (emoji, spaces, a
+                          slash) and a rename would orphan a name-keyed cursor, which re-reads that
+                          channel's history and re-answers old messages. Cursors written under the
+                          older name-keyed scheme are adopted on first sight, see _adopt_cursor.
+    <key>.inbox        -- newest batch of user replies (consumed by dispatch); <key> is the stream
+                          name for registered streams, the channel id for discovered ones.
 
 CLI
     ingest.py poll              # poll all streams; JSON {stream: n_new}; writes inboxes
@@ -25,6 +44,7 @@ SECRETS: never logs/prints the bot token or webhook URLs. Stdlib only.
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -42,6 +62,14 @@ _API = "https://discord.com/api/v10"
 # Populated by poll_all(): {stream: (channel_id, [msg_id, ...])} for the messages picked up this
 # tick, so the caller can ack them with a reaction. Side-channel, not part of poll_all's return.
 LAST_POLL_IDS = {}
+# {stream: channel_id} for everything enumerated this tick, so a caller can answer IN the channel a
+# message came from. Without it a discovered channel's confirmation has no webhook to go to and
+# lands in a DM, which reads as the bot ignoring you.
+CHANNEL_OF = {}
+# {stream: (channel_id, [message, ...])} for this tick. The tick needs the MESSAGES, not just their
+# ids, because a command handler matches one message at a time: matching against the whole batch
+# would let an ordinary sentence that happens to contain a trigger word run a command.
+LAST_POLL_MSGS = {}
 _DEFAULT_REGISTRY = os.path.join(os.path.expanduser("~"), ".agent-center", "registry.json")
 _STATE_DIR = os.path.join(os.path.expanduser("~"), ".agent-center", "state")
 
@@ -95,15 +123,29 @@ def _is_user(m, owner=None):
     return True
 
 
-def _last_file(stream):
-    return os.path.join(_STATE_DIR, "%s.last" % stream)
+def _last_file(channel_id):
+    """The cursor, keyed on the channel id. See the STATE note in the module docstring."""
+    return os.path.join(_STATE_DIR, "%s.last" % channel_id)
 
 
 def _inbox_file(stream):
     return os.path.join(_STATE_DIR, "%s.inbox" % stream)
 
 
+_SAFE_KEY = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _key(stream, channel_id):
+    """Filename-safe state key: the stream name when it is one, else the channel id.
+
+    Registered streams keep their historical file names (mail.inbox stays mail.inbox, and
+    `dispatch.py --stream mail` keeps working). A discovered channel is named by whatever the human
+    typed, which is not a filename, so it falls back to its id."""
+    return stream if stream and _SAFE_KEY.match(stream) else str(channel_id)
+
+
 def _streams(reg):
+    """Registered, pollable streams: {name: channel_id}. The registry half of channels()."""
     out = {}
     for name, s in (reg.get("streams") or {}).items():
         if s.get("channel_id") and s.get("inbound", True):
@@ -111,11 +153,169 @@ def _streams(reg):
     return out
 
 
-def poll_stream(stream, channel_id, token, owner=None):
-    """Return list of new user-reply message dicts (oldest first); advance last id; write inbox."""
+def _opted_out(reg):
+    """Channel ids the owner has explicitly excluded, so discovery cannot add them back."""
+    return {str(s["channel_id"]) for s in (reg.get("streams") or {}).values()
+            if s.get("channel_id") and not s.get("inbound", True)}
+
+
+def discovered_channels(reg, token, log=None):
+    """Readable guild text channels that are not registered and not opted out: [(name, id), ...].
+
+    A discovery failure returns nothing rather than raising: it must cost the discovered channels
+    only, never the registered ones the caller already holds."""
+    gid = reg.get("guild_id")
+    if not gid:
+        return []
+    known = {str(c) for c in _streams(reg).values()} | _opted_out(reg)
+    try:
+        chans = _get("%s/guilds/%s/channels" % (_API, gid), token)
+    except Exception as e:
+        if log:
+            log("ingest: guild channel discovery failed (%s); registered streams unaffected"
+                % type(e).__name__)
+        return []
+    out = []
+    for c in chans or []:
+        cid = str(c.get("id"))
+        if c.get("type") == 0 and cid not in known:      # 0 = a normal text channel
+            out.append(("#%s" % (c.get("name") or cid), cid))
+    return out
+
+
+def owner_dm_channel(reg, token):
+    """The DM channel with the operator, opened if it does not exist yet, or None.
+
+    A bot's own DM is a natural place to type at it, and the backdrop bot accepted commands there
+    before the readers were merged. Returns None rather than raising: a DM being unreachable must
+    cost the DM, not the guild sweep."""
+    uid = (reg.get("big_brother") or {}).get("user_id")
+    if not uid:
+        return None
+    try:
+        req = urllib.request.Request(
+            "%s/users/@me/channels" % _API, method="POST",
+            data=json.dumps({"recipient_id": str(uid)}).encode("utf-8"),
+            headers={"Authorization": "Bot %s" % token, "User-Agent": _UA,
+                     "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return str(json.loads(r.read().decode("utf-8"))["id"])
+    except Exception:
+        return None
+
+
+def channels(reg, token=None, discover=True, log=None):
+    """[(stream, channel_id), ...] for every channel the bus reads. THE single enumeration.
+
+    Registered streams first (their configured names and per-stream dispatch behaviour), then any
+    other readable text channel in the guild, so a channel created next month works without anyone
+    remembering to register it, and so a message typed in the obvious place is never invisible.
+    Finally the operator's DM, which is where the daily digest lands and therefore where a reply to
+    it gets typed."""
+    out = [(name, str(ch)) for name, ch in _streams(reg).items()]
+    if discover and token:
+        # Names are only labels, ids are the identity, but the label keys the per-stream result
+        # maps, so two channels a human named the same thing must not collapse into one entry.
+        used = {name for name, _ in out}
+        for name, cid in discovered_channels(reg, token, log=log):
+            if name in used:
+                name = "%s-%s" % (name, cid[-4:])
+            used.add(name)
+            out.append((name, cid))
+        seen = {c for _, c in out}
+        dm = owner_dm_channel(reg, token)
+        if dm and dm not in seen:
+            out.append(("dm", dm))
+    return out
+
+
+def _adopt_cursor(channel_id, stream):
+    """Seed a channel-keyed cursor from the older name-keyed ones, ONCE, before the first poll.
+
+    Returns (adopted, behind): the position taken, and the OTHER scheme's position when the two
+    disagreed (else None).
+
+    Two schemes preceded this: ingest wrote <stream>.last, and the backdrop bot wrote
+    gradient.<channel_id>.last for the same channel. They ran on different timers, so their
+    positions differ, and neither choice is free:
+
+      take the older -> every message in between is replayed through the judgment chain, which can
+                        enqueue real work a second time from a reply already acted on;
+      take the newer -> those same messages are never processed at all.
+
+    Repeating an action is the worse failure, so this takes the NEWEST and the caller records the
+    gap instead of executing it (see poll_stream). Snowflakes are compared numerically: they differ
+    in length, so a string compare would order them wrongly."""
+    target = _last_file(channel_id)
+    if os.path.exists(target):
+        return None, None
+    found = []
+    for cand in (os.path.join(_STATE_DIR, "%s.last" % stream) if stream else None,
+                 os.path.join(_STATE_DIR, "gradient.%s.last" % channel_id)):
+        if not cand or not os.path.exists(cand):
+            continue
+        try:
+            with open(cand) as f:
+                v = f.read().strip()
+            int(v)                           # parse BEFORE comparing: an `is None` short circuit
+        except (OSError, ValueError):        # would otherwise let a corrupt value through
+            continue
+        found.append(v)
+    if not found:
+        return None, None
+    best = max(found, key=int)
+    behind = min(found, key=int) if len(found) > 1 and min(found, key=int) != best else None
     os.makedirs(_STATE_DIR, exist_ok=True)
-    lf = _last_file(stream)
+    with open(target, "w") as f:
+        f.write(best)
+    return best, behind
+
+
+def _record_migration_gap(stream, channel_id, token, behind, adopted, log=None):
+    """Write down what the cursor merge stepped over, once, for a human to read.
+
+    These messages sat between two disagreeing cursors during the one-time migration. They are NOT
+    dispatched: whatever they asked for was most likely already acted on by the reader that was
+    ahead, and re-running the judgment chain on them could repeat a real action. But they are also
+    not allowed to disappear in silence, because 'a message the bus saw is written down somewhere'
+    is the invariant this whole reorganisation is built on, and a migration is exactly when a
+    system is most tempted to make an exception to its own rule."""
+    try:
+        msgs = _fetch(channel_id, token, after=behind)
+        missed = [m for m in reversed(msgs) if int(m["id"]) <= int(adopted) and _is_user(m)]
+    except Exception as e:
+        if log:
+            log("ingest: could not read the migration gap for %s (%s)" % (stream, type(e).__name__))
+        return
+    if not missed:
+        return
+    path = os.path.join(_STATE_DIR, "%s.migrated.inbox" % _key(stream, channel_id))
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("(游标迁移:以下 %d 条消息位于两个旧游标之间,已记录但未自动执行,请人工过目)\n---\n"
+                % len(missed))
+        f.write(format_messages(missed))
+    if log:
+        log("ingest: %s -> %d message(s) spanned by the cursor merge, recorded in %s"
+            % (stream, len(missed), os.path.basename(path)))
+
+
+def poll_stream(stream, channel_id, token, owner=None, log=None):
+    """Return list of new user-reply message dicts (oldest first); advance the cursor; write inbox.
+
+    THE INVARIANT: whatever this advances the cursor past is either returned to the caller (which
+    then dispatches it) or was never the owner's to begin with. There is no third outcome where a
+    message is consumed and dropped. A reader that skips what it does not recognise, and advances
+    anyway, makes the message disappear with no error and no record; that is the bug this bus was
+    reorganised around, and it is why the cursor write and the inbox write live in one function."""
+    os.makedirs(_STATE_DIR, exist_ok=True)
+    adopted, behind = _adopt_cursor(channel_id, stream)
+    if behind:
+        _record_migration_gap(stream, channel_id, token, behind, adopted, log=log)
+    lf = _last_file(channel_id)
     if not os.path.exists(lf):
+        # First sight of a channel: ARM it (record the latest id) and process nothing. Back
+        # processing a newly discovered channel would replay its entire visible history through the
+        # judgment chain, which can enqueue real work from messages written months ago.
         latest = _fetch(channel_id, token, limit=1)
         if latest:
             with open(lf, "w") as f:
@@ -130,15 +330,26 @@ def poll_stream(stream, channel_id, token, owner=None):
         f.write(msgs[0]["id"])  # newest first
     users = [m for m in reversed(msgs) if _is_user(m, owner)]  # oldest first
     if users:
-        with open(_inbox_file(stream), "w", encoding="utf-8") as f:
-            for m in users:
-                f.write("[%s]\n" % m.get("timestamp", ""))
-                if m.get("content"):
-                    f.write(m["content"] + "\n")
-                for att in m.get("attachments", []):
-                    f.write("<attachment: %s %s>\n" % (att.get("filename"), att.get("url")))
-                f.write("---\n")
+        # The inbox records EVERY message read, including ones a command handler will claim a
+        # moment later. It is the durable trace that the bus saw them; the tick decides separately
+        # what to forward to the judgment chain.
+        with open(_inbox_file(_key(stream, channel_id)), "w", encoding="utf-8") as f:
+            f.write(format_messages(users))
     return users
+
+
+def format_messages(msgs):
+    """The inbox rendering of a batch. Shared so what dispatch judges and what the inbox records
+    cannot drift apart into two different texts."""
+    out = []
+    for m in msgs:
+        out.append("[%s]\n" % m.get("timestamp", ""))
+        if m.get("content"):
+            out.append(m["content"] + "\n")
+        for att in m.get("attachments", []):
+            out.append("<attachment: %s %s>\n" % (att.get("filename"), att.get("url")))
+        out.append("---\n")
+    return "".join(out)
 
 
 def poll_all(reg=None, token=None, log=None):
@@ -156,14 +367,18 @@ def poll_all(reg=None, token=None, log=None):
     result = {}
     # Side-channel for the ack-reaction feature: {stream: (channel_id, [msg_id, ...])}. Kept OUT of
     # the return value so poll_all's {stream: count} contract stays intact for existing callers.
-    global LAST_POLL_IDS
+    global LAST_POLL_IDS, LAST_POLL_MSGS, CHANNEL_OF
     LAST_POLL_IDS = {}
-    for stream, ch in _streams(reg).items():
+    LAST_POLL_MSGS = {}
+    CHANNEL_OF = {}
+    for stream, ch in channels(reg, token, log=log):
+        CHANNEL_OF[stream] = ch
         try:
-            users = poll_stream(stream, ch, token, owner)
+            users = poll_stream(stream, ch, token, owner, log=log)
             if users:
                 result[stream] = len(users)
                 LAST_POLL_IDS[stream] = (ch, [m["id"] for m in users if m.get("id")])
+                LAST_POLL_MSGS[stream] = (ch, users)
                 if log:
                     log("ingest: %s -> %d new reply(ies)" % (stream, len(users)))
         except Exception as e:
@@ -264,6 +479,7 @@ def reaction_events(channel_id, token, owner, msgs):
 def poll_reactions_stream(stream, channel_id, token, owner, limit=50):
     """New owner reactions on recent messages -> write synthesized inbox; return new events."""
     os.makedirs(_STATE_DIR, exist_ok=True)
+    stream = _key(stream, channel_id)
     msgs = _fetch(channel_id, token, limit=limit)  # recent, newest first
     if not msgs:
         return []
@@ -350,7 +566,9 @@ def poll_all_reactions(reg=None, token=None, log=None):
         raise RuntimeError("no bot token: set registry.reader.bot_token in the Agent Center registry")
     owner = owner_id(reg)
     result = {}
-    for stream, ch in _streams(reg).items():
+    global CHANNEL_OF
+    for stream, ch in channels(reg, token, log=log):
+        CHANNEL_OF.setdefault(stream, ch)
         try:
             new = poll_reactions_stream(stream, ch, token, owner)
             if new:
@@ -367,10 +585,10 @@ def arm_reactions(reg, token):
     """Record all current owner reactions as seen so a later poll won't back-process them."""
     owner = owner_id(reg)
     n = 0
-    for stream, ch in _streams(reg).items():
+    for stream, ch in channels(reg, token):
         try:
             _, keys = reaction_events(ch, token, owner, _fetch(ch, token, limit=50))
-            _save_seen(stream, keys)
+            _save_seen(_key(stream, ch), keys)
             n += 1
         except Exception:
             pass
@@ -392,7 +610,15 @@ def main():
     if a.cmd == "list":
         streams = {n: {"channel_id": s.get("channel_id"), "inbound": s.get("inbound", True)}
                    for n, s in (reg.get("streams") or {}).items()}
-        print(json.dumps({"streams": streams}, ensure_ascii=False, indent=2))
+        out = {"streams": streams}
+        # Show what discovery adds too: "registered" and "read" are different sets now, and a
+        # listing that only prints the registry hides exactly the channels most likely to surprise.
+        try:
+            out["discovered"] = [{"name": n, "channel_id": c}
+                                 for n, c in discovered_channels(reg, bot_token(reg))]
+        except Exception as e:
+            out["discovered"] = "unavailable (%s)" % type(e).__name__
+        print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
     if a.cmd == "inbox":
         p = _inbox_file(a.stream)
@@ -402,10 +628,10 @@ def main():
         tok = bot_token(reg)
         os.makedirs(_STATE_DIR, exist_ok=True)
         n = 0
-        for stream, ch in _streams(reg).items():
+        for stream, ch in channels(reg, tok):
             latest = _fetch(ch, tok, limit=1)
             if latest:
-                with open(_last_file(stream), "w") as f:
+                with open(_last_file(ch), "w") as f:
                     f.write(latest[0]["id"])
                 n += 1
         rn = arm_reactions(reg, tok)

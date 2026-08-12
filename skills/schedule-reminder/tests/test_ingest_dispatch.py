@@ -220,6 +220,161 @@ def test_poll_reactions_dedups_across_ticks(tmp_path, monkeypatch):
     assert new2 == []  # already seen -> not re-processed
 
 
+# ------------------------------------------------------- one enumeration (registry + discovery)
+def _reg(streams, guild="G"):
+    return {"guild_id": guild, "streams": streams, "big_brother": {"user_id": "OWNER"},
+            "reader": {"bot_token": "TOK"}}
+
+
+def _guild(monkeypatch, chans):
+    monkeypatch.setattr(ingest, "_get", lambda url, tok: chans)
+
+
+def test_channels_includes_unregistered_guild_channels(monkeypatch):
+    """The bug this whole reorganisation is about: the server's default channel was in nobody's
+    list, so a message typed there was never read by anything that could understand it."""
+    reg = _reg({"mail": {"channel_id": "1"}})
+    _guild(monkeypatch, [{"id": "1", "type": 0, "name": "mail"},
+                         {"id": "99", "type": 0, "name": "常规"},
+                         {"id": "77", "type": 2, "name": "语音"}])   # voice: not readable text
+    got = dict(ingest.channels(reg, "TOK"))
+    assert got["mail"] == "1"
+    assert got["#常规"] == "99", "an unregistered text channel must still be read"
+    assert "99" in got.values() and "77" not in got.values(), "voice channels are not polled"
+
+
+def test_channels_respects_optout_against_discovery(monkeypatch):
+    """inbound:false has to survive discovery, or opting a channel out would be impossible: the
+    guild sweep would simply add it back every tick."""
+    reg = _reg({"archive": {"channel_id": "42", "inbound": False}})
+    _guild(monkeypatch, [{"id": "42", "type": 0, "name": "归档"}])
+    assert ingest.channels(reg, "TOK") == [], "an opted-out channel must not return via discovery"
+
+
+def test_channels_survive_discovery_failure(monkeypatch):
+    def boom(url, tok):
+        raise OSError("guild listing down")
+
+    monkeypatch.setattr(ingest, "_get", boom)
+    got = dict(ingest.channels(_reg({"mail": {"channel_id": "1"}}), "TOK"))
+    assert got == {"mail": "1"}, "a discovery failure costs the discovered channels, not the known ones"
+
+
+def test_channels_disambiguates_duplicate_names(monkeypatch):
+    reg = _reg({})
+    _guild(monkeypatch, [{"id": "1111", "type": 0, "name": "常规"},
+                         {"id": "2222", "type": 0, "name": "常规"}])
+    got = ingest.channels(reg, "TOK")
+    assert len(got) == 2
+    assert len({n for n, _ in got}) == 2, "two channels a human named the same must stay distinct"
+
+
+def test_channels_includes_the_owner_dm(monkeypatch):
+    """The digest lands in the DM, so replies get typed there. It was readable before the two
+    readers merged and must not be lost in the merge."""
+    reg = _reg({"mail": {"channel_id": "1"}})
+    _guild(monkeypatch, [])
+    monkeypatch.setattr(ingest, "owner_dm_channel", lambda r, t: "DMCHAN")
+    assert ("dm", "DMCHAN") in ingest.channels(reg, "TOK")
+
+
+def test_unreachable_dm_does_not_break_the_sweep(monkeypatch):
+    reg = _reg({"mail": {"channel_id": "1"}})
+    _guild(monkeypatch, [])
+    monkeypatch.setattr(ingest, "owner_dm_channel", lambda r, t: None)
+    assert dict(ingest.channels(reg, "TOK")) == {"mail": "1"}
+
+
+def test_key_falls_back_to_id_for_unsafe_names():
+    assert ingest._key("mail", "1") == "mail"          # registered names keep their state files
+    assert ingest._key("#常规", "99") == "99"           # a typed name is not a filename
+    assert ingest._key("#a/b", "5") == "5"
+
+
+# ------------------------------------------------------- cursor adoption (the replay hazard)
+def test_adopt_cursor_takes_the_NEWEST_of_the_old_schemes(tmp_path, monkeypatch):
+    """Two readers kept two cursors for the same channel. Merging them must take the newest.
+
+    Taking the older one replays every message in between back through the judgment chain, which
+    can enqueue real work from stale replies. Snowflakes are compared as numbers on purpose: these
+    two differ in length, so a string compare would pick the wrong one."""
+    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
+    older, newer = "999999999999999999", "1000000000000000000"   # newer is numerically larger
+    assert newer < older, "the string compare is wrong here, which is exactly the trap"
+    (tmp_path / "mail.last").write_text(newer)
+    (tmp_path / "gradient.77.last").write_text(older)
+    adopted, behind = ingest._adopt_cursor("77", "mail")
+    assert adopted == newer
+    assert behind == older, "the position stepped over must be reported, not forgotten"
+    assert (tmp_path / "77.last").read_text() == newer
+
+
+def test_adopt_cursor_never_overwrites_a_live_cursor(tmp_path, monkeypatch):
+    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
+    (tmp_path / "77.last").write_text("500")
+    (tmp_path / "mail.last").write_text("900")
+    assert ingest._adopt_cursor("77", "mail") == (None, None)
+    assert (tmp_path / "77.last").read_text() == "500", "the channel-keyed cursor is authoritative"
+
+
+def test_adopt_cursor_ignores_corrupt_values(tmp_path, monkeypatch):
+    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
+    (tmp_path / "mail.last").write_text("not-a-snowflake")
+    (tmp_path / "gradient.77.last").write_text("123")
+    assert ingest._adopt_cursor("77", "mail") == ("123", None)
+
+
+def test_migration_gap_is_recorded_not_executed(tmp_path, monkeypatch):
+    """The one-time cursor merge steps over messages. They must not be dispatched (that could
+    repeat an action already taken) and must not vanish either. They get written down."""
+    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
+    (tmp_path / "mail.last").write_text("300")          # ingest was here
+    (tmp_path / "gradient.77.last").write_text("500")   # the other reader was further ahead
+    spanned = [{"id": "500", "author": {"bot": False, "id": "OWNER"}, "content": "第二条",
+                "timestamp": "t2"},
+               {"id": "400", "author": {"bot": False, "id": "OWNER"}, "content": "被跨过的一条",
+                "timestamp": "t1"}]
+
+    def fake_fetch(ch, tok, after=None, limit=50):
+        if after == "300":
+            return spanned                              # the gap
+        if limit == 1:
+            return [spanned[0]]
+        return []                                       # nothing new after the merge
+
+    monkeypatch.setattr(ingest, "_fetch", fake_fetch)
+    got = ingest.poll_stream("mail", "77", "TOK", "OWNER")
+    assert got == [], "spanned messages are NOT returned for dispatch"
+    rec = (tmp_path / "mail.migrated.inbox").read_text(encoding="utf-8")
+    assert "被跨过的一条" in rec and "第二条" in rec, "but they are written down for a human"
+    assert (tmp_path / "77.last").read_text() == "500"
+
+
+def test_first_sight_of_a_channel_arms_and_processes_nothing(tmp_path, monkeypatch):
+    """A newly discovered channel must not have its history replayed on the first tick."""
+    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
+    history = [{"id": "300", "author": {"bot": False, "id": "OWNER"}, "content": "old instruction"},
+               {"id": "200", "author": {"bot": False, "id": "OWNER"}, "content": "older"}]
+    monkeypatch.setattr(ingest, "_fetch",
+                        lambda ch, tok, after=None, limit=50: history[:limit] if limit == 1 else history)
+    got = ingest.poll_stream("#新频道", "88", "TOK", "OWNER")
+    assert got == [], "first sight arms the cursor, it does not back-process"
+    assert (tmp_path / "88.last").read_text() == "300"
+    assert not (tmp_path / "88.inbox").exists()
+
+
+def test_poll_stream_writes_inbox_under_the_channel_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
+    (tmp_path / "88.last").write_text("100")
+    monkeypatch.setattr(ingest, "_fetch", lambda ch, tok, after=None, limit=50: [
+        {"id": "101", "author": {"bot": False, "id": "OWNER"}, "content": "开个新频道吧",
+         "timestamp": "2026-08-10T19:14:00Z"}])
+    got = ingest.poll_stream("#常规", "88", "TOK", "OWNER")
+    assert len(got) == 1
+    assert "开个新频道吧" in (tmp_path / "88.inbox").read_text(encoding="utf-8")
+    assert (tmp_path / "88.last").read_text() == "101"
+
+
 def test_arm_reactions_baselines_existing(tmp_path, monkeypatch):
     monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
     msgs = [{"id": "m1", "content": "x", "timestamp": "t",

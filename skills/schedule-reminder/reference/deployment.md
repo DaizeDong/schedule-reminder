@@ -10,7 +10,7 @@
 |---|---|---|
 | DB (3 files) | local reminder DB (`$SCHEDULE_DB_PATH`; default under the user's home) (+`-wal`, `-shm`) | **local NTFS only**, never OneDrive/GDrive/network (WAL file-lock + sync corruption) |
 | Heartbeat task (out) | Scheduled Task `ScheduleReminderTick` | runs `pythonw reminder.py tick` every 5 min |
-| Ingest task (in) | Scheduled Task `AgentCenterIngestTick` | runs `pythonw ingest_tick.py` every 10 min; polls Agent Center channels for user replies → dispatch. Supersedes retired `AgentCenterMailTick` |
+| Ingest task (in) | Scheduled Task `AgentCenterIngestTick` | runs `pythonw ingest_tick.py` every 10 min; polls **every readable channel** (registered streams + guild discovery + the operator DM) → registered command handler, else dispatch. Supersedes retired `AgentCenterMailTick`, and as of 0.6.0 the retired `GradientServe`, which was a second reader of the same server |
 | Live skill | junction `~/.claude/skills/schedule-reminder` → repo `skills/schedule-reminder` | edits flow both ways |
 | Config home (private) | Agent Center config dir (`AGENT_CENTER_CONFIG`) = a private git repo outside this public repo | registry (webhooks + `reader.bot_token`), routes, design docs. Secrets live here, never in THIS public repo. Daily backup via a scheduled sync task; transient `state/` gitignored. Restore: clone the private companion repo into that config dir, then run its visibility refresh |
 

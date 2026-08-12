@@ -243,15 +243,32 @@ def execute(stream, cfg, plan, items, log=None, work=None):
             "enqueued": enqueued, "stopped": stopped, "skipped": skipped}
 
 
-def _post(stream, text, post, log):
-    if post:
-        relay.relay(stream, text)
-    else:
+def _has_webhook(stream):
+    try:
+        return bool(((relay.load_registry().get("streams") or {}).get(stream) or {}).get("webhook"))
+    except Exception:
+        return False
+
+
+def _post(stream, text, post, log, channel_id=None):
+    """Confirm in the channel the reply came from.
+
+    A registered stream keeps its webhook, which carries the per-stream identity. A channel the bus
+    discovered has no webhook, so the confirmation goes over the bot to that channel id. Without
+    this it fell back to a DM, and an answer arriving somewhere other than where you asked reads
+    as no answer at all."""
+    if not post:
         if log:
             log("[no-post] would relay -> %s: %s" % (stream, text))
+        return
+    if channel_id and not _has_webhook(stream):
+        relay.send(text, channel_id=str(channel_id))
+    else:
+        relay.relay(stream, text)
 
 
-def dispatch(stream, reply, chain=None, providers=None, timeout=180, log=None, post=True):
+def dispatch(stream, reply, chain=None, providers=None, timeout=180, log=None, post=True,
+             channel_id=None):
     cfg = STREAMS.get(stream, _DEFAULT_CFG)
     items = get_state(cfg)
     work = get_work()
@@ -259,7 +276,8 @@ def dispatch(stream, reply, chain=None, providers=None, timeout=180, log=None, p
     raw = call_chain(prompt, chain=chain, providers=providers, timeout=timeout, log=log)
     plan = _extract_json(raw)
     if not plan:
-        _post(stream, "收到你的回复,但自动解析失败,已留待人工处理。原文:%s" % reply.strip()[:200], post, log)
+        _post(stream, "收到你的回复,但自动解析失败,已留待人工处理。原文:%s" % reply.strip()[:200],
+              post, log, channel_id)
         if log:
             log("dispatch[%s]: chain/plan failed -> passthrough" % stream)
         return False
@@ -274,7 +292,7 @@ def dispatch(stream, reply, chain=None, providers=None, timeout=180, log=None, p
             len(res["enqueued"]), ", ".join("`%s`" % i[:8] for i in res["enqueued"]))
     if res["stopped"]:
         confirm += "\n🛑 已停止:%s。" % ", ".join("`%s`" % i[:8] for i in res["stopped"])
-    _post(stream, confirm, post, log)
+    _post(stream, confirm, post, log, channel_id)
     return True
 
 
