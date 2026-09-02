@@ -209,6 +209,70 @@ def ingest_runlog(con, days: int) -> tuple[bool, int, str]:
     return True, added, ""
 
 
+# --------------------------------------------------------------------------- durable export
+def export_run_events(con) -> tuple[bool, int, str]:
+    """Append new run events to a JSONL beside the database.
+
+    THIS FILE IS THE ONLY PLACE SOME OF THIS DATA WILL EXIST. The rest of the database is a cache:
+    delete it, re-run --backfill, get it back. That is true of health observations because their
+    source log is append-only and never rotates. It is NOT true of run events past about five days,
+    because the Windows Operational log is a circular buffer that overwrites them, measured at 635
+    events an hour against a 64 MB cap.
+
+    So the durable copy has to live somewhere a version control system can actually hold. Not the
+    .sqlite3: it is 4.4 MB and rewritten wholesale every hour, so tracking it would add ~105 MB of
+    unreadable binary objects a day. A JSONL is append-only, diffs line by line, and git stores the
+    increment.
+
+    Idempotent: the watermark is the (log_epoch, record_id) of the last exported row, kept in meta.
+    """
+    started = now()
+    p, st = console_store.resolve_db()
+    if st:
+        return False, 0, st.message
+    out = Path(p).parent / "run-events.jsonl"
+
+    row = con.execute("SELECT value FROM meta WHERE key='export_watermark'").fetchone()
+    mark = row["value"] if row else "0:0"
+    try:
+        m_epoch, m_rid = (int(x) for x in mark.split(":"))
+    except Exception:
+        m_epoch, m_rid = 0, 0
+
+    rows = con.execute(
+        "SELECT log_epoch,record_id,task,event_id,ts,rc_raw,rc_norm FROM run_event "
+        "WHERE log_epoch > ? OR (log_epoch = ? AND record_id > ?) "
+        "ORDER BY log_epoch, record_id", (m_epoch, m_epoch, m_rid)).fetchall()
+    if not rows:
+        note_run(con, "export", started, True, 0, "nothing new")
+        return True, 0, ""
+
+    try:
+        with out.open("a", encoding="utf-8", newline="\n") as fh:
+            for r in rows:
+                fh.write(json.dumps({
+                    "e": r["log_epoch"], "r": r["record_id"], "t": r["task"],
+                    "i": r["event_id"], "ts": r["ts"],
+                    "rc": r["rc_norm"],           # normalised; NULL when the event carries none
+                }, ensure_ascii=False, sort_keys=True) + "\n")
+    except Exception as e:
+        note_run(con, "export", started, False, 0, str(e)[:400])
+        return False, 0, str(e)
+
+    last = rows[-1]
+    begin(con)
+    try:
+        con.execute("INSERT INTO meta(key,value) VALUES('export_watermark',?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (f"{last['log_epoch']}:{last['record_id']}",))
+        note_run(con, "export", started, True, len(rows), str(out))
+        con.execute("COMMIT")
+    except Exception as e:
+        con.execute("ROLLBACK")
+        return False, 0, str(e)
+    return True, len(rows), ""
+
+
 # --------------------------------------------------------------------------- task settings
 def ingest_tasks(con) -> tuple[bool, int, str]:
     started = now()
@@ -282,6 +346,10 @@ def main() -> int:
 
     ok, n, msg = ingest_tasks(con)
     print(f"  tasks  : {'ok' if ok else 'FAIL'}  +{n}  {msg}")
+    ok_all &= ok
+
+    ok, n, msg = export_run_events(con)
+    print(f"  export : {'ok' if ok else 'FAIL'}  +{n}  {msg}")
     ok_all &= ok
 
     cov = console_store.coverage(con)
