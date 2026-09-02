@@ -1,0 +1,115 @@
+-- task-console read model.
+--
+-- NOTHING IN THIS DATABASE IS A SYSTEM OF RECORD. Every row is derived from two sources that still
+-- exist on the machine: the Windows Task Scheduler Operational event log, and the health monitor's
+-- text log. Deleting the file and re-running the backfill reproduces it. That property is load
+-- bearing and must survive every future change: the moment a table can only be recovered from here,
+-- this file becomes a backup problem and the "just delete it and rebuild" lever stops being true.
+-- A rollup table that folds raw events and is then exempted from rebuild is exactly how that
+-- property gets lost, which is why there is no run_daily here.
+--
+-- WHY A DATABASE AT ALL, stated honestly. The bulk of the win is not SQL: reading the event log
+-- costs 109 seconds end to end, and simply moving that off the request path is most of the benefit.
+-- What SQLite earns on its own is the part a snapshot cannot hold: per-task-per-HOUR health for
+-- drill-down, and a history of task settings so a change is visible after the fact.
+
+PRAGMA user_version = 1;
+
+-- ---------------------------------------------------------------- bookkeeping
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);
+
+-- One row per ingest attempt, including the failed ones. An ingest that crashed and one that never
+-- ran look identical from the outside unless the attempt itself is recorded.
+CREATE TABLE IF NOT EXISTS ingest_run (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  started_at  TEXT NOT NULL,
+  finished_at TEXT,
+  ok          INTEGER,
+  source      TEXT NOT NULL,      -- 'runlog' | 'health' | 'tasks' | 'backfill'
+  added       INTEGER DEFAULT 0,
+  note        TEXT
+);
+
+-- ---------------------------------------------------------------- tasks
+CREATE TABLE IF NOT EXISTS task_seen (
+  task       TEXT PRIMARY KEY,
+  first_seen TEXT NOT NULL,
+  last_seen  TEXT NOT NULL
+);
+
+-- Settings drift. One row per DISTINCT configuration, not per poll: the hash is the identity, so a
+-- task that never changes costs exactly one row no matter how often it is sampled.
+CREATE TABLE IF NOT EXISTS task_meta_version (
+  task         TEXT NOT NULL,
+  config_hash  TEXT NOT NULL,
+  first_seen   TEXT NOT NULL,
+  last_seen    TEXT NOT NULL,
+  state        TEXT,
+  triggers     TEXT,              -- JSON, as collected
+  settings     TEXT,              -- JSON: catchup/retries/timeout/multi/battery/runLevel
+  PRIMARY KEY (task, config_hash)
+);
+
+-- ---------------------------------------------------------------- run history
+-- log_epoch exists because Windows EventRecordID RESTARTS AT 1 when the Operational log is cleared.
+-- With record_id alone as the key, INSERT OR IGNORE would silently discard every new event whose id
+-- collided with an old one, and the only symptom would be a quietly emptier chart. The ingester
+-- bumps log_epoch whenever the log's OldestRecordNumber goes backwards, which is the observable
+-- signature of a clear.
+CREATE TABLE IF NOT EXISTS run_event (
+  log_epoch INTEGER NOT NULL,
+  record_id INTEGER NOT NULL,
+  task      TEXT NOT NULL,
+  event_id  INTEGER NOT NULL,     -- 100 start, 102 done, 111 killed, 201 action rc, 203 failstart, 329 timeout
+  ts        TEXT NOT NULL,        -- 'YYYY-MM-DD HH:MM:SS' local
+  day       TEXT NOT NULL,        -- 'YYYY-MM-DD', denormalised for the common group-by
+  hour      INTEGER NOT NULL,     -- 0..23
+  rc_raw    TEXT,                 -- as the log reported it, NULL when the event carries none
+  rc_norm   INTEGER,              -- HRESULT-unwrapped. NULL means "no return code", never 0.
+  PRIMARY KEY (log_epoch, record_id)
+);
+CREATE INDEX IF NOT EXISTS ix_run_task_day  ON run_event(task, day);
+CREATE INDEX IF NOT EXISTS ix_run_task_ts   ON run_event(task, ts);
+CREATE INDEX IF NOT EXISTS ix_run_day_hour  ON run_event(day, hour);
+
+CREATE TABLE IF NOT EXISTS runlog_ingest (
+  id                INTEGER PRIMARY KEY CHECK (id = 1),
+  log_epoch         INTEGER NOT NULL DEFAULT 1,
+  max_record_id     INTEGER NOT NULL DEFAULT 0,
+  oldest_record_id  INTEGER,          -- from Get-WinEvent -ListLog; a decrease means the log was cleared
+  record_count      INTEGER,
+  last_ingest_at    TEXT
+);
+
+-- ---------------------------------------------------------------- health observations
+-- Deduplicated to one row per (task, day, hour) at ingest, matching what the console has always
+-- counted. HOUR IS KEPT, which the text-log parser discarded, and keeping it is the whole reason
+-- hour-level drill-down becomes possible.
+--
+-- verdict is stored INLINE and unindexed. A dictionary table was measured and is a pessimisation
+-- here: verdict strings embed timestamps, so 16,195 observations produced 12,303 distinct strings
+-- of which 11,892 were singletons, and the encoded database came out 766 KB LARGER than the inline
+-- one (2,990,080 vs 2,224,128 bytes).
+CREATE TABLE IF NOT EXISTS health_obs (
+  task      TEXT NOT NULL,
+  day       TEXT NOT NULL,
+  hour      INTEGER NOT NULL,
+  klass     TEXT NOT NULL,        -- ok | bad | stale | neutral | other
+  verdict   TEXT,
+  last_run  TEXT,                 -- the LastRunTime this observation reported, if any
+  PRIMARY KEY (task, day, hour)
+);
+CREATE INDEX IF NOT EXISTS ix_health_day    ON health_obs(day);
+CREATE INDEX IF NOT EXISTS ix_health_task   ON health_obs(task, day);
+
+CREATE TABLE IF NOT EXISTS health_ingest (
+  id            INTEGER PRIMARY KEY CHECK (id = 1),
+  source_path   TEXT,
+  head_sig      TEXT,             -- first bytes; a change means the file was replaced or truncated
+  size_bytes    INTEGER,
+  last_ts       TEXT,
+  last_ingest_at TEXT
+);
