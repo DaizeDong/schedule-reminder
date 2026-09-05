@@ -71,6 +71,60 @@ _UA = "AgentCenter-Relay/1.0 (+https://discord.com)"
 _API = "https://discord.com/api/v10"
 _DEFAULT_REGISTRY = os.path.join(os.path.expanduser("~"), ".agent-center", "registry.json")
 
+# Discord rejects a single message whose `content` exceeds 2000 characters with HTTP 400,
+# and the whole message is then lost. _CHUNK_BUDGET leaves room for the "(n/m)" marker that
+# every part of a split message carries.
+_DISCORD_LIMIT = 2000
+_CHUNK_BUDGET = 1900
+
+
+def split_for_discord(text: str, budget: int = _CHUNK_BUDGET) -> list[str]:
+    """Split an over-long body into deliverable parts, each marked "(n/m)".
+
+    Why this exists. The original design refused to truncate, on the correct grounds that a
+    summary which quietly loses its tail reads as complete. But refusing to truncate was
+    implemented as refusing to adapt at all, so an over-long body produced HTTP 400 and the
+    caller lost the ENTIRE message rather than its tail. Losing everything is strictly worse
+    than losing the end, and it fails in the worst possible direction: an alert body that
+    enumerates failures grows with the number of failures, so the more there is to report,
+    the less likely the report is to arrive. Measured on a monitoring digest: three
+    consecutive HTTP 400s at 2066, 2072 and 2006 characters, all just over the wall.
+
+    So: never silently drop anything, and never drop everything. Split on line boundaries
+    where possible, hard-split only a single line that is itself over budget, and mark every
+    part so a reader can see that more is coming. A caller that wants the old all-or-nothing
+    behaviour can check len(text) itself before calling.
+    """
+    if len(text) <= _DISCORD_LIMIT:
+        return [text]
+
+    pieces: list[str] = []
+    cur = ""
+    for line in text.split("\n"):
+        while len(line) > budget:
+            # A single line longer than the budget: emit what is left of the current piece,
+            # then hard-split the line. Nothing is dropped, the break is just not on a newline.
+            if cur:
+                pieces.append(cur)
+                cur = ""
+            pieces.append(line[:budget])
+            line = line[budget:]
+        if not cur:
+            cur = line
+        elif len(cur) + 1 + len(line) <= budget:
+            cur += "\n" + line
+        else:
+            pieces.append(cur)
+            cur = line
+    if cur:
+        pieces.append(cur)
+
+    total = len(pieces)
+    out = ["(%d/%d)\n%s" % (i + 1, total, p) for i, p in enumerate(pieces)]
+    # The marker must never be what pushes a part back over the wall.
+    assert all(len(p) <= _DISCORD_LIMIT for p in out), "chunking produced an over-limit part"
+    return out
+
 
 def registry_path() -> str:
     return os.environ.get("AGENT_CENTER_CONFIG") or _DEFAULT_REGISTRY
@@ -124,9 +178,23 @@ def _post_bot(channel_id: str, content: str, files: list | None, token: str) -> 
 
     Multipart is assembled by hand rather than pulled from a library because this runs from
     scheduled tasks under whatever python is on PATH, and the whole Agent Center is stdlib only for
-    that reason. Content is NOT silently truncated: a caller that overruns Discord's 2000 character
-    limit gets a visible failure, because a summary that quietly loses its tail reads as complete.
+    that reason. Content is never silently truncated: an over-long body is split by
+    split_for_discord into marked parts so that nothing is lost and the split is visible. It used
+    to be neither truncated nor split, which meant an over-long body was lost in full; see that
+    function for why that is the worse of the two failures.
     """
+    parts = split_for_discord(content or "")
+    if len(parts) > 1:
+        # Attachments ride the first part; the rest carry text only. Sending the files with
+        # every part would upload them N times.
+        ok = _post_bot(channel_id, parts[0], files, token)
+        for part in parts[1:]:
+            if not _post_bot(channel_id, part, None, token):
+                ok = False
+        sys.stderr.write("relay: body was %d chars, delivered as %d parts\n"
+                         % (len(content or ""), len(parts)))
+        return ok
+    content = parts[0]
     if os.environ.get("AGENT_CENTER_RELAY_DRYRUN"):
         sys.stdout.write("DRYRUN bot <%s> %s%s\n" % (
             channel_id, (content or "")[:80],
@@ -180,7 +248,14 @@ def _big_brother(text: str) -> bool:
         if here not in sys.path:
             sys.path.insert(0, here)
         import bigbrother  # noqa: E402  (local sibling module; stdlib DM sender)
-        return bool(bigbrother.send_dm(text))
+        # This is the LAST channel: whatever could not be delivered anywhere else arrives here.
+        # An over-long body must not die on the one path that exists to catch the others.
+        parts = split_for_discord(text or "")
+        ok = True
+        for part in parts:
+            if not bigbrother.send_dm(part):
+                ok = False
+        return ok
     except Exception as e:
         sys.stderr.write("relay: big-brother fallback failed (%s)\n" % e)
         return False
@@ -198,8 +273,19 @@ def relay(stream: str, content: str, username: str | None = None) -> bool:
     if not s or not s.get("webhook"):
         sys.stderr.write("relay: stream %r not configured; using Big Brother fallback\n" % stream)
         return _big_brother("[%s] %s" % (stream, content))
-    payload = {"content": content, "username": username or s.get("username") or stream}
-    return _post_webhook(s["webhook"], payload)
+    name = username or s.get("username") or stream
+    parts = split_for_discord(content or "")
+    ok = True
+    for part in parts:
+        # Every part must land. Returning True after a partial delivery would report a
+        # message as sent while its tail is missing, which is the failure this whole
+        # function exists to avoid.
+        if not _post_webhook(s["webhook"], {"content": part, "username": name}):
+            ok = False
+    if len(parts) > 1:
+        sys.stderr.write("relay: body was %d chars, delivered as %d parts\n"
+                         % (len(content or ""), len(parts)))
+    return ok
 
 
 def send(content: str, stream: str | None = None, channel_id: str | None = None,

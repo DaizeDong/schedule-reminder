@@ -435,13 +435,50 @@ def add_item(title, *, kind="task", due_at=None, state="pending", priority=0, pr
                 if existing is not None:
                     # idempotent replay: merge ext, refresh mutable fields, keep original id
                     merged_ext = _merge_ext(existing["ext"], ext)
-                    conn.execute(
-                        "UPDATE items SET title=?, description=?, due_at=?, priority=?, "
-                        "tags=?, source=?, ext=?, updated_at=? WHERE idempotency_key=?",
-                        (str(title), description, fields["due_at"], int(priority),
-                         _dump_json(tags), source, merged_ext, now, idempotency_key),
+                    # Re-arm when an already-notified row is pushed to a LATER due_at.
+                    #
+                    # tick() selects on `notified_at IS NULL`, and only a recurrence rolls that
+                    # back (§2.4). Everything else fires once and is marked notified forever. That
+                    # makes the heartbeat pattern silently inert: a producer that upserts a fixed
+                    # idempotency key every run, moving due_at forward so that its SILENCE becomes
+                    # the alarm, gets exactly one notification in the lifetime of the key. After
+                    # that every upsert writes a due_at onto a row tick will never look at again.
+                    #
+                    # The argument for re-arming is not preference, it is that the write is
+                    # otherwise meaningless: under the old behaviour, setting a future due_at on a
+                    # notified row can never cause anything to happen, so the operation was a
+                    # no-op that looked like an update. A write that cannot have an effect is the
+                    # same failure class as a check that cannot fail.
+                    #
+                    # The trigger is deliberately narrow: strictly later due_at, and only when the
+                    # row was already notified. Replaying the same due_at changes nothing, so a
+                    # caller that merely retries does not resurrect an acknowledged reminder. A
+                    # done or cancelled row is excluded by tick's own state filter, so clearing
+                    # the flag here cannot revive something that was deliberately closed.
+                    rearm = (
+                        existing["notified_at"] is not None
+                        and fields["due_at"] is not None
+                        and existing["due_at"] is not None
+                        and str(fields["due_at"]) > str(existing["due_at"])
                     )
-                    _append_event(conn, existing["id"], actor or source, "idempotent_replay")
+                    if rearm:
+                        conn.execute(
+                            "UPDATE items SET title=?, description=?, due_at=?, priority=?, "
+                            "tags=?, source=?, ext=?, updated_at=?, "
+                            "notified_at=NULL, next_retry_at=NULL, retry_count=0, claimed_at=NULL "
+                            "WHERE idempotency_key=?",
+                            (str(title), description, fields["due_at"], int(priority),
+                             _dump_json(tags), source, merged_ext, now, idempotency_key),
+                        )
+                        _append_event(conn, existing["id"], actor or source, "rearmed")
+                    else:
+                        conn.execute(
+                            "UPDATE items SET title=?, description=?, due_at=?, priority=?, "
+                            "tags=?, source=?, ext=?, updated_at=? WHERE idempotency_key=?",
+                            (str(title), description, fields["due_at"], int(priority),
+                             _dump_json(tags), source, merged_ext, now, idempotency_key),
+                        )
+                        _append_event(conn, existing["id"], actor or source, "idempotent_replay")
                     return _row_to_item(_get_raw(conn, existing["id"]))
             cols = ", ".join(ITEM_COLUMNS)
             ph = ", ".join("?" for _ in ITEM_COLUMNS)
@@ -636,7 +673,13 @@ def get_item(item_id, *, db_path=None):
 
 def list_items(*, state=None, source=None, kind=None, due_before=None, active_only=False,
                limit=100, cursor=None, db_path=None):
-    """List items with simple filters + keyset pagination by id (UUIDv7 is time-ordered)."""
+    """List items with simple filters + keyset pagination by id (UUIDv7 is time-ordered).
+
+    An email-monitor ``需回复:`` task stops being actionable when its explicit deadline is reached.
+    Keep the row for history/audit and for ordinary (non-active) queries, but do not return it from
+    any active view.  Both the email digest and Agent Center build their actionable lists through
+    this shared query, so applying the rule in SQL also keeps pagination correct for every caller.
+    """
     conn = _connect(db_path)
     try:
         where, params = [], []
@@ -649,6 +692,13 @@ def list_items(*, state=None, source=None, kind=None, due_before=None, active_on
         if active_only:
             where.append("state IN (%s)" % ",".join("?" * len(ACTIVE_STATES)))
             params.extend(ACTIVE_STATES)
+            # Use COALESCE so a source-less reminder is not accidentally removed by SQL's
+            # three-valued NULL logic.  Expiry is inclusive: at due_at the reply window is over.
+            where.append(
+                "NOT (COALESCE(source, '') = ? AND title LIKE ? "
+                "AND due_at IS NOT NULL AND due_at <= ?)"
+            )
+            params.extend(("email-monitor", "需回复:%", resolve_now()))
         if due_before:
             where.append("due_at IS NOT NULL AND due_at <= ?")
             params.append(to_rfc3339(parse_dt(due_before)))
@@ -1003,10 +1053,83 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
             conn.execute(
                 "INSERT INTO meta(key,value) VALUES('tick_count','1') "
                 "ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)")
+        # The sweep rides the tick rather than getting its own schedule: a separate task is a
+        # fourth thing to register, monitor and back up, and this one has nothing to do that
+        # the tick is not already awake for.
+        swept = sweep_lapsed(now=now_s, dry_run=dry_run, db_path=db_path, actor=actor)
         return {"dispatched": dispatched, "retried": retried, "blocked": blocked,
-                "skipped": skipped, "now": now_s}
+                "skipped": skipped, "now": now_s,
+                "lapsed": swept["lapsed"], "undelivered": swept["undelivered"]}
     finally:
         conn.close()
+
+
+# --- lapsed sweep ---------------------------------------------------------------------------
+# How long past due an item may sit before the sweep closes it. Not zero, deliberately: a reminder
+# fires AT its due time, and closing it in the same minute would take it off the list before the
+# person it was for has had a chance to look. Seven days is "you have had a week of daily digests".
+_LAPSE_GRACE_DAYS = int(os.environ.get("SCHEDULE_LAPSE_GRACE_DAYS", "7"))
+
+
+def sweep_lapsed(*, now=None, grace_days=None, dry_run=False, db_path=None, actor="sweep"):
+    """Close reminders whose moment came and went, and REPORT the ones that never arrived.
+
+    WHY THIS EXISTS. Measured 2026-09-05: 72 overdue items were open at once, the oldest from
+    mid-July. Among them sat a confirmation due that same day. Seventy-two things flagged red is
+    the same signal as none flagged at all -- the one that mattered was indistinguishable from a
+    car wash nobody did in July. An overdue list only works if being on it is rare.
+
+    THE LINE THIS SWEEP WILL NOT CROSS. It closes only what was actually DELIVERED. An item with
+    no notified_at was never put in front of anyone, and closing it would not be tidying, it would
+    be deleting a message the person never received. That is not hypothetical: this store already
+    holds an item titled "task-health digest UNDELIVERED (relay rc=1)", which is what a delivery
+    failure looks like from the inside. Those are returned under `undelivered` for the caller to
+    surface, and left exactly where they are.
+
+    Also left alone, each for its own reason:
+      * `doing`   -- somebody picked it up; lapsing it would erase work in progress.
+      * `blocked` -- parked on purpose, with a reason; the sweep is not the thing to un-park it.
+      * recurring -- these re-arm rather than expire, so a past due_at is a normal intermediate
+                     state, not an expiry.
+
+    Terminal state is `cancelled`, not `done`. `done` would assert the task was completed, which
+    nobody checked and which is usually false. `cancelled` says only what happened: the reminder
+    lapsed. It is also the reopen-able terminal state, so a mistake here costs one command.
+    """
+    from datetime import timedelta
+
+    grace = _LAPSE_GRACE_DAYS if grace_days is None else int(grace_days)
+    now_s = resolve_now(now)
+    cutoff = to_rfc3339(parse_dt(now_s) - timedelta(days=grace))
+    conn = _connect(db_path)
+    lapsed, undelivered = [], []
+    try:
+        rows = conn.execute(
+            "SELECT id, title, due_at, notified_at FROM items "
+            "WHERE state = 'pending' AND due_at IS NOT NULL AND due_at < ? "
+            "AND (recurrence IS NULL OR recurrence = '') ORDER BY due_at ASC",
+            (cutoff,),
+        ).fetchall()
+        for r in rows:
+            if not r["notified_at"]:
+                undelivered.append({"id": r["id"], "title": r["title"], "due_at": r["due_at"]})
+                continue
+            if dry_run:
+                lapsed.append({"id": r["id"], "title": r["title"], "due_at": r["due_at"]})
+                continue
+            try:
+                transition(r["id"], "cancelled", db_path=db_path, actor=actor,
+                           reason="lapsed: due %s, more than %d day(s) ago, and it was delivered"
+                                  % (r["due_at"][:10], grace))
+                lapsed.append({"id": r["id"], "title": r["title"], "due_at": r["due_at"]})
+            except Exception as e:
+                # One stubborn row must not stop the sweep, and must not vanish either.
+                undelivered.append({"id": r["id"], "title": r["title"], "due_at": r["due_at"],
+                                    "error": str(e)})
+    finally:
+        conn.close()
+    return {"lapsed": lapsed, "undelivered": undelivered,
+            "grace_days": grace, "cutoff": cutoff, "dry_run": bool(dry_run)}
 
 
 def _record_notify_failure(conn, item_id, now_s, detail, blocked, retried, actor):

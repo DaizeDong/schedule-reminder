@@ -195,6 +195,11 @@ def cmd_tick(a):
     return _emit(res)
 
 
+def cmd_sweep(a):
+    return _emit(store.sweep_lapsed(now=a.now, grace_days=a.grace_days,
+                                    dry_run=a.dry_run, db_path=a.db))
+
+
 def cmd_events(a):
     return _emit({"events": store.get_events(a.id, db_path=a.db)})
 
@@ -210,6 +215,11 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init").set_defaults(fn=cmd_init)
+
+    s = sub.add_parser("sweep"); s.set_defaults(fn=cmd_sweep)
+    s.add_argument("--now", default=None)
+    s.add_argument("--grace-days", dest="grace_days", type=int, default=None)
+    s.add_argument("--dry-run", dest="dry_run", action="store_true")
 
     s = sub.add_parser("add"); s.set_defaults(fn=cmd_add)
     s.add_argument("--title", required=True)
