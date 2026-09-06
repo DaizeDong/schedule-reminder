@@ -185,7 +185,11 @@ def _git(workspace, *args):
         p = subprocess.run(["git", *args], cwd=workspace, capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=60, **_NOWINDOW)
         return p.stdout if p.returncode == 0 else ""
-    except Exception:
+    except Exception as e:
+        # Empty output is read downstream as "the working tree is clean". A git that timed out or
+        # never ran says nothing about the tree, so it must not look like a clean one.
+        _log("git %s did not complete in %s (%s); treating output as empty"
+             % (" ".join(args), workspace, type(e).__name__))
         return ""
 
 

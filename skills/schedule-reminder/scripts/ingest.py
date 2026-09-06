@@ -326,6 +326,11 @@ def poll_stream(stream, channel_id, token, owner=None, log=None):
     msgs = _fetch(channel_id, token, after=after)
     if not msgs:
         return []
+    if log and len(msgs) >= 50:
+        # One page, no pagination loop, and the cursor advances to the newest of this page. A full
+        # page means the read may be partial; say so instead of letting it look complete.
+        log("ingest: %s -> read a full page of %d message(s); this poll may not have covered the "
+            "whole backlog" % (stream, len(msgs)))
     with open(lf, "w") as f:
         f.write(msgs[0]["id"])  # newest first
     users = [m for m in reversed(msgs) if _is_user(m, owner)]  # oldest first
@@ -418,10 +423,17 @@ def _emoji_ref(emoji):
 
 def _reactors(channel_id, msg_id, api_ref, token, limit=100):
     try:
-        return _get("%s/channels/%s/messages/%s/reactions/%s?limit=%d"
-                    % (_API, channel_id, msg_id, api_ref, limit), token)
+        users = _get("%s/channels/%s/messages/%s/reactions/%s?limit=%d"
+                     % (_API, channel_id, msg_id, api_ref, limit), token)
     except Exception:
         return []
+    if len(users) >= limit:
+        # One page only. The caller scans this list for the owner; an owner who reacted but fell
+        # outside the page is indistinguishable here from an owner who did not react at all.
+        print("ingest: reaction %s on message %s returned a full page of %d reactor(s); reactors "
+              "beyond the first %d were not read" % (api_ref, msg_id, len(users), limit),
+              file=sys.stderr)
+    return users
 
 
 def _reactions_inbox_file(stream):
