@@ -206,7 +206,36 @@ def ingest_runlog(con, days: int) -> tuple[bool, int, str]:
         con.execute("ROLLBACK")
         note_run(con, "runlog", started, False, 0, str(ex)[:400])
         return False, 0, str(ex)
+    _stamp_runlog_success(added)
     return True, added, ""
+
+
+def _stamp_runlog_success(added: int) -> None:
+    """Touch a file that ONLY a successful runlog ingest writes.
+
+    The task-creation spec requires a declared artifact that a failing run cannot produce, because
+    a monitor watching an artifact that the failure path also writes is watching nothing. Everything
+    else this script touches fails that test: the .sqlite3 is written on every run including the
+    ones that record a failure, and stdout is not a file.
+
+    last_ingest_at inside runlog_ingest is already success-only -- the failure path ROLLBACKs -- but
+    it lives in the database, and the health monitor reads file mtimes, not SQL. So the same fact is
+    mirrored where the monitor can see it.
+
+    Written AFTER the COMMIT on purpose. A stamp written before the transaction lands would claim a
+    success that a rollback could still take away.
+    """
+    try:
+        p, _ = console_store.resolve_db()
+        if not p:
+            return
+        stamp = Path(p).parent / "runlog-ingest-ok.txt"
+        stamp.write_text("%s added=%d" % (now(), added) + chr(10), encoding="utf-8")
+    except Exception:
+        # A stamp that cannot be written must not fail an ingest that DID succeed. The monitor will
+        # see a stale artifact and say so, which is the correct outcome: the work happened, the
+        # evidence did not.
+        pass
 
 
 # --------------------------------------------------------------------------- durable export
@@ -343,6 +372,10 @@ def main() -> int:
         print(f"  runlog : {'ok' if ok else 'FAIL'}  +{n}  {msg}")
         ok_all &= ok
         if msg: msgs.append(msg)
+    else:
+        # 跳过要出声, 跟上面 health 那条同一个规矩。--skip-runlog 是给每小时那次用的快速档,
+        # 而快速档跟"跑过了"必须长得不一样, 否则一份跳过了运行历史的报告读起来跟完整的一样。
+        print("  runlog : skipped (--skip-runlog). 这是跳过,不是通过;运行历史这一轮没有更新。")
 
     ok, n, msg = ingest_tasks(con)
     print(f"  tasks  : {'ok' if ok else 'FAIL'}  +{n}  {msg}")
