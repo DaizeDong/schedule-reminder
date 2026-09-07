@@ -59,6 +59,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import console_store
+import evtlog
 import freshness
 import history
 import maint
@@ -131,13 +132,35 @@ def load_runlog() -> dict:
     The log only goes back to the day it was enabled. An empty result therefore means NOT RECORDED
     YET, and is reported that way rather than as zero runs.
     """
-    rc, out, err = run_ps(RUNLOG, timeout=180)
-    if rc != 0 or not out:
-        return {"available": False, "reason": f"读运行日志失败: {err or out or '无输出'}", "tasks": {}}
+    # 优先走 EvtQuery。同一批 200 条事件,PowerShell 那条路取出来约 5.5 秒、再碰一次
+    # 显示名又要 5.1 秒;EvtQuery 取出来加渲染一共 2 毫秒。差三个数量级,慢的不是日志,
+    # 是每条事件都去解析一次 provider 的元数据。这个差距不是优化是可行性:整段日志
+    # 曾经要十几分钟才读得完,于是它被关掉了,于是「这个任务到底跑没跑成」一直是空的。
+    #
+    # 读不到就明说并回落,不装作成功:一段空的运行日志和一段读不到的运行日志,
+    # 在界面上长得一模一样。
+    raw = None
+    fast_why = None
     try:
-        raw = json.loads(out)
+        fast = evtlog.read(days=30)
+        if fast.get("enabled"):
+            raw = fast
+        else:
+            fast_why = fast.get("reason")
     except Exception as e:
-        return {"available": False, "reason": f"运行日志解析失败: {e}", "tasks": {}}
+        fast_why = f"{type(e).__name__}: {e}"
+
+    if raw is None:
+        rc, out, err = run_ps(RUNLOG, timeout=180)
+        if rc != 0 or not out:
+            return {"available": False,
+                    "reason": f"读运行日志失败: {err or out or '无输出'}"
+                              + (f"(快路不可用: {fast_why})" if fast_why else ""),
+                    "tasks": {}}
+        try:
+            raw = json.loads(out)
+        except Exception as e:
+            return {"available": False, "reason": f"运行日志解析失败: {e}", "tasks": {}}
     if not raw.get("enabled"):
         return {"available": False,
                 "reason": (raw.get("reason") or "任务运行历史日志是关闭的") +
