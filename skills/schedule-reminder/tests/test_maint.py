@@ -65,7 +65,7 @@ def test_action_not_in_the_table_is_refused(dirs):
         assert e.value.code == "bad_action", a
 
 
-def test_action_table_is_exactly_these_eight(dirs):
+def test_action_table_is_exactly_these_nine(dirs):
     """钉住集合本身:加动作是一个要有人明确改这行的动作,不是顺手就能滑进去的。
 
     repo.fetch 在这里,而 repo.push **不在**,这是刻意的:push 是对外动作,撤不回来,
@@ -73,7 +73,8 @@ def test_action_table_is_exactly_these_eight(dirs):
     """
     assert set(M.ACTIONS) == {"skill.archive", "skill.restore",
                               "plugin.enable", "plugin.disable", "repo.fetch",
-                              "clean.tempgit", "memory.archive", "memory.restore"}
+                              "clean.tempgit", "memory.archive", "memory.restore",
+                              "task.retire"}
     assert not any(a.endswith(".push") for a in M.ACTIONS)
     # 只有一个删除动作,而且它不收路径参数:删哪些由模块自己按形状加年龄判定。
     assert [a for a in M.ACTIONS if a.startswith("clean.")] == ["clean.tempgit"]

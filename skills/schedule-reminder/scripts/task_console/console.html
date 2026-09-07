@@ -773,6 +773,30 @@ function renderMem(){
     + `</div>`;
 }
 
+
+// 退役。它同时改三处登记,所以流程是:先拉一次只读计划给人看,再问原因,最后才执行。
+// 顺序是刻意的 : 一个先问原因再告诉你要改什么的流程,等于让人在不知道后果时下决定。
+async function retireTask(name){
+  let p;
+  try{ p=await api("/api/retire/plan",{method:"POST",body:JSON.stringify({name})}); }
+  catch(e){ toast(`${name}: ${e.message}`,"bad"); return; }
+  if(p.error){ toast(`${name}: ${p.error}`,"bad"); return; }
+  if(p.blocked&&p.blocked.length){
+    toast(`${name}: 这几处没配置,不能只做一半 (${p.blocked.join(", ")})`,"bad"); return;
+  }
+  const lines=p.steps.map(s=>`  ${s.step}: ${s.state}`).join("\n");
+  if(!confirm(`退役 ${name}\n\n${lines}\n\n共 ${p.changes} 处会被改动。继续?`)) return;
+  const reason=prompt(`退役原因(必填,会写进任务的 Description):`,"");
+  if(!reason||!reason.trim()){ toast("没有原因就不退役",'bad'); return; }
+  try{
+    const r=await api("/api/maint/act",{method:"POST",
+      body:JSON.stringify({action:"task.retire",name,arg:reason})});
+    if(r.error){ toast(`${name}: ${r.error}`,"bad"); return; }
+    toast(`${name} 已退役(${(r.done||[]).join("+")||"无需改动"})`);
+    await load();
+  }catch(e){ toast(`${name}: ${e.message}`,"bad"); }
+}
+
 function renderHeat(){
   const H=DATA.history||{};
   if(!H.available){ $("hmnote").textContent=(DATA.warnings||[]).find(w=>w.indexOf("历史")>=0)||"无历史"; $("heat").innerHTML=""; return; }
@@ -812,6 +836,7 @@ const C=[
    return `<td class="ops">`
      +`<button class="mini" data-act="run" data-name="${esc(r.name)}" title="立即运行">▶</button>`
      +(run?`<button class="mini danger" data-act="stop" data-name="${esc(r.name)}" title="停止">■</button>`:"")
+     +`<button class="mini danger" data-retire="${esc(r.name)}" title="退役:停用 + 退出备份名单 + 退出健康清单">⌫</button>`
      +(on?`<button class="mini danger" data-act="disable" data-name="${esc(r.name)}" title="停用">⏸</button>`
          :`<button class="mini" data-act="enable" data-name="${esc(r.name)}" title="启用">⏵</button>`)
      +`</td>`;
@@ -920,6 +945,8 @@ document.addEventListener("click",e=>{
   const fc=e.target.closest("[data-fr]");
   if(fc){ const n=fc.dataset.fr; const q=$("q");
     q.value = (q.value===n) ? "" : n; render(); q.focus(); return; }
+  const rt=e.target.closest("button[data-retire]");
+  if(rt){ e.stopPropagation(); retireTask(rt.dataset.retire); return; }
   const mt=e.target.closest("button[data-mt]");
   if(mt){ e.stopPropagation(); maintAct(mt.dataset.mt, mt.dataset.name); return; }
   const b=e.target.closest("button[data-act]");
