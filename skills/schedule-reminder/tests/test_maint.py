@@ -5,7 +5,7 @@
 指向别处的链接、不在表里的动作。每一条都必须**拒绝整个动作**,而不是清洗一下再执行。
 
 另一半是「未配置」契约:没配根目录时必须报 available=False 并说明原因,
-而不是返回一个空列表 —— 空列表在页面上和「一个都没有问题」长得一模一样。
+而不是返回一个空列表:空列表在页面上和「一个都没有问题」长得一模一样。
 """
 import os
 import sys
@@ -65,10 +65,15 @@ def test_action_not_in_the_table_is_refused(dirs):
         assert e.value.code == "bad_action", a
 
 
-def test_action_table_is_exactly_four(dirs):
-    # 钉住集合本身:加动作是一个要有人明确改这行的动作。
+def test_action_table_is_exactly_these_five(dirs):
+    """钉住集合本身:加动作是一个要有人明确改这行的动作,不是顺手就能滑进去的。
+
+    repo.fetch 在这里,而 repo.push **不在**,这是刻意的:push 是对外动作,撤不回来,
+    一个能一键推送的按钮迟早会在没人看的时候被点到。
+    """
     assert set(M.ACTIONS) == {"skill.archive", "skill.restore",
-                              "plugin.enable", "plugin.disable"}
+                              "plugin.enable", "plugin.disable", "repo.fetch"}
+    assert not any(a.endswith(".push") for a in M.ACTIONS)
 
 
 # ---------- 移动语义 ----------
@@ -112,7 +117,7 @@ def test_child_gate_holds_when_the_name_gate_is_bypassed(tmp_path, monkeypatch):
     """第二道防线单独验一次,方法是在测试里把第一道拆掉。
 
     这条用例存在的理由是一次投毒失败:去掉子项闸之后整套测试照样全绿。原因不是测试写坏了,
-    是**名字闸完好时子项闸根本够不着** —— 名字里不允许任何分隔符,于是 root/name 永远
+    是**名字闸完好时子项闸根本够不着**:名字里不允许任何分隔符,于是 root/name 永远
     是直接子项。也就是说它作为「防名字穿越的第二层」是不可达的,它真正防的是 root
     自己被指到别处。
 

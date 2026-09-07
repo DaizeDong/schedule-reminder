@@ -203,3 +203,16 @@ def test_selfcheck_with_token_answers(srv):
     st, body = call(srv, "GET", "/api/selfcheck", token=TOKEN)
     assert st == 200
     assert b'"rows"' in body and b'"probed"' in body
+
+
+def test_repos_read_without_token_is_403(srv):
+    st, _ = call(srv, "GET", "/api/repos")
+    assert st == 403
+
+
+def test_repo_push_is_not_an_action(srv):
+    # 动作表里没有 push,从端点也进不去。
+    st, body = call(srv, "POST", "/api/maint/act", token=TOKEN,
+                    body={"action": "repo.push", "name": "x"})
+    assert st == 400
+    assert b"bad_action" in body
