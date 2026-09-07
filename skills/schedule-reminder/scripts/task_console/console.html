@@ -164,6 +164,38 @@ tr.det>td{background:var(--panel2);white-space:normal;padding:6px 10px 8px;borde
 #help table{border-collapse:collapse}
 #help td{padding:1px 12px 1px 0}
 [hidden]{display:none!important}
+
+/* ---- 新鲜度灯板 ------------------------------------------------------------------
+   一格一个任务,按严重度排序,坏的浮到左上。颜色是唯一的主要信号,文字只出现在异常行。
+   unknown 刻意既不像 up 也不像 paused:虚线空心格。「没查成」和「查过了没问题」
+   在这块板子上必须一眼分得开,这是整个面板存在的理由。 */
+.fr-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:8px 10px 0}
+.fr-stack{display:flex;height:16px;flex:1;min-width:180px;border-radius:2px;overflow:hidden;
+  background:var(--line2)}
+.fr-stack i{height:100%;display:block}
+.fr-cov{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim);white-space:nowrap}
+.fr-cov b{font-variant-numeric:tabular-nums;font-weight:600}
+.fr-key{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--dim);padding:6px 10px 0}
+.fr-key span{display:inline-flex;align-items:center;gap:4px}
+.fr-board{display:flex;flex-wrap:wrap;gap:3px;padding:8px 10px}
+.fr-c{width:15px;height:15px;border-radius:2px;cursor:pointer;border:1px solid transparent}
+.fr-c.s-up{background:var(--ok)}
+.fr-c.s-running{background:var(--cyan)}
+.fr-c.s-grace{background:var(--warn)}
+.fr-c.s-down{background:var(--bad)}
+.fr-c.s-paused{background:var(--idle);opacity:.45}
+.fr-c.s-never{background:repeating-linear-gradient(45deg,var(--amber),var(--amber) 2px,
+  transparent 2px,transparent 4px);border-color:var(--amber)}
+.fr-c.s-unknown{background:transparent;border:1px dashed var(--faint)}
+.fr-c:hover{outline:2px solid var(--cyan);outline-offset:1px}
+.fr-list{padding:0 10px 9px;display:flex;flex-direction:column;gap:1px}
+.fr-r{display:grid;grid-template-columns:14px minmax(120px,190px) 1fr auto;gap:9px;
+  align-items:center;font-size:12px;padding:3px 0;border-top:1px solid var(--line2)}
+.fr-r .nm{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fr-r .why{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fr-r .ag{font-variant-numeric:tabular-nums;color:var(--faint);white-space:nowrap;font-size:11px}
+.fr-none{padding:8px 10px 10px;font-size:12px;color:var(--ok)}
+.fr-off{padding:8px 10px 10px;font-size:12px;color:var(--warn)}
 </style>
 </head>
 <body>
@@ -189,6 +221,17 @@ tr.det>td{background:var(--panel2);white-space:normal;padding:6px 10px 8px;borde
 
 <main>
   <div id="warns"></div>
+
+  <div class="box" id="frbox">
+    <h2>产物新鲜度<span class="n" id="frnote"></span></h2>
+    <div class="fr-head">
+      <div class="fr-stack" id="frstack"></div>
+      <div class="fr-cov">覆盖 <b id="frcov">-</b></div>
+    </div>
+    <div class="fr-key" id="frkey"></div>
+    <div class="fr-board" id="frboard"></div>
+    <div class="fr-list" id="frlist"></div>
+  </div>
 
   <div class="box" id="tlbox">
     <h2>今日时间轴
@@ -324,7 +367,7 @@ function renderTL(){
     const evt=(r.eventDriven.length&&!r.points.length&&!r.spans.length)
       ? `<span class="tlevt">${esc(r.eventDriven.join("/"))} 触发,无固定时刻</span>`:"";
     const nowBar=vis(nowM)?`<i class="tlnow" style="left:${tlPos(nowM)}%"></i>`:"";
-    return `<div class="tlrow"><div class="tlname" title="${esc(r.name)}${r.desc?" — "+esc(r.desc):""}">${esc(r.name)}</div>
+    return `<div class="tlrow"><div class="tlname" title="${esc(r.name)}${r.desc?" : "+esc(r.desc):""}">${esc(r.name)}</div>
       <div class="tltrack">${spans}${marks}${acts}${evt}${nowBar}</div></div>`;
   }).join("");
   $("tl").innerHTML=`<div class="hours">${tlTicks()}</div>${rows}`;
@@ -347,6 +390,67 @@ function tlPan(dxPct){
   scheduleTL();
 }
 function tlReset(){ tlFrom=0; tlTo=1440; scheduleTL(); }
+
+
+// 新鲜度灯板。状态由后端现算(freshness.py),这里只负责把它画出来,不在前端重新判定 :
+// 两处各判一次必然漂移,而漂移的那一方看起来同样理直气壮。
+const FR_LABEL={up:"正常",running:"运行中",grace:"宽限",down:"失败",never:"未跑过",
+                paused:"停用",unknown:"未查成"};
+const FR_ORDER=["down","never","grace","unknown","paused","running","up"];
+const FR_COLOR={up:"var(--ok)",running:"var(--cyan)",grace:"var(--warn)",down:"var(--bad)",
+                paused:"var(--idle)",never:"var(--amber)",unknown:"var(--faint)"};
+
+function frAge(t){
+  if(!t.last_run) return "";
+  const h=(Date.now()/1000-t.last_run)/3600;
+  return h<48 ? h.toFixed(1)+"h" : (h/24).toFixed(0)+"d";
+}
+
+function renderFresh(){
+  const F=DATA.freshness;
+  if(!F){ $("frbox").style.display="none"; return; }
+  $("frbox").style.display="";
+  const S=F.summary||{}, ts=F.tasks||[];
+  // 没有清单就说没有清单。画一块空的绿板等于用「没检查」冒充「没问题」。
+  if(F.reason){
+    $("frnote").textContent="";
+    $("frstack").innerHTML=""; $("frcov").textContent="0%";
+    $("frkey").innerHTML=""; $("frboard").innerHTML="";
+    $("frlist").innerHTML=`<div class="fr-off">${esc(F.reason)}</div>`;
+    return;
+  }
+  const counts=S.counts||{}, total=S.total||0;
+  $("frnote").textContent="";
+  $("frstack").innerHTML=FR_ORDER.filter(k=>counts[k]).map(k=>
+    `<i style="width:${(counts[k]/total*100).toFixed(2)}%;background:${FR_COLOR[k]}" `
+    +`title="${FR_LABEL[k]} ${counts[k]}"></i>`).join("");
+
+  const cov=Math.round((S.coverage||0)*100);
+  const covEl=$("frcov");
+  covEl.textContent=cov+"%";
+  // 覆盖率本身就是判据的体检:一个被喂了空的检查器,打印的绿色和真没查出问题的一模一样。
+  covEl.style.color = cov>=80 ? "var(--ok)" : cov>=50 ? "var(--warn)" : "var(--bad)";
+  covEl.title=`${S.judged||0}/${total} 个任务拿到了判据`;
+
+  $("frkey").innerHTML=FR_ORDER.filter(k=>counts[k]).map(k=>
+    `<span><i class="fr-c s-${k}" style="width:9px;height:9px"></i>${FR_LABEL[k]} ${counts[k]}</span>`
+  ).join("");
+
+  $("frboard").innerHTML=ts.map(t=>{
+    const why=(t.reasons||[]).join(" · ");
+    return `<i class="fr-c s-${t.state}" data-fr="${esc(t.name)}" `
+      +`title="${esc(t.name)} : ${FR_LABEL[t.state]}${why?" : "+esc(why):""}"></i>`;
+  }).join("");
+
+  const bad=ts.filter(t=>t.state!=="up"&&t.state!=="running"&&t.state!=="paused");
+  $("frlist").innerHTML = bad.length
+    ? bad.map(t=>`<div class="fr-r">
+        <i class="fr-c s-${t.state}" style="cursor:default"></i>
+        <span class="nm" title="${esc(t.label||t.name)}">${esc(t.name)}</span>
+        <span class="why">${esc((t.reasons||[]).join(" · "))}</span>
+        <span class="ag">${esc(frAge(t))}</span></div>`).join("")
+    : `<div class="fr-none">全部产物新鲜</div>`;
+}
 
 function renderHeat(){
   const H=DATA.history||{};
@@ -430,6 +534,7 @@ function render(){
     +((DATA.history&&DATA.history.available)?` <span class="faint">观察${DATA.history.days.length}d</span>`:` <span class="faint">无观察</span>`)
     +((DATA.runlog&&DATA.runlog.available)?` <span class="faint">运行日志${DATA.runlog.count}</span>`:` <span class="faint">无运行日志</span>`);
   $("warns").innerHTML=(DATA.warnings||[]).map(w=>`<div class="warn-line">${esc(w)}</div>`).join("");
+  renderFresh();
   renderTL(); renderHeat(); renderScores();
 
   const q=$("q").value.trim().toLowerCase(), cat=$("cat").value;
@@ -479,6 +584,10 @@ async function act(names, verb){
 const targets = () => sel.size ? Array.from(sel) : (VIEW[cur] ? [VIEW[cur].name] : []);
 
 document.addEventListener("click",e=>{
+  // 点灯板上的一格 = 把下面的任务表过滤到它。再点一次同一格就清空过滤。
+  const fc=e.target.closest("[data-fr]");
+  if(fc){ const n=fc.dataset.fr; const q=$("q");
+    q.value = (q.value===n) ? "" : n; render(); q.focus(); return; }
   const b=e.target.closest("button[data-act]");
   if(b){ e.stopPropagation(); act([b.dataset.name], b.dataset.act); return; }
   const bl=e.target.closest("button[data-bulk]");
