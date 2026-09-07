@@ -333,6 +333,7 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
       <div class="mt-col" id="mt-skills"></div>
       <div class="mt-col" id="mt-memory"></div>
       <div class="mt-col" id="mt-plugins"></div>
+      <div class="mt-col" id="mt-sys"></div>
     </div>
   </div>
   <div class="box" id="tlbox">
@@ -629,7 +630,9 @@ async function maintAct(action,name){
     if(r.error){ toast(`${name}: ${r.error}`,"bad"); return; }
     toast(`${name} 已${label==="archive"?"归档":label==="restore"?"还原":label==="disable"?"禁用":"启用"}`);
     // 插件与 skill 的改动都要下个会话才生效,所以这里只重读自己那一栏,不碰任务表。
-    if(action.startsWith("repo.")) await loadRepos(); else await loadMaint();
+    if(action.startsWith("repo.")) await loadRepos();
+    else if(action.startsWith("clean.")) await loadSys();
+    else await loadMaint();
   }catch(e){ toast(`${name}: ${e.message}`,"bad"); }
 }
 
@@ -710,6 +713,40 @@ function renderRepos(){
       <button class="mini" data-mt="repo.fetch" data-name="${esc(r.name)}" title="fetch">↓</button>
     </div>`;
   }).join("");
+}
+
+
+// 磁盘那一栏。三类东西的共同点:没有任何检查会因为它们变红,它们只是一直涨。
+let SYS=null;
+async function loadSys(){
+  try{ SYS=await api("/api/sys"); }catch(e){ SYS={error:e.message}; }
+  renderSys();
+}
+function renderSys(){
+  const el=$("mt-sys"); if(!el) return;
+  if(!SYS){ el.innerHTML=""; return; }
+  if(SYS.error){ el.innerHTML=`<div class="mt-note">磁盘读取失败:${esc(SYS.error)}</div>`; return; }
+  const d=SYS.disk||{}, pc=SYS.pluginCache||{}, se=SYS.sessions||{};
+  const sz=o=>o&&o.size?kb(o.size.bytes)+(o.size.partial?"+":""):"-";
+  let h=`<div class="mt-t">磁盘 <b>${d.usedPct!=null?d.usedPct+"%":"-"}</b>
+      <span class="sub">剩 ${d.free!=null?(d.free/1073741824).toFixed(0)+"G":"-"}</span></div>
+    <div class="mt-meter"><i style="width:${d.usedPct||0}%;background:${
+      (d.usedPct||0)>=95?"var(--bad)":(d.usedPct||0)>=85?"var(--warn)":"var(--ok)"}"></i></div>`;
+  h+=`<div class="mt-rows">`;
+  h+=pc.available
+    ? `<div class="mt-r"><span class="n">插件缓存</span><span class="c">${sz(pc)}</span>
+       ${pc.deletableCount?`<button class="mini danger" data-mt="clean.tempgit" data-name="-"
+          title="删除 ${pc.deletableCount} 个废弃克隆暂存目录">🗑${pc.deletableCount}</button>`:""}</div>`
+    : `<div class="mt-r"><span class="n">插件缓存</span><span class="c">未检查</span></div>`;
+  h+=se.available
+    ? `<div class="mt-r"><span class="n">会话转录</span><span class="c">${sz(se)}</span></div>
+       <div class="mt-r"><span class="n">转录文件数</span><span class="c">${se.size.files}</span></div>`
+    : `<div class="mt-r"><span class="n">会话转录</span><span class="c">未检查</span></div>`;
+  // partial 要说出来:一个数了一半却报确定数字的体积比不报还糟。
+  if((pc.size&&pc.size.partial)||(se.size&&se.size.partial))
+    h+=`<div class="mt-r"><span class="n" style="color:var(--warn)">体积只数到上限,带 +</span></div>`;
+  h+=`</div>`;
+  el.innerHTML=h;
 }
 
 function renderHeat(){
@@ -946,12 +983,13 @@ document.addEventListener("keydown",e=>{
   tl.addEventListener("pointercancel",endDrag);
   tl.addEventListener("dblclick",tlReset);
 })();
-$("mtreload").addEventListener("click",loadMaint);
+$("mtreload").addEventListener("click",()=>{loadMaint();loadSys();});
 loadMaint();
 $("scktog").addEventListener("click",()=>$("sckd").classList.toggle("on"));
 loadSelfcheck();
 $("rpreload").addEventListener("click",loadRepos);
 loadRepos();
+loadSys();
 $("tlin").addEventListener("click",()=>tlZoom(0.7,0.5));
 $("tlout").addEventListener("click",()=>tlZoom(1.4,0.5));
 $("tlreset").addEventListener("click",tlReset);
