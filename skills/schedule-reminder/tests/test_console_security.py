@@ -149,3 +149,45 @@ def test_default_allowed_hosts_is_fail_closed():
     src = open(os.path.join(HERE, "scripts", "task_console", "server.py"),
                   encoding="utf-8").read()
     assert "allowed_hosts: object = frozenset()" in src
+
+
+# ---------- 维护端点(新):它自己的表,不蹭任务那张 ----------
+
+def test_maint_read_without_token_is_403(srv):
+    st, _ = call(srv, "GET", "/api/maint")
+    assert st == 403
+
+
+def test_maint_act_without_token_is_403(srv):
+    st, _ = call(srv, "POST", "/api/maint/act",
+                 body={"action": "skill.archive", "name": "x"})
+    assert st == 403
+
+
+def test_maint_act_rejects_a_host_it_does_not_know(srv):
+    st, _ = call(srv, "POST", "/api/maint/act", host="evil.example.com", token=TOKEN,
+                 body={"action": "skill.archive", "name": "x"})
+    assert st == 400
+
+
+def test_maint_act_refuses_an_action_outside_its_table(srv):
+    st, body = call(srv, "POST", "/api/maint/act", token=TOKEN,
+                    body={"action": "skill.delete", "name": "x"})
+    assert st == 400
+    assert b"bad_action" in body
+
+
+def test_task_verbs_are_not_reachable_through_the_maint_endpoint(srv):
+    # 两张表必须是两张表。任务动词从维护端点进来必须被拒,否则「分开」只是文档上的说法。
+    st, body = call(srv, "POST", "/api/maint/act", token=TOKEN,
+                    body={"action": "run", "name": "SomeTask"})
+    assert st == 400
+    assert b"bad_action" in body
+
+
+def test_maint_verbs_are_not_reachable_through_the_task_endpoint(srv):
+    # 反方向同理。
+    st, body = call(srv, "POST", "/api/act", token=TOKEN,
+                    body={"verb": "skill.archive", "name": "x"})
+    assert st == 400
+    assert b"verb" in body

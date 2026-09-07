@@ -61,6 +61,7 @@ from urllib.parse import parse_qs, urlparse
 import console_store
 import freshness
 import history
+import maint
 import timeline
 from rcnorm import norm_rc as _norm_rc_unused
 
@@ -572,6 +573,24 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
                    "application/json; charset=utf-8")
 
+    def _maint_act(self):
+        """维护动作。和 /api/act 分开是刻意的:两张动作表混在一起,加一个 skill 动作
+        就等于同时扩大了任务动作的表面,而没有人会在评审时注意到这一点。"""
+        if not self._authed():
+            return self._json(403, {"error": "bad token"})
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(n) or b"{}")
+        except Exception as e:
+            return self._json(400, {"error": f"bad request: {e}"})
+        try:
+            return self._json(200, maint.act(str(body.get("action") or ""),
+                                             str(body.get("name") or "")))
+        except maint.Refused as e:
+            return self._json(400, {"error": str(e), "code": e.code})
+        except Exception as e:
+            return self._json(500, {"error": f"{type(e).__name__}: {e}"})
+
     def _authed(self) -> bool:
         return secrets.compare_digest(self.headers.get("X-Console-Token", ""), self.token)
 
@@ -616,6 +635,13 @@ class Handler(BaseHTTPRequestHandler):
                                         "tasks": console_store.health_by_hour(con, a, b)})
             finally:
                 con.close()
+        if path == "/api/maint":
+            if not self._authed():
+                return self._json(403, {"error": "bad token"})
+            try:
+                return self._json(200, maint.read_all())
+            except Exception as e:
+                return self._json(500, {"error": f"{type(e).__name__}: {e}"})
         if path == "/api/tasks":
             if not self._authed():
                 return self._json(403, {"error": "bad token"})
@@ -628,6 +654,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._host_ok():
             return self._json(400, {"error": "bad host"})
+        if self.path.split("?", 1)[0] == "/api/maint/act":
+            return self._maint_act()
         if self.path.split("?", 1)[0] != "/api/act":
             return self._json(404, {"error": "not found"})
         if not self._authed():
