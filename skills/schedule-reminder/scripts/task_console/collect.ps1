@@ -1,4 +1,4 @@
-<#
+﻿<#
   collect.ps1 - dump the live Windows Task Scheduler state as JSON on stdout.
 
   This is the ONLY thing in task-console that talks to the scheduler for reading. It emits raw
@@ -74,6 +74,10 @@ foreach ($t in $all) {
     rcHex       = if ($i) { '0x{0:X}' -f ($i.LastTaskResult -band 0xFFFFFFFF) } else { $null }
     lastRun     = if ($i -and $i.LastRunTime -gt (Get-Date '2000-01-01')) { $i.LastRunTime.ToString('yyyy-MM-dd HH:mm') } else { $null }
     nextRun     = if ($i -and $i.NextRunTime) { $i.NextRunTime.ToString('yyyy-MM-dd HH:mm') } else { $null }
+    # NumberOfMissedRuns is the scheduler's OWN count of runs it should have started and
+    # did not. Nothing else on this machine can answer 'should have run but did not':
+    # an exit code only exists for runs that happened.
+    missedRuns  = if ($i) { [int]$i.NumberOfMissedRuns } else { $null }
     triggers    = ($trg -join ', ')
     triggersRaw = $trgRaw
     exec        = $t.Actions[0].Execute

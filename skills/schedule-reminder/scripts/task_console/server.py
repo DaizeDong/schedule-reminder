@@ -50,14 +50,16 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from collections import Counter, defaultdict
-from datetime import date
+from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import console_store
+import freshness
 import history
 import timeline
 from rcnorm import norm_rc as _norm_rc_unused
@@ -367,6 +369,41 @@ def issues_of(t: dict, allow: set[str] | None) -> list[list[str]]:
     return out
 
 
+def _epoch(stamp: str | None) -> float | None:
+    """collect.ps1 hands back 'yyyy-MM-dd HH:mm' local time, or null. Null means the scheduler had
+    nothing to report, which is NOT the same as 'ran at the epoch', so it stays None all the way
+    through rather than becoming a very confident 1970."""
+    if not stamp:
+        return None
+    try:
+        return datetime.strptime(stamp, "%Y-%m-%d %H:%M").timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def build_freshness(tasks: dict, health: dict) -> dict:
+    """Artifact freshness for every task the health manifest declares.
+
+    The manifest is the input, not the task list: a task nobody declared an artifact for cannot be
+    judged on freshness, and saying so is the point. When the manifest itself is missing, coverage
+    is 0 and the page says NOT CHECKED instead of drawing an empty green board.
+    """
+    if not health:
+        return {"tasks": [], "summary": {"total": 0, "counts": {}, "judged": 0,
+                                         "coverage": 0.0, "bad": 0},
+                "reason": "没有健康清单,新鲜度这一栏是「未检查」,不是通过。"}
+    rows = {}
+    for name, t in tasks.items():
+        rows[name] = {
+            "state": t.get("state"),
+            "last_rc": t.get("rcRaw"),
+            "last_run": _epoch(t.get("lastRun")),
+            "next_run": _epoch(t.get("nextRun")),
+            "missed_runs": t.get("missedRuns") or 0,
+        }
+    return freshness.evaluate(list(health.values()), rows, time.time())
+
+
 def build_payload() -> dict:
     rc, out, err = run_ps(COLLECT)
     if rc != 0 or not out:
@@ -487,8 +524,10 @@ def build_payload() -> dict:
     tl = timeline.build(tasks, runs.get("tasks") or {})
 
     n_issue = sum(1 for t in tasks.values() for i in t["issues"] if i[0] in ("bad", "warn"))
+    fresh = build_freshness(tasks, health)
     return {
         "groups": groups,
+        "freshness": fresh,
         "warnings": warnings,
         "history": {k: hist[k] for k in ("available", "days", "caveat", "matched", "source")
                     if k in hist},
@@ -510,6 +549,10 @@ def build_payload() -> dict:
 # --------------------------------------------------------------------------- http
 class Handler(BaseHTTPRequestHandler):
     server_version = "task-console"
+    # fail-closed:空集合什么都不匹配,所以一个没走过 main() 的 Handler 会拒绝每一个请求。
+    # 默认成 "*" 会让「忘了设置」和「明确允许一切」变成同一件事,而那正是这份代码
+    # 在别处一直拒绝的形状。
+    allowed_hosts: object = frozenset()
     token = ""
 
     def log_message(self, fmt, *a):  # keep the console quiet; errors still surface in responses
@@ -532,7 +575,27 @@ class Handler(BaseHTTPRequestHandler):
     def _authed(self) -> bool:
         return secrets.compare_digest(self.headers.get("X-Console-Token", ""), self.token)
 
+    def _host_ok(self) -> bool:
+        """Binding 127.0.0.1 stops the network. It does not stop DNS rebinding, and rebinding is
+        the attack that matters here: the token is substituted into the page at '/', so anything
+        that can make a SAME-ORIGIN request to '/' simply reads the token out of the HTML and then
+        has full access to the action endpoints. A Host allowlist is what closes that, because a
+        rebound name never matches one of the loopback literals.
+
+        '*' is a separate branch, not an entry in the list, so no hostname can ever be spelled in a
+        way that turns the check off. A missing Host header is rejected too: absent is not allowed.
+        """
+        allowed = self.allowed_hosts
+        if allowed == "*":
+            return True
+        host = self.headers.get("Host")
+        if not host:
+            return False
+        return host.lower() in allowed
+
     def do_GET(self):
+        if not self._host_ok():
+            return self._json(400, {"error": "bad host"})
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             html = PAGE.read_text(encoding="utf-8").replace("__TOKEN__", self.token)
@@ -563,6 +626,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):
+        if not self._host_ok():
+            return self._json(400, {"error": "bad host"})
         if self.path.split("?", 1)[0] != "/api/act":
             return self._json(404, {"error": "not found"})
         if not self._authed():
@@ -614,6 +679,17 @@ def main() -> int:
             return 2
 
     Handler.token = secrets.token_urlsafe(24)
+    # Three loopback spellings a browser can legitimately send for this port, and nothing else.
+    # TASK_CONSOLE_ALLOWED_HOSTS adds names (comma separated); the single value "*" disables the
+    # check entirely and is deliberately awkward to reach.
+    extra = os.environ.get("TASK_CONSOLE_ALLOWED_HOSTS", "").strip()
+    if extra == "*":
+        Handler.allowed_hosts = "*"
+        print("  ⚠ Host 校验已关闭 (TASK_CONSOLE_ALLOWED_HOSTS=*),DNS rebinding 防护失效。")
+    else:
+        hosts = {f"localhost:{a.port}", f"127.0.0.1:{a.port}", f"[::1]:{a.port}"}
+        hosts |= {h.strip().lower() for h in extra.split(",") if h.strip()}
+        Handler.allowed_hosts = hosts
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
     url = f"http://127.0.0.1:{a.port}/"
     print(f"task-console: {url}")
