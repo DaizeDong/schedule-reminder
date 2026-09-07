@@ -232,3 +232,16 @@ def test_clean_action_cannot_be_pointed_at_a_path(srv):
     assert st in (200, 400)
     if st == 400:
         assert b"no_config" in body or b"missing_src" in body
+
+
+def test_retire_plan_without_token_is_403(srv):
+    st, _ = call(srv, "POST", "/api/retire/plan", body={"name": "X"})
+    assert st == 403
+
+
+def test_retire_without_a_reason_is_refused(srv):
+    # 退役必须带原因,空字符串走到 retire 会被它自己的闸挡下。
+    st, body = call(srv, "POST", "/api/maint/act", token=TOKEN,
+                    body={"action": "task.retire", "name": "SomeTask", "arg": ""})
+    assert st == 400
+    assert b"no_reason" in body or b"bad_name" in body or b"no_config" in body

@@ -65,6 +65,7 @@ import history
 import maint
 import memops
 import repos as repos_mod
+import retire as retire_mod
 import selfcheck
 import sysinfo
 import timeline
@@ -617,6 +618,24 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
 
+    def _retire_plan(self):
+        """只读预览:这次退役会改哪几处。写之前先让人看见要改什么。"""
+        if not self._authed():
+            self._drain()
+            return self._json(403, {"error": "bad token"})
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(n) or b"{}")
+        except Exception as e:
+            return self._json(400, {"error": f"bad request: {e}"})
+        try:
+            return self._json(200, retire_mod.plan(str(body.get("name") or ""),
+                                                   str(body.get("reason") or "x")))
+        except maint.Refused as e:
+            return self._json(400, {"error": str(e), "code": e.code})
+        except Exception as e:
+            return self._json(500, {"error": f"{type(e).__name__}: {e}"})
+
     def _maint_act(self):
         """维护动作。和 /api/act 分开是刻意的:两张动作表混在一起,加一个 skill 动作
         就等于同时扩大了任务动作的表面,而没有人会在评审时注意到这一点。"""
@@ -630,7 +649,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": f"bad request: {e}"})
         try:
             return self._json(200, maint.act(str(body.get("action") or ""),
-                                             str(body.get("name") or "")))
+                                             str(body.get("name") or ""),
+                                             body.get("arg")))
         except maint.Refused as e:
             return self._json(400, {"error": str(e), "code": e.code})
         except Exception as e:
@@ -728,6 +748,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_ok():
             self._drain()
             return self._json(400, {"error": "bad host"})
+        if self.path.split("?", 1)[0] == "/api/retire/plan":
+            return self._retire_plan()
         if self.path.split("?", 1)[0] == "/api/maint/act":
             return self._maint_act()
         if self.path.split("?", 1)[0] != "/api/act":
