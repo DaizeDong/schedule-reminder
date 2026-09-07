@@ -251,6 +251,29 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
 #sckd .r .p{color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   direction:rtl;text-align:left}
 #sckd .r .w{color:var(--dim);white-space:nowrap;font-variant-numeric:tabular-nums}
+
+/* ---- 仓库面板 ----------------------------------------------------------------------
+   未推送排在脏文件前面:脏文件你自己知道,没推的提交没人会告诉你。
+   没有上游的仓单独一种画法(问号),因为它们的「没推」是看不见的,不是 0。 */
+#rpbox .pad{padding:8px 10px}
+.rp-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:11px;
+  color:var(--dim);margin-bottom:6px}
+.rp-head b{font-variant-numeric:tabular-nums;color:var(--ink);font-size:13px}
+.rp-chips{display:flex;gap:9px;flex-wrap:wrap}
+.rp-chips span{display:inline-flex;align-items:center;gap:4px}
+.rp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:1px;
+  background:var(--line2);max-height:250px;overflow:auto}
+.rp-r{background:var(--panel);display:grid;grid-template-columns:8px 1fr auto auto;gap:7px;
+  align-items:center;padding:3px 7px;font-size:12px}
+.rp-r .dot{width:8px;height:8px;border-radius:2px}
+.rp-r .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono,inherit)}
+.rp-r .m{font-size:10.5px;color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
+.rp-r .vis{font-size:9.5px;padding:0 3px;border-radius:2px;border:1px solid var(--line);
+  color:var(--faint)}
+.rp-r .vis.pub{color:var(--warn);border-color:var(--warn)}
+.d-clean{background:var(--ok)} .d-dirty{background:var(--warn)}
+.d-unpushed{background:var(--bad)} .d-error{background:var(--bad)}
+.d-detached{background:var(--idle)}
 </style>
 </head>
 <body>
@@ -292,6 +315,16 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
   </div>
 
 
+
+  <div class="box" id="rpbox">
+    <h2>仓库<span class="n" id="rpnote">读取中</span>
+      <span style="flex:none"><button id="rpreload" title="重新扫描">↻</button></span>
+    </h2>
+    <div class="pad">
+      <div class="rp-head" id="rphead"></div>
+      <div class="rp-grid" id="rpgrid"></div>
+    </div>
+  </div>
   <div class="box" id="mtbox">
     <h2>维护<span class="n" id="mtnote">读取中</span>
       <span style="flex:none"><button id="mtreload" title="重新读取">↻</button></span>
@@ -596,7 +629,7 @@ async function maintAct(action,name){
     if(r.error){ toast(`${name}: ${r.error}`,"bad"); return; }
     toast(`${name} 已${label==="archive"?"归档":label==="restore"?"还原":label==="disable"?"禁用":"启用"}`);
     // 插件与 skill 的改动都要下个会话才生效,所以这里只重读自己那一栏,不碰任务表。
-    await loadMaint();
+    if(action.startsWith("repo.")) await loadRepos(); else await loadMaint();
   }catch(e){ toast(`${name}: ${e.message}`,"bad"); }
 }
 
@@ -629,6 +662,54 @@ function renderSelfcheck(){
     <span class="w">${r.state==="ok"||r.state==="stale"
       ? (r.ageHours!=null? r.ageHours.toFixed(1)+"h":"")+(r.entries!=null?" · "+r.entries+" 项":"")
       : esc(r.state)}</span></div>`).join("");
+}
+
+
+// 仓库面板。46 个仓 1.3 秒扫完(并发 + 每仓两次 git 调用),所以可以随手重扫。
+let REPOS=null;
+const RP_LAB={clean:"干净",dirty:"有改动",unpushed:"未推送",detached:"游离头",error:"扫不动"};
+const RP_ORDER=["unpushed","error","dirty","detached","clean"];
+
+async function loadRepos(){
+  $("rpnote").textContent="扫描中";
+  try{ REPOS=await api("/api/repos"); $("rpnote").textContent=""; }
+  catch(e){ $("rpnote").textContent="失败:"+e.message; return; }
+  renderRepos();
+}
+
+function renderRepos(){
+  if(!REPOS) return;
+  if(!REPOS.available){
+    $("rphead").innerHTML=`<span style="color:var(--warn)">${esc(REPOS.reason)}</span>`;
+    $("rpgrid").innerHTML=""; return;
+  }
+  const S=REPOS.summary, c=S.counts||{};
+  $("rphead").innerHTML=`<span>共 <b>${S.total}</b></span>`
+    +`<span>要人管 <b style="color:${S.attention?"var(--bad)":"var(--ok)"}">${S.attention}</b></span>`
+    +`<span class="rp-chips">`+RP_ORDER.filter(k=>c[k]).map(k=>
+        `<span><i class="dot d-${k}" style="width:8px;height:8px;border-radius:2px"></i>${RP_LAB[k]} ${c[k]}</span>`).join("")
+    +`</span>`
+    // 没有上游 = 它的「没推」根本看不见,和 0 是两回事,所以单独报。
+    +(S.unknownUpstream?`<span style="color:var(--warn)">无上游 ${S.unknownUpstream}</span>`:"");
+
+  $("rpgrid").innerHTML=REPOS.repos.map(r=>{
+    const bits=[];
+    if(r.state==="error"){ bits.push(esc((r.why||"").slice(0,28))); }
+    else{
+      if(r.ahead==null) bits.push("↑?");
+      else if(r.ahead) bits.push("↑"+r.ahead);
+      if(r.behind) bits.push("↓"+r.behind);
+      if(r.dirty) bits.push("~"+r.dirty);
+      if(r.ageDays!=null) bits.push(r.ageDays<1?"今天":r.ageDays.toFixed(0)+"d");
+    }
+    const vis=r.visibility?`<span class="vis ${/pub/i.test(r.visibility)?"pub":""}">${esc(r.visibility.slice(0,4))}</span>`:"";
+    return `<div class="rp-r" title="${esc(r.path)}${r.branch?" @ "+esc(r.branch):""}">
+      <i class="dot d-${r.state}"></i>
+      <span class="n">${esc(r.name)}${r.nested?" <span class=\"lk\">↗</span>":""}</span>
+      ${vis}<span class="m">${bits.join(" ")}</span>
+      <button class="mini" data-mt="repo.fetch" data-name="${esc(r.name)}" title="fetch">↓</button>
+    </div>`;
+  }).join("");
 }
 
 function renderHeat(){
@@ -869,6 +950,8 @@ $("mtreload").addEventListener("click",loadMaint);
 loadMaint();
 $("scktog").addEventListener("click",()=>$("sckd").classList.toggle("on"));
 loadSelfcheck();
+$("rpreload").addEventListener("click",loadRepos);
+loadRepos();
 $("tlin").addEventListener("click",()=>tlZoom(0.7,0.5));
 $("tlout").addEventListener("click",()=>tlZoom(1.4,0.5));
 $("tlreset").addEventListener("click",tlReset);

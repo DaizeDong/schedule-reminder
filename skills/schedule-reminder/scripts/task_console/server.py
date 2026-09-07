@@ -62,6 +62,7 @@ import console_store
 import freshness
 import history
 import maint
+import repos as repos_mod
 import selfcheck
 import timeline
 from rcnorm import norm_rc as _norm_rc_unused
@@ -574,10 +575,28 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
                    "application/json; charset=utf-8")
 
+    def _drain(self):
+        """把请求体读掉再回复,哪怕这次回复是拒绝。
+
+        不读就直接关连接,客户端还在发 body 的那一侧会收到 ECONNRESET 而不是那个 403。
+        表现出来就是一条偶发失败的安全测试:而一条偶发失败的安全测试比没有测试更糟:
+        它会训练人把红色当噪音。
+        """
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n > 0:
+            try:
+                self.rfile.read(n)
+            except OSError:
+                pass
+
     def _maint_act(self):
         """维护动作。和 /api/act 分开是刻意的:两张动作表混在一起,加一个 skill 动作
         就等于同时扩大了任务动作的表面,而没有人会在评审时注意到这一点。"""
         if not self._authed():
+            self._drain()
             return self._json(403, {"error": "bad token"})
         try:
             n = int(self.headers.get("Content-Length") or 0)
@@ -636,6 +655,13 @@ class Handler(BaseHTTPRequestHandler):
                                         "tasks": console_store.health_by_hour(con, a, b)})
             finally:
                 con.close()
+        if path == "/api/repos":
+            if not self._authed():
+                return self._json(403, {"error": "bad token"})
+            try:
+                return self._json(200, repos_mod.scan())
+            except Exception as e:
+                return self._json(500, {"error": f"{type(e).__name__}: {e}"})
         if path == "/api/selfcheck":
             if not self._authed():
                 return self._json(403, {"error": "bad token"})
@@ -661,12 +687,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if not self._host_ok():
+            self._drain()
             return self._json(400, {"error": "bad host"})
         if self.path.split("?", 1)[0] == "/api/maint/act":
             return self._maint_act()
         if self.path.split("?", 1)[0] != "/api/act":
+            self._drain()
             return self._json(404, {"error": "not found"})
         if not self._authed():
+            self._drain()
             return self._json(403, {"error": "bad token"})
         try:
             n = int(self.headers.get("Content-Length") or 0)

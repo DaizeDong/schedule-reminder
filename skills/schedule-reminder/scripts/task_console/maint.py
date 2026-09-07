@@ -2,7 +2,7 @@
 
 这个文件的危险在于它**移动目录**。所以每一个动作参数都过同一道闸:名字必须落在
 一个窄字符集里,并且解析出的真实路径必须是配置根目录的**直接子项**。两条都过不了
-就拒绝整个动作,而不是「清洗一下再执行」—— 清洗过的参数看起来安全,但没人知道
+就拒绝整个动作,而不是「清洗一下再执行」: 清洗过的参数看起来安全,但没人知道
 清洗掉了什么。
 
 所有路径都从环境变量来,没有默认值。没配就是「未检查」,页面照实说,不画一块空的绿板:
@@ -22,7 +22,8 @@ from pathlib import Path
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,79}$")
 
 # 动作表是闭合的。加一个动作必须改这里,而不是拼一个字符串就能多出一个动词。
-ACTIONS = ("skill.archive", "skill.restore", "plugin.enable", "plugin.disable")
+ACTIONS = ("skill.archive", "skill.restore", "plugin.enable", "plugin.disable",
+           "repo.fetch")
 
 # MEMORY.md 的硬上限。超了尾部条目会在下次会话静默消失,所以这两个数字是护栏不是建议。
 INDEX_HARD_LINES = 200
@@ -176,6 +177,11 @@ def read_all() -> dict:
 def act(action: str, name: str) -> dict:
     if action not in ACTIONS:
         raise Refused(f"不在动作表里: {action!r}", "bad_action")
+    if action == "repo.fetch":
+        # 只读的网络动作。push 永远不进这张表:它是对外动作,撤不回来,
+        # 而一个能一键推送的按钮迟早会在没人看的时候被点到。
+        import repos
+        return repos.fetch(name)
     if action.startswith("skill."):
         root, arch = _root("TASK_CONSOLE_SKILLS"), _root("TASK_CONSOLE_SKILL_ARCHIVE")
         if not root or not arch:
