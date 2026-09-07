@@ -196,6 +196,37 @@ tr.det>td{background:var(--panel2);white-space:normal;padding:6px 10px 8px;borde
 .fr-r .ag{font-variant-numeric:tabular-nums;color:var(--faint);white-space:nowrap;font-size:11px}
 .fr-none{padding:8px 10px 10px;font-size:12px;color:var(--ok)}
 .fr-off{padding:8px 10px 10px;font-size:12px;color:var(--warn)}
+
+/* 行内动作。危险动作用红字而不是红底:一整列红底会把整张表变成警报墙,
+   而每一行都在报警等于没有一行在报警。 */
+td.ops{white-space:nowrap;width:1%}
+td.ops .mini{font:inherit;font-size:11px;line-height:1;padding:2px 5px;margin-right:2px;
+  border:1px solid var(--line);background:var(--panel2);color:var(--dim);cursor:pointer;border-radius:2px}
+td.ops .mini:hover{border-color:var(--cyan);color:var(--cyan)}
+td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
+
+/* ---- 维护面板 ----------------------------------------------------------------------
+   三栏:skill 预算、记忆池用量、插件开关。每一栏都能动手,不是只读的。
+   「未配置」和「没问题」用两种完全不同的呈现:前者是一行灰字说明,后者是有数字的仪表。 */
+.mt-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1px;
+  background:var(--line2)}
+.mt-col{background:var(--panel);padding:9px 10px;display:flex;flex-direction:column;gap:7px;
+  min-width:0}
+.mt-t{font-size:11px;font-weight:600;color:var(--dim);letter-spacing:.04em;
+  display:flex;align-items:baseline;gap:7px}
+.mt-t b{font-family:var(--mono,inherit);font-variant-numeric:tabular-nums;color:var(--ink);
+  font-size:13px}
+.mt-t .sub{color:var(--faint);font-weight:400;margin-left:auto;font-variant-numeric:tabular-nums}
+.mt-meter{height:7px;background:var(--line2);border-radius:2px;overflow:hidden;position:relative}
+.mt-meter i{display:block;height:100%}
+.mt-rows{max-height:172px;overflow:auto;display:flex;flex-direction:column;gap:1px;
+  border-top:1px solid var(--line2);padding-top:4px}
+.mt-r{display:flex;align-items:center;gap:6px;font-size:12px;padding:1px 0}
+.mt-r .n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mt-r .c{font-variant-numeric:tabular-nums;color:var(--faint);font-size:11px}
+.mt-r.off .n{color:var(--faint);text-decoration:line-through}
+.mt-r .lk{color:var(--cyan);font-size:10px}
+.mt-note{font-size:12px;color:var(--warn)}
 </style>
 </head>
 <body>
@@ -233,6 +264,17 @@ tr.det>td{background:var(--panel2);white-space:normal;padding:6px 10px 8px;borde
     <div class="fr-list" id="frlist"></div>
   </div>
 
+
+  <div class="box" id="mtbox">
+    <h2>维护<span class="n" id="mtnote">读取中</span>
+      <span style="flex:none"><button id="mtreload" title="重新读取">↻</button></span>
+    </h2>
+    <div class="mt-grid">
+      <div class="mt-col" id="mt-skills"></div>
+      <div class="mt-col" id="mt-memory"></div>
+      <div class="mt-col" id="mt-plugins"></div>
+    </div>
+  </div>
   <div class="box" id="tlbox">
     <h2>今日时间轴
       <span class="n" id="tlnote"></span>
@@ -452,6 +494,85 @@ function renderFresh(){
     : `<div class="fr-none">全部产物新鲜</div>`;
 }
 
+
+// 维护面板。单独一次 fetch:它要跑 `claude plugin list`,几秒起步,不该拖住主表。
+let MAINT=null;
+const kb = n => n==null ? "-" : n<1024 ? n+"B" : n<1048576 ? (n/1024).toFixed(0)+"K"
+                                                          : (n/1048576).toFixed(1)+"M";
+
+async function loadMaint(){
+  $("mtnote").textContent="读取中";
+  try{ MAINT=await api("/api/maint"); $("mtnote").textContent=""; }
+  catch(e){ $("mtnote").textContent="读取失败:"+e.message; return; }
+  renderMaint();
+}
+
+function mtUnset(el,reason){ el.innerHTML=`<div class="mt-note">${esc(reason)}</div>`; }
+
+function renderMaint(){
+  if(!MAINT) return;
+  // --- skill:预算是名字加描述的字符数,超了尾部条目的描述会被静默丢弃 ---
+  const S=MAINT.skills, el=$("mt-skills");
+  if(!S.available){ mtUnset(el,S.reason); }
+  else{
+    const rows=S.skills.map(k=>`<div class="mt-r${k.archived?" off":""}">
+      <span class="n" title="${esc(k.name)}">${esc(k.name)}</span>
+      ${k.linked?`<span class="lk" title="junction,指向别处的仓库">↗</span>`:""}
+      <span class="c">${k.archived?"":k.chars}</span>
+      <button class="mini${k.archived?"":" danger"}" data-mt="${k.archived?"skill.restore":"skill.archive"}"
+        data-name="${esc(k.name)}" title="${k.archived?"还原":"归档移出"}">${k.archived?"⏵":"⏸"}</button>
+    </div>`).join("");
+    el.innerHTML=`<div class="mt-t">SKILL <b>${S.liveCount}</b>
+        <span class="sub">${S.budgetChars} 字符</span></div>
+      <div class="mt-meter"><i style="width:${Math.min(S.budgetChars/18600*100,100).toFixed(1)}%;
+        background:${S.budgetChars>18600?"var(--bad)":S.budgetChars>15000?"var(--warn)":"var(--ok)"}"></i></div>
+      <div class="mt-rows">${rows}</div>`;
+  }
+  // --- 记忆池:两个硬上限是护栏不是建议,超了尾部条目下次会话就静默消失 ---
+  const M=MAINT.memory, me=$("mt-memory");
+  if(!M.available){ mtUnset(me,M.reason); }
+  else{
+    const bar=(v,max,lab)=>{
+      if(v==null) return `<div class="mt-r"><span class="n">${lab}</span><span class="c">未读到</span></div>`;
+      const p=Math.min(v/max*100,100);
+      return `<div class="mt-r"><span class="n">${lab}</span>
+        <span class="c">${v}/${max}</span></div>
+        <div class="mt-meter"><i style="width:${p.toFixed(1)}%;background:${
+          p>=100?"var(--bad)":p>=90?"var(--warn)":"var(--ok)"}"></i></div>`;
+    };
+    me.innerHTML=`<div class="mt-t">记忆池 <b>${M.files}</b>
+        <span class="sub">${kb(M.bytes)}${M.archived?" · 冷层 "+M.archived:""}</span></div>
+      ${bar(M.indexLines,M.hardLines,"索引行数")}
+      ${bar(M.indexBytes,M.hardBytes,"索引字节")}`;
+  }
+  // --- 插件:整包装卸,disable 可逆,不用重新下载 ---
+  const P=MAINT.plugins, pe=$("mt-plugins");
+  if(!P.available){ mtUnset(pe,P.reason); }
+  else{
+    const on=P.plugins.filter(p=>p.enabled).length;
+    pe.innerHTML=`<div class="mt-t">插件 <b>${on}</b>
+        <span class="sub">共 ${P.plugins.length}</span></div>
+      <div class="mt-rows">${P.plugins.map(p=>{
+        const nm=p.name.split("@")[0];
+        return `<div class="mt-r${p.enabled?"":" off"}">
+          <span class="n" title="${esc(p.name)}">${esc(nm)}</span>
+          <button class="mini${p.enabled?" danger":""}" data-mt="${p.enabled?"plugin.disable":"plugin.enable"}"
+            data-name="${esc(p.name)}" title="${p.enabled?"禁用":"启用"}">${p.enabled?"⏸":"⏵"}</button>
+        </div>`;}).join("")}</div>`;
+  }
+}
+
+async function maintAct(action,name){
+  const label=action.split(".")[1];
+  try{
+    const r=await api("/api/maint/act",{method:"POST",body:JSON.stringify({action,name})});
+    if(r.error){ toast(`${name}: ${r.error}`,"bad"); return; }
+    toast(`${name} 已${label==="archive"?"归档":label==="restore"?"还原":label==="disable"?"禁用":"启用"}`);
+    // 插件与 skill 的改动都要下个会话才生效,所以这里只重读自己那一栏,不碰任务表。
+    await loadMaint();
+  }catch(e){ toast(`${name}: ${e.message}`,"bad"); }
+}
+
 function renderHeat(){
   const H=DATA.history||{};
   if(!H.available){ $("hmnote").textContent=(DATA.warnings||[]).find(w=>w.indexOf("历史")>=0)||"无历史"; $("heat").innerHTML=""; return; }
@@ -484,6 +605,17 @@ function renderScores(){
 const C=[
  ["selc","",r=>`<td style="width:14px;color:var(--cyan)">${sel.has(r.name)?"*":""}</td>`,()=>0],
  ["sl","状态",r=>`<td><span class="st ${r.sk}">${esc(r.sl)}</span></td>`,r=>r.sl],
+ ["ops","操作",r=>{
+   // 动作长在每一行上,而不是藏在展开态和键盘快捷键里。一个要先发现才能用的动作,
+   // 对一个每天只瞥一眼的维护台来说等于不存在。
+   const on=r.state!=="Disabled", run=r.state==="Running";
+   return `<td class="ops">`
+     +`<button class="mini" data-act="run" data-name="${esc(r.name)}" title="立即运行">▶</button>`
+     +(run?`<button class="mini danger" data-act="stop" data-name="${esc(r.name)}" title="停止">■</button>`:"")
+     +(on?`<button class="mini danger" data-act="disable" data-name="${esc(r.name)}" title="停用">⏸</button>`
+         :`<button class="mini" data-act="enable" data-name="${esc(r.name)}" title="启用">⏵</button>`)
+     +`</td>`;
+ },r=>r.state],
  ["name","任务",r=>`<td class="nm" title="${esc(r.name)}">${esc(r.name)}</td>`,r=>r.name],
  ["cat","大类",r=>`<td class="dim">${esc(r.cat)}</td>`,r=>r.cat],
  ["desc","说明",r=>`<td class="dim ds" title="${esc(r.desc||"")}">${esc(r.desc||"")}</td>`,r=>r.desc||""],
@@ -588,6 +720,8 @@ document.addEventListener("click",e=>{
   const fc=e.target.closest("[data-fr]");
   if(fc){ const n=fc.dataset.fr; const q=$("q");
     q.value = (q.value===n) ? "" : n; render(); q.focus(); return; }
+  const mt=e.target.closest("button[data-mt]");
+  if(mt){ e.stopPropagation(); maintAct(mt.dataset.mt, mt.dataset.name); return; }
   const b=e.target.closest("button[data-act]");
   if(b){ e.stopPropagation(); act([b.dataset.name], b.dataset.act); return; }
   const bl=e.target.closest("button[data-bulk]");
@@ -673,6 +807,8 @@ document.addEventListener("keydown",e=>{
   tl.addEventListener("pointercancel",endDrag);
   tl.addEventListener("dblclick",tlReset);
 })();
+$("mtreload").addEventListener("click",loadMaint);
+loadMaint();
 $("tlin").addEventListener("click",()=>tlZoom(0.7,0.5));
 $("tlout").addEventListener("click",()=>tlZoom(1.4,0.5));
 $("tlreset").addEventListener("click",tlReset);
