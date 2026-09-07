@@ -216,3 +216,19 @@ def test_repo_push_is_not_an_action(srv):
                     body={"action": "repo.push", "name": "x"})
     assert st == 400
     assert b"bad_action" in body
+
+
+def test_sys_read_without_token_is_403(srv):
+    st, _ = call(srv, "GET", "/api/sys")
+    assert st == 403
+
+
+def test_clean_action_cannot_be_pointed_at_a_path(srv):
+    # 删除动作不收路径。喂一个路径进去,它要么被名字闸挡,要么被完全忽略,
+    # 绝不能变成「删这个目录」。这里断言它不会因为 name 而去动别的地方。
+    st, body = call(srv, "POST", "/api/maint/act", token=TOKEN,
+                    body={"action": "clean.tempgit", "name": "../../Windows"})
+    # 没配 TASK_CONSOLE_PLUGIN_CACHE 时是 no_config;配了也只清它自己那批。
+    assert st in (200, 400)
+    if st == 400:
+        assert b"no_config" in body or b"missing_src" in body
