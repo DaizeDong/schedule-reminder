@@ -62,6 +62,7 @@ import console_store
 import freshness
 import history
 import maint
+import selfcheck
 import timeline
 from rcnorm import norm_rc as _norm_rc_unused
 
@@ -635,6 +636,13 @@ class Handler(BaseHTTPRequestHandler):
                                         "tasks": console_store.health_by_hour(con, a, b)})
             finally:
                 con.close()
+        if path == "/api/selfcheck":
+            if not self._authed():
+                return self._json(403, {"error": "bad token"})
+            try:
+                return self._json(200, selfcheck.run())
+            except Exception as e:
+                return self._json(500, {"error": f"{type(e).__name__}: {e}"})
         if path == "/api/maint":
             if not self._authed():
                 return self._json(403, {"error": "bad token"})

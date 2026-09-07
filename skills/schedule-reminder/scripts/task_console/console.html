@@ -227,6 +227,30 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
 .mt-r.off .n{color:var(--faint);text-decoration:line-through}
 .mt-r .lk{color:var(--cyan);font-size:10px}
 .mt-note{font-size:12px;color:var(--warn)}
+
+/* ---- 自检条 ------------------------------------------------------------------------
+   一行,不占地方,但它是整页的信任前提:下面每一块面板都建立在这些路径读得到之上。
+   四态四种画法,刻意都不一样:unset 是空心的,因为「没让它查」和「查了没问题」
+   在这条上必须能分开。 */
+#sck{display:flex;align-items:center;gap:8px;padding:5px 10px;font-size:11px;
+  border:1px solid var(--line);background:var(--panel);margin-bottom:8px;flex-wrap:wrap}
+#sck .lab{color:var(--faint);letter-spacing:.04em}
+#sck .dots{display:flex;gap:3px}
+#sck .d{width:8px;height:8px;border-radius:50%;border:1px solid transparent}
+#sck .d.ok{background:var(--ok)}
+#sck .d.stale{background:var(--warn)}
+#sck .d.missing{background:var(--bad)}
+#sck .d.unset{background:transparent;border-color:var(--faint)}
+#sck .sum{font-variant-numeric:tabular-nums;color:var(--dim)}
+#sck .bad{color:var(--bad);font-weight:600}
+#sck button{font:inherit;font-size:11px;padding:1px 6px;margin-left:auto}
+#sckd{display:none;padding:0 10px 8px}
+#sckd.on{display:block}
+#sckd .r{display:grid;grid-template-columns:9px minmax(96px,150px) 1fr auto;gap:8px;
+  align-items:center;font-size:11.5px;padding:2px 0;border-top:1px solid var(--line2)}
+#sckd .r .p{color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  direction:rtl;text-align:left}
+#sckd .r .w{color:var(--dim);white-space:nowrap;font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -251,6 +275,9 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
 </div>
 
 <main>
+  <div id="sck"><span class="lab">自检</span><span class="dots" id="sckdots"></span>
+    <span class="sum" id="scksum">读取中</span><button id="scktog">明细</button></div>
+  <div id="sckd"></div>
   <div id="warns"></div>
 
   <div class="box" id="frbox">
@@ -573,6 +600,37 @@ async function maintAct(action,name){
   }catch(e){ toast(`${name}: ${e.message}`,"bad"); }
 }
 
+
+// 自检条。整页的信任前提:下面每一块面板都建立在这些路径读得到之上,
+// 所以它排在最前面,而且读不到时说的是「读不到」,不是一个更小的绿数字。
+let SCK=null;
+async function loadSelfcheck(){
+  try{ SCK=await api("/api/selfcheck"); }
+  catch(e){ $("scksum").innerHTML=`<span class="bad">自检本身失败:${esc(e.message)}</span>`; return; }
+  renderSelfcheck();
+}
+function renderSelfcheck(){
+  if(!SCK) return;
+  $("sckdots").innerHTML=SCK.rows.map(r=>
+    `<i class="d ${r.state}" title="${esc(r.title)}: ${esc(r.state)}${r.why?" ("+esc(r.why)+")":""}"></i>`
+  ).join("");
+  const c=SCK.counts||{};
+  const parts=[`读到 ${SCK.probed}/${SCK.total}`];
+  if(c.unset) parts.push(`未配 ${c.unset}`);
+  if(c.stale) parts.push(`陈旧 ${c.stale}`);
+  $("scksum").innerHTML = SCK.ok
+    ? `<span>${parts.join(" · ")}</span>`
+    : `<span class="bad">${SCK.broken.length?("读不到 "+SCK.broken.join(", ")):"必需来源不可用"}</span>`
+      +` <span>· ${parts.join(" · ")}</span>`;
+  $("sckd").innerHTML=SCK.rows.map(r=>`<div class="r">
+    <i class="d ${r.state}"></i>
+    <span>${esc(r.title)}</span>
+    <span class="p" title="${esc(r.path||r.why||"")}">${esc(r.path||r.why||"")}</span>
+    <span class="w">${r.state==="ok"||r.state==="stale"
+      ? (r.ageHours!=null? r.ageHours.toFixed(1)+"h":"")+(r.entries!=null?" · "+r.entries+" 项":"")
+      : esc(r.state)}</span></div>`).join("");
+}
+
 function renderHeat(){
   const H=DATA.history||{};
   if(!H.available){ $("hmnote").textContent=(DATA.warnings||[]).find(w=>w.indexOf("历史")>=0)||"无历史"; $("heat").innerHTML=""; return; }
@@ -809,6 +867,8 @@ document.addEventListener("keydown",e=>{
 })();
 $("mtreload").addEventListener("click",loadMaint);
 loadMaint();
+$("scktog").addEventListener("click",()=>$("sckd").classList.toggle("on"));
+loadSelfcheck();
 $("tlin").addEventListener("click",()=>tlZoom(0.7,0.5));
 $("tlout").addEventListener("click",()=>tlZoom(1.4,0.5));
 $("tlreset").addEventListener("click",tlReset);

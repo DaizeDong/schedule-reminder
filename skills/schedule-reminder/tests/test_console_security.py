@@ -191,3 +191,15 @@ def test_maint_verbs_are_not_reachable_through_the_task_endpoint(srv):
                     body={"verb": "skill.archive", "name": "x"})
     assert st == 400
     assert b"verb" in body
+
+
+def test_selfcheck_without_token_is_403(srv):
+    st, _ = call(srv, "GET", "/api/selfcheck")
+    assert st == 403
+
+
+def test_selfcheck_with_token_answers(srv):
+    # 正对照。自检端点自己要是 403 了,页面上那条会显示「自检本身失败」而不是假绿。
+    st, body = call(srv, "GET", "/api/selfcheck", token=TOKEN)
+    assert st == 200
+    assert b'"rows"' in body and b'"probed"' in body
