@@ -62,6 +62,7 @@ import console_store
 import freshness
 import history
 import maint
+import memops
 import repos as repos_mod
 import selfcheck
 import sysinfo
@@ -656,6 +657,13 @@ class Handler(BaseHTTPRequestHandler):
                                         "tasks": console_store.health_by_hour(con, a, b)})
             finally:
                 con.close()
+        if path == "/api/mem":
+            if not self._authed():
+                return self._json(403, {"error": "bad token"})
+            try:
+                return self._json(200, memops.read())
+            except Exception as e:
+                return self._json(500, {"error": f"{type(e).__name__}: {e}"})
         if path == "/api/sys":
             if not self._authed():
                 return self._json(403, {"error": "bad token"})

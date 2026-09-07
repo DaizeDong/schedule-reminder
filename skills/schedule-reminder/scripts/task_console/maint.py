@@ -23,7 +23,8 @@ SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,79}$")
 
 # 动作表是闭合的。加一个动作必须改这里,而不是拼一个字符串就能多出一个动词。
 ACTIONS = ("skill.archive", "skill.restore", "plugin.enable", "plugin.disable",
-           "repo.fetch", "clean.tempgit")
+           "repo.fetch", "clean.tempgit",
+           "memory.archive", "memory.restore")
 
 # MEMORY.md 的硬上限。超了尾部条目会在下次会话静默消失,所以这两个数字是护栏不是建议。
 INDEX_HARD_LINES = 200
@@ -177,6 +178,12 @@ def read_all() -> dict:
 def act(action: str, name: str) -> dict:
     if action not in ACTIONS:
         raise Refused(f"不在动作表里: {action!r}", "bad_action")
+    if action.startswith("memory."):
+        # 归档不在这里实现:它是一个三步的生命周期迁移,而那份逻辑已经存在于一个
+        # 专门的脚本里。再写一份的结果一定是两份实现慢慢分叉,然后其中一份在没人
+        # 注意的时候开始写出格式不对的索引。这里只负责把按钮转成对它的一次调用。
+        import memops
+        return memops.act(action.split(".", 1)[1], name)
     if action == "clean.tempgit":
         # 唯一一个删除动作。它不接受名字参数:删哪些由 sysinfo 自己按名字形状 + 年龄
         # 判定,而不是由调用方指定路径。一个接受路径的删除接口迟早会被喂进一条别的路径。

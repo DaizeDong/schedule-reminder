@@ -589,23 +589,7 @@ function renderMaint(){
         background:${S.budgetChars>18600?"var(--bad)":S.budgetChars>15000?"var(--warn)":"var(--ok)"}"></i></div>
       <div class="mt-rows">${rows}</div>`;
   }
-  // --- 记忆池:两个硬上限是护栏不是建议,超了尾部条目下次会话就静默消失 ---
-  const M=MAINT.memory, me=$("mt-memory");
-  if(!M.available){ mtUnset(me,M.reason); }
-  else{
-    const bar=(v,max,lab)=>{
-      if(v==null) return `<div class="mt-r"><span class="n">${lab}</span><span class="c">未读到</span></div>`;
-      const p=Math.min(v/max*100,100);
-      return `<div class="mt-r"><span class="n">${lab}</span>
-        <span class="c">${v}/${max}</span></div>
-        <div class="mt-meter"><i style="width:${p.toFixed(1)}%;background:${
-          p>=100?"var(--bad)":p>=90?"var(--warn)":"var(--ok)"}"></i></div>`;
-    };
-    me.innerHTML=`<div class="mt-t">记忆池 <b>${M.files}</b>
-        <span class="sub">${kb(M.bytes)}${M.archived?" · 冷层 "+M.archived:""}</span></div>
-      ${bar(M.indexLines,M.hardLines,"索引行数")}
-      ${bar(M.indexBytes,M.hardBytes,"索引字节")}`;
-  }
+  // 记忆池那一栏由 renderMem 单独渲染(它有自己的端点和诊断)。
   // --- 插件:整包装卸,disable 可逆,不用重新下载 ---
   const P=MAINT.plugins, pe=$("mt-plugins");
   if(!P.available){ mtUnset(pe,P.reason); }
@@ -632,6 +616,7 @@ async function maintAct(action,name){
     // 插件与 skill 的改动都要下个会话才生效,所以这里只重读自己那一栏,不碰任务表。
     if(action.startsWith("repo.")) await loadRepos();
     else if(action.startsWith("clean.")) await loadSys();
+    else if(action.startsWith("memory.")) await loadMem();
     else await loadMaint();
   }catch(e){ toast(`${name}: ${e.message}`,"bad"); }
 }
@@ -747,6 +732,45 @@ function renderSys(){
     h+=`<div class="mt-r"><span class="n" style="color:var(--warn)">体积只数到上限,带 +</span></div>`;
   h+=`</div>`;
   el.innerHTML=h;
+}
+
+
+// 记忆池那一栏。两条硬上限是护栏不是建议:超了尾部条目会在下一次会话里静默消失,
+// 不报错、不记日志,所以这里画成有刻度的条而不是一个数字。
+let MEM=null;
+async function loadMem(){
+  try{ MEM=await api("/api/mem"); }catch(e){ MEM={error:e.message}; }
+  renderMem();
+}
+function renderMem(){
+  const el=$("mt-memory"); if(!el||!MEM) return;
+  if(MEM.error){ el.innerHTML=`<div class="mt-note">记忆池读取失败:${esc(MEM.error)}</div>`; return; }
+  if(!MEM.available){ el.innerHTML=`<div class="mt-note">${esc(MEM.reason)}</div>`; return; }
+  const bar=(pct,cur,max,lab)=>{
+    if(pct==null) return `<div class="mt-r"><span class="n">${lab}</span><span class="c">未读到</span></div>`;
+    return `<div class="mt-r"><span class="n">${lab}</span><span class="c">${cur}/${max}</span></div>
+      <div class="mt-meter"><i style="width:${Math.min(pct,100).toFixed(1)}%;background:${
+        pct>=100?"var(--bad)":pct>=90?"var(--warn)":"var(--ok)"}"></i></div>`;
+  };
+  const issues=[];
+  if(MEM.orphanLinks.length) issues.push(["孤儿链接",MEM.orphanLinks.map(o=>o.name)]);
+  if(MEM.unreachable.length) issues.push(["索引够不到",MEM.unreachable]);
+  if(MEM.danglingIndex.length) issues.push(["索引指向空",MEM.danglingIndex]);
+  el.innerHTML=`<div class="mt-t">记忆池 <b>${MEM.live}</b>
+      <span class="sub">冷层 ${MEM.cold}</span></div>
+    ${bar(MEM.linePct,MEM.indexLines,MEM.hardLines,"索引行数")}
+    ${bar(MEM.bytePct,MEM.indexBytes,MEM.hardBytes,"索引字节")}
+    <div class="mt-rows">`
+    + (issues.length
+        ? issues.map(([lab,names])=>`<div class="mt-r"><span class="n" style="color:var(--warn)">${lab}</span>
+            <span class="c" title="${esc(names.join(", "))}">${names.length}</span></div>`).join("")
+        : `<div class="mt-r"><span class="n" style="color:var(--ok)">链接与索引一致</span></div>`)
+    + MEM.biggest.slice(0,4).map(b=>`<div class="mt-r">
+        <span class="n" title="${esc(b.slug)}">${esc(b.slug)}</span>
+        <span class="c">${kb(b.bytes)}</span>
+        ${MEM.archiverConfigured?`<button class="mini danger" data-mt="memory.archive"
+          data-name="${esc(b.slug)}" title="归档进冷层">⏸</button>`:""}</div>`).join("")
+    + `</div>`;
 }
 
 function renderHeat(){
@@ -983,13 +1007,14 @@ document.addEventListener("keydown",e=>{
   tl.addEventListener("pointercancel",endDrag);
   tl.addEventListener("dblclick",tlReset);
 })();
-$("mtreload").addEventListener("click",()=>{loadMaint();loadSys();});
+$("mtreload").addEventListener("click",()=>{loadMaint();loadSys();loadMem();});
 loadMaint();
 $("scktog").addEventListener("click",()=>$("sckd").classList.toggle("on"));
 loadSelfcheck();
 $("rpreload").addEventListener("click",loadRepos);
 loadRepos();
 loadSys();
+loadMem();
 $("tlin").addEventListener("click",()=>tlZoom(0.7,0.5));
 $("tlout").addEventListener("click",()=>tlZoom(1.4,0.5));
 $("tlreset").addEventListener("click",tlReset);
