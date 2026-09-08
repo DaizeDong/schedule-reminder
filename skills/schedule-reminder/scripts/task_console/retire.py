@@ -24,6 +24,15 @@ import shutil
 import subprocess
 from pathlib import Path
 
+# 在 pythonw(GUI 子系统)下,每个控制台子程序都要新分配一个控制台。那次分配很慢,
+# 而且并发时根本不成立:实测同一条 git 命令,普通 python 下几毫秒,pythonw 下单次
+# 4.5 秒,四个并发全部 15 秒超时。加上这个标志之后单次降到 0.08 秒。
+#
+# 这个坑只在生产形态下出现,而开发期测试都是用普通 python 跑的:探针必须复现真实的
+# 调用形状,否则测的是另一个程序。
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 # allow-list 在一个 PowerShell 脚本里,形如 $TaskNames = @( 'A', 'B' )
 TASKNAMES_BLOCK = re.compile(r"(\$TaskNames\s*=\s*@\()(.*?)(\n\s*\))", re.S)
 
@@ -48,7 +57,7 @@ def _task_state(name: str) -> str | None:
          "$t = Get-ScheduledTask -TaskName $env:TC_NAME -ErrorAction SilentlyContinue;"
          "if ($t) { Write-Output \"$($t.State)\" }"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env=dict(os.environ, TC_NAME=name), timeout=90)
+        env=dict(os.environ, TC_NAME=name), timeout=90, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
     out = (r.stdout or "").strip()
     return out or None
 
@@ -148,7 +157,7 @@ def _disable(name: str, reason: str) -> tuple[bool, str]:
     note = f"[RETIRED] {reason}"
     r = subprocess.run([_powershell(), "-NoProfile", "-Command", ps],
                        capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       env=dict(os.environ, TC_NAME=name, TC_NOTE=note), timeout=120)
+                       env=dict(os.environ, TC_NAME=name, TC_NOTE=note), timeout=120, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
     return r.returncode == 0, (r.stderr or r.stdout or "").strip()[:200]
 
 

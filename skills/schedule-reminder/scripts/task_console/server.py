@@ -71,6 +71,15 @@ import sysinfo
 import timeline
 from rcnorm import norm_rc as _norm_rc_unused
 
+# 在 pythonw(GUI 子系统)下,每个控制台子程序都要新分配一个控制台。那次分配很慢,
+# 而且并发时根本不成立:实测同一条 git 命令,普通 python 下几毫秒,pythonw 下单次
+# 4.5 秒,四个并发全部 15 秒超时。加上这个标志之后单次降到 0.08 秒。
+#
+# 这个坑只在生产形态下出现,而开发期测试都是用普通 python 跑的:探针必须复现真实的
+# 调用形状,否则测的是另一个程序。
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 HERE = Path(__file__).resolve().parent
 COLLECT = HERE / "collect.ps1"
 ACT = HERE / "act.ps1"
@@ -115,8 +124,7 @@ def run_ps(script: Path, env_extra: dict[str, str] | None = None, timeout: int =
     p = subprocess.run(
         [powershell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
          "-File", str(script)],
-        capture_output=True, env=env, timeout=timeout,
-    )
+        capture_output=True, env=env, timeout=timeout, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
     return (p.returncode,
             p.stdout.decode("utf-8", "replace").strip(),
             p.stderr.decode("utf-8", "replace").strip())
