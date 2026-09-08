@@ -1489,7 +1489,15 @@ function renderTiles(){
 
 function renderHeat(){
   const H=DATA.history||{};
-  if(!H.available){ $("hmnote").textContent=(DATA.warnings||[]).find(w=>w.indexOf("历史")>=0)||"无历史"; $("heat").innerHTML=""; return; }
+  if(!H.available){
+    // 先用 history 自己给的原因。去 warnings 里捞是老写法:那条警告只在回落路径上才有,
+    // 数据库路径不产生它,于是这里只剩「无历史」三个字 :
+    // 「库里还没有观察数据(跑一次 backfill)」和「摄入器停了两周」和「本来就没配」
+    // 在屏幕上会是同一句话,而它们要做的事完全不同。
+    $("hmnote").textContent = H.reason
+      || (DATA.warnings||[]).find(w=>w.indexOf("历史")>=0) || "无历史";
+    $("heat").innerHTML=""; return;
+  }
   $("hmnote").textContent=H.caveat||"";
   const days=H.days||[];
   const rows=ROWS.filter(r=>r.hist).sort((a,b)=>((a.hist.health==null?101:a.hist.health)-(b.hist.health==null?101:b.hist.health)));
@@ -1514,7 +1522,19 @@ function renderScores(){
     <th class="num">备份%</th><th class="num">监控%</th><th class="num">调度卫生%</th></tr></thead><tbody>`
     // 每一行挂上它自己的大类。之前这张表的格子有 cursor:pointer 却没有任何处理器,
     // 那是最糟的一种:它主动告诉你可以点,然后什么也不做。
-    +(DATA.scores||[]).map(s=>`<tr data-scat="${esc(s.cat)}" title="只看这一类"><td>${esc(s.cat)}</td><td class="num">${s.n}</td>${pc(s.health)}${pc(s.backup)}${pc(s.watched)}${pc(s.hygiene)}</tr>`).join("")
+    // 健康% 那一格单独出:它的分母和同一行的「数」不是一回事,而四列长得一模一样。
+    // 分母不足时用未检查色阶,和 pc() 的 null 分支一致 : 一个 1 个样本的 100%
+    // 和一个 40 个样本的 100% 不该长得一样。
+    +(DATA.scores||[]).map(s=>{
+      const hn = (s.healthN != null) ? s.healthN : s.n;
+      const thin = hn < s.n;
+      const hcell = (s.health == null)
+        ? `<td class="num u" title="没有任何任务有观察记录">-</td>`
+        : `<td class="num" title="${hn}/${s.n} 个任务有观察记录"${
+            thin ? ' style="color:var(--faint)"' : ""}>${s.health}</td>`;
+      return `<tr data-scat="${esc(s.cat)}" title="只看这一类"><td>${esc(s.cat)}</td>`
+        + `<td class="num">${s.n}</td>${hcell}${pc(s.backup)}${pc(s.watched)}${pc(s.hygiene)}</tr>`;
+    }).join("")
     +`</tbody>`;
 }
 

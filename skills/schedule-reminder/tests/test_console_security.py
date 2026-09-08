@@ -418,3 +418,45 @@ def test_norm_rc_still_unwraps_the_hresult_form():
     assert S.norm_rc(-2147024891) == 5, "带符号 int32 的同一个值也要认"
     assert S.norm_rc(None) is None, "没有返回码就是 None,不是 0"
     assert S.norm_rc("") is None
+
+
+# ---------- 「说明为什么」的字段必须能穿过导出白名单 ----------
+# server.py 导出 history / runlog 时用的是一层字段白名单。把 available 改成 False 却忘了
+# 让 reason 出现在名单里,页面上就只剩一个没有原因的 False。
+# 实测栽过一次:空库那条判定生效了,而 reason 是空的,热力图只印「无历史」三个字,
+# 于是「库里还没有观察数据(跑一次 backfill)」「摄入器停了两周」「本来就没配」
+# 在屏幕上是同一句话,而它们要做的事完全不同。
+
+def _payload_keys(section):
+    """从源码里把那层白名单读出来。不去调 build_payload:它要真跑 PowerShell。
+    读源码的坏处是形状一变这条就失效,所以下面配了一条断言,确保真的读到了东西。"""
+    import inspect
+    import re as _re
+    src = inspect.getsource(S)
+    m = _re.search(r'"' + section + r'": \{k: \w+\[k\] for k in \(([^)]*)\)', src, _re.S)
+    assert m, f"读不出 {section} 的导出白名单,这条检查会因为没东西可查而打印绿色"
+    keys = _re.findall(r'"([a-zA-Z]+)"', m.group(1))
+    assert len(keys) >= 3, f"{section} 的白名单只读到 {keys},形状可能变了"
+    return keys
+
+
+def test_history_export_carries_the_reason():
+    assert "reason" in _payload_keys("history"), (
+        "history 的导出白名单漏了 reason:页面会拿到一个没有原因的 available=False")
+
+
+def test_history_export_carries_last_ingest():
+    """lastIngest 是区分「摄入器挂了」和「本来就没跑过」的唯一信号,
+    它原来算完就被丢掉。"""
+    assert "lastIngest" in _payload_keys("history")
+
+
+def test_runlog_export_carries_the_reason_too():
+    assert "reason" in _payload_keys("runlog")
+
+
+def test_the_whitelist_reader_can_actually_fail():
+    """负对照:上面三条全靠 _payload_keys 真的读到了东西。
+    读一个不存在的段落必须炸,而不是返回空列表让断言恰好通过。"""
+    with pytest.raises(AssertionError):
+        _payload_keys("nosuchsection")

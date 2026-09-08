@@ -32,6 +32,37 @@ def available() -> tuple[bool, str | None]:
     return True, None
 
 
+def _is_no_more(e) -> bool:
+    """EvtNext 读完时也会抛(ERROR_NO_MORE_ITEMS = 259),那是正常结束不是失败。
+    不区分的话,每一次正常读完都会被报成「读到一半失败」,而一个天天误报的提示
+    很快就会被无视。"""
+    return getattr(e, "winerror", None) == 259 or "259" in str(e)
+
+
+def channel_enabled() -> tuple[bool | None, str | None]:
+    """通道自己说它开没开。None 表示问不出来(和「关着」不是一回事)。
+
+    这个函数存在的理由:read() 返回的 enabled 一直只表示「EvtQuery 打得开」,
+    而 runlog.ps1 里的同名键表示的是**通道配置里的 IsEnabled**,server.py 按后者的语义
+    去解释前者。通道被关掉(Windows 默认就是关的)但通道文件还在时,EvtQuery 打得开、
+    返回零条事件,快路报 enabled=True,于是永远不会回落到 runlog.ps1,
+    那句「日志是关闭的,开启它是开始记录不是恢复记录」永远不出现。
+    页面于是印出「运行日志 0」,而这正是本文件开头写的那句要防的事:
+    **一条空的运行日志和一段读不到的运行日志在界面上长得一模一样。**
+    """
+    try:
+        import win32evtlog
+        cfg = win32evtlog.EvtOpenChannelConfig(CHANNEL)
+        val = win32evtlog.EvtGetChannelConfigProperty(
+            cfg, win32evtlog.EvtChannelConfigEnabled)
+        # 这个 API 在不同 pywin32 版本上要么直接给 bool,要么给 (值, 类型) 元组。
+        if isinstance(val, tuple):
+            val = val[0]
+        return bool(val), None
+    except Exception as e:
+        return None, f"读不到通道配置: {e.__class__.__name__}"
+
+
 def _xpath(ids, since: _dt.datetime | None) -> str:
     cond = " or ".join(f"EventID={i}" for i in ids)
     if since is None:
@@ -89,6 +120,18 @@ def read(days: int = 30, max_events: int = 20000, now: _dt.datetime | None = Non
 
     now = now or _dt.datetime.now().astimezone()
     since = now - _dt.timedelta(days=days)
+
+    # 通道关着就直接说关着,不要靠「EvtQuery 打不打得开」去猜:关着的通道
+    # 只要文件还在就打得开,而那时读到的零条会被上层当成「日志正常、没有记录」。
+    on, why = channel_enabled()
+    if on is False:
+        return {"enabled": False,
+                "reason": "任务运行历史日志是关闭的。开启它是开始记录,不是恢复记录。",
+                "events": []}
+    # on 为 None 表示问不出来。**不能当成开着**:那样就回到了原来那个把「查不成」
+    # 当成「正常」的形态。让它走 PowerShell 那条慢路去拿一个权威答案。
+    if on is None:
+        return {"enabled": False, "reason": why or "读不到通道配置", "events": []}
     try:
         q = win32evtlog.EvtQuery(
             CHANNEL, win32evtlog.EvtQueryReverseDirection | win32evtlog.EvtQueryChannelPath,
@@ -98,11 +141,16 @@ def read(days: int = 30, max_events: int = 20000, now: _dt.datetime | None = Non
         return {"enabled": False, "reason": f"打不开事件日志: {e.__class__.__name__}",
                 "events": []}
 
-    rows, dropped = [], 0
+    rows, dropped, broke = [], 0, None
     while len(rows) < max_events:
         try:
             batch = win32evtlog.EvtNext(q, 100)
-        except Exception:
+        except Exception as e:
+            # 读到一半失败和读完了在这里原来是同一个 break,于是 enabled=True、
+            # count 是个偏小的确定数字、dropped=0 : 一个数了一半却报确定数字的结果,
+            # 比不报还糟。现在把它说出来。
+            if not _is_no_more(e):
+                broke = e.__class__.__name__
             break
         if not batch:
             break
@@ -122,7 +170,8 @@ def read(days: int = 30, max_events: int = 20000, now: _dt.datetime | None = Non
 
     return {
         "enabled": True,
-        "reason": None,
+        "reason": (f"事件读到一半失败({broke}),下面的条数是不完整的" if broke else None),
+        "partial": bool(broke),
         "since": since.strftime("%Y-%m-%d"),
         "oldest": rows[-1]["t"] if rows else None,
         "count": len(rows),
