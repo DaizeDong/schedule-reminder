@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import threading
+import time
 from http.server import ThreadingHTTPServer
 
 import pytest
@@ -292,3 +293,80 @@ def test_vendor_traversal_target_actually_exists(srv):
 def test_vendor_missing_file_is_404(srv):
     st, _ = call(srv, "GET", "/vendor/tabler/nope.css")
     assert st == 404, st
+
+# ---------- vendor:形状拒绝必须发生在碰文件系统之前 ----------
+# 第一版这道闸只有「解析之后确认仍在 vendor 里」。它确实拦得住,文件一个字节都没泄。
+# 但 "//host/share/x" 会让 Path.resolve() 在 Windows 上按 UNC 去**连那台主机**,
+# 而那一步发生在归属检查之前:实测对一个不可路由地址(RFC 5737 的 192.0.2.1)
+# 耗时 21.07 秒,对一台可达的攻击者主机则是一次自动 NTLM 协商。
+# 免令牌 + 任意主机 + 每请求二十多秒,凑起来是一个不用登录的外联与阻塞原语,
+# 而返回码从头到尾都是干净的 404。
+#
+# 所以下面这组用例分两种:一种断言仍然 404(结果对),
+# 另一种断言**耗时**(证明它没有先去连网络)。只测前者的话,这个洞原封不动。
+
+@pytest.mark.parametrize("path", [
+    "/vendor///192.0.2.1/share/x",              # 浏览器不会折叠 path 里的连续斜杠
+    "/vendor/%2F%2F192.0.2.1%2Fshare%2Fx",      # 百分号编码同形
+    "/vendor/" + chr(92) + chr(92) + "192.0.2.1" + chr(92) + "share",   # 反斜杠 UNC
+    "/vendor/C:/Windows/win.ini",               # 带盘符的绝对路径
+    "/vendor/tabler/../../../server.py",        # 多级穿越
+    "/vendor/./tabler/tabler.min.css",          # 单点段
+    "/vendor/",                                 # 空 rel
+])
+def test_vendor_rejects_by_shape(srv, path):
+    st, _ = call(srv, "GET", path)
+    assert st == 404, f"{path} 没被挡: {st}"
+
+
+def test_vendor_unc_is_refused_without_touching_the_network(srv):
+    """UNC 那条必须**立刻**返回,不能先去连主机。
+
+    这是本条唯一能分辨「修好了」和「没修但恰好也 404」的判据:两种实现的状态码一样,
+    只有耗时不一样。192.0.2.1 是 RFC 5737 的 TEST-NET-1,保证不可路由,
+    所以未修的实现会在这里卡二十秒以上。
+    """
+    # 刻意用一个**上面那组用例没碰过**的地址。第一版这里和 test_vendor_rejects_by_shape
+    # 共用 192.0.2.1,于是形状用例先跑并阻塞了 21 秒之后,Windows 缓存了那次失败的解析,
+    # 轮到这条时秒返,投毒状态下它照样打印绿色 : 一个只在自己是第一个碰那台主机时
+    # 才有效的耗时判据,和没有判据差不多。
+    t0 = time.monotonic()
+    st, _ = call(srv, "GET", "/vendor///192.0.2.77/share/x")
+    dt = time.monotonic() - t0
+    assert st == 404, st
+    assert dt < 2.0, f"返回是 404 但花了 {dt:.1f}s,说明形状检查跑在了 resolve() 之后"
+
+
+def test_vendor_still_serves_the_real_asset(srv):
+    """正对照:上面那一串 404 不能是因为把整条路由拒死了。"""
+    st, body = call(srv, "GET", "/vendor/tabler/tabler.min.css")
+    assert st == 200, st
+    assert b"Tabler" in body[:400]
+
+
+# ---------- 不许被 iframe 进去 ----------
+# Host 白名单防的是 DNS rebinding。iframe 走另一条路:它发的 Host 就是 127.0.0.1:8787,
+# 白名单原样放行,页面带着一枚有效令牌正常渲染。攻击者不需要读到任何东西,
+# 只要骗一次点击落在他知道位置的按钮上,而这一页上的按钮会真删目录、真跑计划任务。
+
+def _headers(port, path="/"):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    c.request("GET", path, headers={"Host": f"127.0.0.1:{port}"})
+    r = c.getresponse()
+    r.read()
+    h = {k.lower(): v for k, v in r.getheaders()}
+    c.close()
+    return h
+
+
+def test_the_page_refuses_to_be_framed(srv):
+    h = _headers(srv, "/")
+    assert "frame-ancestors 'none'" in h.get("content-security-policy", ""), h.get("content-security-policy")
+    assert h.get("x-frame-options", "").upper() == "DENY", h.get("x-frame-options")
+
+
+def test_every_response_carries_the_frame_ban_not_just_the_page(srv):
+    """API 和静态资产也要带。只给 / 加,等于把「以后新增的路由」全漏掉。"""
+    for p in ("/favicon.svg", "/vendor/tabler/tabler.min.css", "/api/selfcheck"):
+        h = _headers(srv, p)
+        assert "frame-ancestors 'none'" in h.get("content-security-policy", ""), p

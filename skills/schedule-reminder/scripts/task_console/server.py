@@ -603,8 +603,22 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        # The page never embeds anything remote except the Google Fonts stylesheet.
         self.send_header("X-Content-Type-Options", "nosniff")
+        # 不许被别人 iframe 进去。Host 白名单防的是 DNS rebinding:攻击者把域名 rebind 到
+        # 127.0.0.1 之后 Host 头对不上,于是被挡。iframe 走的是另一条路 :
+        # <iframe src="http://127.0.0.1:8787/"> 发出去的 Host 就是 127.0.0.1:8787,
+        # 白名单原样放行,页面正常渲染,而且它自带一枚有效令牌。
+        # 攻击者不需要读到任何东西(CORS 挡得住读),只需要骗一次点击落在他知道位置的按钮上,
+        # 而这一页上的按钮会真删目录、真跑计划任务。
+        # frame-ancestors 是权威那一条,X-Frame-Options 给不认识 CSP 的老客户端兜底。
+        self.send_header("Content-Security-Policy",
+                         "frame-ancestors 'none'; default-src 'self'; "
+                         "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+                         "img-src 'self' data:; connect-src 'self'; base-uri 'none'; "
+                         "form-action 'none'")
+        self.send_header("X-Frame-Options", "DENY")
+        # 页面里没有任何外链,所以 referrer 一栏也没有存在的理由。
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         self.wfile.write(body)
 
@@ -742,11 +756,26 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/vendor/"):
             # 第三方资产随仓发,不吊 CDN:这台控制台正是出事的时候要打开的,
             # 而出事的时候网络是最不该依赖的东西。
-            # 路径必须解析后再确认仍在 vendor 里,不能只看前缀 :
-            # "/vendor/../../etc" 的前缀是对的。
+            # 这条路由刻意免令牌(<link> 标签发不了自定义头,里面也没有秘密),
+            # 所以「不许爬出 vendor」是它唯一的控制,而那道控制必须在**碰文件系统之前**开火。
+            #
+            # 第一版只有解析后的归属检查,它确实拦得住 : 文件一个字节都没泄。
+            # 但 "//host/share/x" 会让 Path.resolve() 在 Windows 上把它当 UNC,
+            # 于是**在归属检查之前**先去连那台主机:实测对一个不可路由地址耗时 21.07 秒,
+            # 对一台可达的攻击者主机则是一次自动的 NTLM 协商(凭据外泄),
+            # 期间还占着一个 handler 线程。免令牌 + 任意主机 + 每请求 21 秒,
+            # 这三样凑一起就是一个不用登录的外联与阻塞原语,而返回码始终是干净的 404。
+            #
+            # 所以改成先按形状拒绝、再逐段拼接,最后仍然保留归属检查兜底。
+            # 形状检查的好处是它不需要知道操作系统怎么解释路径 :
+            # 上一版的错误正是「让 resolve() 先替我理解这个字符串」。
             rel = unquote(path[len("/vendor/"):])
+            segs = rel.split("/")
+            if ("\\" in rel or rel.startswith("/") or not rel
+                    or any(s in ("", ".", "..") or ":" in s for s in segs)):
+                return self._json(404, {"error": "not found"})
             try:
-                target = (VENDOR / rel).resolve()
+                target = (VENDOR.joinpath(*segs)).resolve()
                 target.relative_to(VENDOR.resolve())
             except (ValueError, OSError):
                 return self._json(404, {"error": "not found"})
