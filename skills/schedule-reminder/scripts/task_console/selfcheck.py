@@ -51,6 +51,10 @@ BUNDLED = (
     ("runlog", "运行日志脚本", "runlog.ps1"),
     ("page", "页面", "console.html"),
     ("icon", "图标", "icon.svg"),
+    # 外壳样式。缺了页面照样打开,但会退回成一堆没有布局的裸元素,
+    # 而那看起来像「页面坏了」不像「少了一个文件」。
+    ("tabler_css", "外壳样式", "vendor/tabler/tabler.min.css"),
+    ("tabler_js", "外壳脚本", "vendor/tabler/tabler.min.js"),
 )
 
 

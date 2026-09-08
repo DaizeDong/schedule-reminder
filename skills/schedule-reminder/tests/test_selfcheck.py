@@ -24,7 +24,10 @@ NOW = 1_800_000_000.0
 def bundle(tmp_path):
     """一份「装好了」的随包文件,免得每条用例都被 bundled 缺失刷屏。"""
     for _k, _t, fname in SC.BUNDLED:
-        (tmp_path / fname).write_text("x", encoding="utf-8")
+        # BUNDLED 里现在有带子目录的条目(vendor/tabler/...),父目录得先建出来。
+        p = tmp_path / fname
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x", encoding="utf-8")
     return tmp_path
 
 
@@ -101,7 +104,9 @@ def test_a_broken_required_source_flips_the_overall_verdict(bundle, tmp_path):
 def test_missing_bundled_file_flips_it_too(tmp_path):
     # 随包文件缺了是安装坏了,不是没配。它没有环境变量可以「不设」。
     for _k, _t, fname in SC.BUNDLED[1:]:
-        (tmp_path / fname).write_text("x", encoding="utf-8")
+        p = tmp_path / fname
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x", encoding="utf-8")
     health = tmp_path / "h.json"
     health.write_text("{}", encoding="utf-8")
     # 只让随包文件缺一个,别的全给对:这样翻红只可能是它翻的。

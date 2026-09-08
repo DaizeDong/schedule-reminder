@@ -4,22 +4,29 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<title>任务调度台</title>
+<title>基建维护台</title>
+<link rel="stylesheet" href="/vendor/tabler/tabler.min.css">
+<script src="/vendor/tabler/tabler.min.js" defer></script>
 <style>
-/* No framework, and that is a decision rather than an omission. Three independent surveys of
-   terminal CSS kits, data grids and dashboard templates converged on the same answer. A grid
-   library can own only ONE of the four regions on this page, so adopting one guarantees two
-   styling systems and two theming mechanisms in a single console; every dashboard template
-   (Tabler 536KB, AdminLTE 312KB, CoreUI 330KB) is calibrated to look calm at LOW density, which
-   is the opposite of what a 36x19 grid needs; and at 36 rows virtualisation is a net negative
-   because it breaks Ctrl+F.
+/* 用 Tabler v1.5.0(MIT,随仓发在 vendor/ 下,不吊 CDN)做外壳。
 
-   The font stack is the one genuinely free win from that research: NSimSun is a CJK MONOSPACE
-   face present on every Windows install, so a terminal look that does not fall apart on Chinese
-   costs zero vendored bytes. Latin glyphs resolve from Cascadia/Consolas, CJK from NSimSun, per
-   glyph through the normal fallback chain. The rejected alternative was vendoring Sarasa Mono SC:
-   licence is fine, but the family ships at 62.7MB and a single-weight CJK subset still needs an
-   offline pyftsubset pass, i.e. exactly the build step this tool must not have. */
+   这里原本写着「不用框架是决定不是疏漏」,机主明确要求改用现成模板,所以那句话连同
+   它的理由一起换掉,而不是留在文件里跟事实打架。原来的三条反对里,两条对 Tabler
+   本来就不成立:它不是只能管一个区域的网格库,而是整套外壳;这页也没有虚拟滚动。
+
+   第三条反对是真的,现在也仍然真:**后台模板都是按低密度调的,而这页是 36 行 19 列
+   的密集网格。** 所以引入之后立刻用 Tabler 自己的 --tblr-* 变量把密度压回来
+   (字号 14px 到 12px,表格内距减半)。密度是靠它支持的变量调的,不是靠覆盖它的规则,
+   所以升级版本不会把这些调整冲掉。
+
+   调色板保持本页原有的那套(--ink/--panel/--bad/...):它是为长时间盯着看的密集表
+   调出来的,双主题都量过对比度。做法是反过来把 Tabler 的表面色接到这套变量上,
+   于是 Tabler 的卡片、徽章、导航自动跟着走,不会出现两套配色。
+
+   字体栈仍然是原来那个,那是这页唯一真正白捡的东西:NSimSun 是每台 Windows 都有的
+   CJK 等宽字体,所以「终端观感 + 中文不塌」零字节成本。被否掉的替代是 vendored
+   Sarasa Mono SC:许可没问题,但整族 62.7MB,单字重 CJK 子集仍要一次离线 pyftsubset,
+   正是这个工具不能有的构建步骤。 */
 :root{
   --bg:#EEF1F2; --panel:#FFFFFF; --panel2:#F6F8F9; --line:#D3DBDF; --line2:#E4EAED;
   --ink:#141C22; --dim:#5C6B75; --faint:#8797A1;
@@ -120,7 +127,7 @@ main{padding:8px}
 .hm td.h1{background:var(--h1)}.hm td.h2{background:var(--h2)}
 .hm td.h3{background:var(--h3)}.hm td.h4{background:var(--h4)}.hm td.h5{background:var(--h5)}
 
-table.g{border-collapse:collapse;font-size:11.5px;white-space:nowrap}
+table.g{border-collapse:collapse;font-size:11.5px;white-space:nowrap;width:100%}
 table.g th{position:sticky;top:26px;z-index:5;background:var(--panel2);color:var(--dim);
   font-weight:600;text-align:left;padding:3px 6px;border-bottom:1px solid var(--line);
   cursor:pointer;user-select:none;font-size:11px}
@@ -135,7 +142,12 @@ table.g tbody tr.sel{background:var(--sel)}
 table.g td.nm{max-width:230px;overflow:hidden;text-overflow:ellipsis;font-weight:500}
 /* 说明是唯一允许伸缩的列。其余列都是 nowrap 的固定内容,让它吃掉剩余宽度,
    窗口变宽时补上的空白就落在这里而不是摊给每一列。 */
-table.g td.ds{max-width:0;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 说明列。原来写的是 max-width:0 + width:100%,那是「吸收剩余宽度」的写法,
+   但这张表 19 列的自然宽度合计已经超过容器,**没有剩余宽度可吸收**,于是 max-width:0
+   赢,这一列被压成 34px、只显示一个字加省略号。一列只显示一个字比没有这一列更差:
+   它既读不出内容,又占着 34px。
+   改成给一个真实的宽度区间,放不下就让 .pad 横向滚(它本来就有 overflow-x:auto)。 */
+table.g td.ds{min-width:170px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .st{display:inline-block;min-width:50px;text-align:center;padding:0 4px;font-size:10.5px}
 .st.ok{color:var(--ok);background:var(--okb)}
 .st.bad{color:var(--bad);background:var(--badb)}
@@ -312,54 +324,87 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
 .cv-r .t{color:var(--dim)}
 .cv-more{font-size:11px;color:var(--warn);padding:3px 0}
 
-/* ================= 应用外壳 =========================================================
-   九块盒子竖着堆是四千七百多像素,五屏。信息本身并不多,是**结构**在浪费:每一块都要滚
-   过去才看得到,而一个要滚五屏才能看完的运维台,实际效果是每次只看最上面那一块。
+/* ================= 把 Tabler 接到本页的调色板与密度上 ==============================
+   外壳(侧栏、顶栏、卡片、徽章)现在全是 Tabler 的组件,所以这一段不再画外壳,
+   只做两件事:把 Tabler 的表面色接到本页原有的变量上,以及把密度压回来。
 
-   所以改成左边一列、一次只显示一类。合并最大的风险是**藏起来之后没人再看见**,而这个
-   控制台的全部价值就是「打开就在眼前」。对策是侧边栏每一项自己会亮:哪一类里有要人管的
-   东西,数字就长在那一项上,不点进去也看得见。 */
-/* 62 是 #tools 还挂在全局顶部时留下的旧值。tools 已经搬进任务分区,现在顶上只剩 26px 的 #bar。 */
-#app{display:grid;grid-template-columns:auto 1fr;min-height:calc(100vh - 26px)}
-#side{background:var(--panel2);border-right:1px solid var(--line);
-  padding:5px 0;display:flex;flex-direction:column;gap:1px;width:150px;
-  /* top 必须避开 #bar:两者都 sticky 到 0 而 #bar 的 z-index 是 30,一滚起来侧栏第一项就被盖掉 21px。 */
-  position:sticky;top:26px;align-self:start;max-height:calc(100vh - 26px);overflow:auto}
-#side.narrow{width:42px}
-.nv{display:grid;grid-template-columns:15px 1fr auto;gap:7px;align-items:center;height:auto;
-  padding:5px 9px;font-size:12.5px;color:var(--dim);cursor:pointer;border:0;
-  background:none;text-align:left;width:100%;font-family:inherit;
-  border-left:2px solid transparent}
-.nv:hover{background:var(--cur);color:var(--ink)}
-.nv[aria-current]{background:var(--sel);color:var(--ink);
-  border-left-color:var(--cyan);font-weight:500}
-.nv .ic{font-size:12px;text-align:center;opacity:.85}
-.nv .bg{font-size:10px;font-variant-numeric:tabular-nums;padding:0 5px;border-radius:8px;
-  background:var(--bad);color:#fff;font-weight:600;min-width:15px;text-align:center}
-.nv .bg.warn{background:var(--warn)}
-.nv .bg.zero{display:none}
-#side.narrow .nv{grid-template-columns:15px;padding:6px 12px}
-#side.narrow .lb{display:none}
-/* 收起时徽章不能一起藏掉:那正好把「不点进去也看得见」这件事取消了。 */
-#side.narrow .bg{position:absolute;margin-left:9px;margin-top:-11px;font-size:9px;padding:0 3px}
-#side.narrow .nv{position:relative}
-#side.narrow #sidefoot{padding:5px 8px}
-#sidefoot{margin-top:auto;padding:5px 9px}
-#sidefoot button{font:inherit;font-size:11px;color:var(--faint);background:none;border:0;
-  cursor:pointer;padding:2px 0}
-#sidefoot button:hover{color:var(--cyan)}
-#view{min-width:0;padding:7px 9px 18px}
+   方向是刻意反过来的:不是把本页改成 Tabler 的颜色,而是把 Tabler 的变量指向本页的
+   颜色。因为这套调色板是为一张长时间盯着看的密集表调的、双主题都量过对比度,
+   而 Tabler 的默认色没量过这一点;更要紧的是,只要有两套颜色,就一定会在某个组件上
+   对不上,然后没人说得清哪一套才是对的。 */
+:root,
+[data-bs-theme="dark"]{
+  --tblr-body-bg:var(--bg);
+  --tblr-body-color:var(--ink);
+  --tblr-secondary:var(--dim);
+  --tblr-border-color:var(--line);
+  --tblr-border-color-translucent:var(--line2);
+  --tblr-bg-surface:var(--panel);
+  --tblr-bg-surface-secondary:var(--panel2);
+  --tblr-bg-surface-tertiary:var(--panel2);
+  --tblr-card-bg:var(--panel);
+  --tblr-card-cap-bg:var(--panel2);
+  --tblr-primary:var(--cyan);
+  --tblr-danger:var(--bad);
+  --tblr-success:var(--ok);
+  --tblr-warning:var(--warn);
+  --tblr-muted:var(--faint);
+  --tblr-link-color:var(--cyan);
+
+  /* 密度。Tabler 默认 14px 正文、0.5rem/0.75rem 的表格内距,那是给一屏十来行的
+     卡片式面板调的;这页的任务表是 36 行 19 列,按默认值要多滚两屏。
+     用它自己的变量压,不覆盖它的规则,所以升级不会把这些冲掉。 */
+  --tblr-body-font-size:12px;
+  --tblr-font-size-h1:15px; --tblr-font-size-h2:13px; --tblr-font-size-h3:12px;
+  --tblr-border-radius:3px;
+  --tblr-table-cell-padding-y:2px;
+  --tblr-table-cell-padding-x:6px;
+  --tblr-card-spacer-y:6px;
+  --tblr-card-spacer-x:9px;
+  --tblr-card-cap-padding-y:4px;
+  --tblr-card-cap-padding-x:9px;
+}
+body{font-size:12px}
+
+/* 侧栏。Tabler 的 navbar-vertical 默认 15rem 宽,对五个分区来说太宽了,
+   收到 10.5rem;top 避开 sticky 的顶栏(两者都 sticky 到 0 时第一项会被盖掉)。 */
+/* 侧栏。宽度变量是 --tblr-sidebar-width(不是 navbar-width,写错了不报错、只是不生效),
+   默认 16rem 对五个分区太宽,收到 10.5rem。
+   折叠用 Tabler 自带的 .navbar-folded,不用我自己那套:它已经把宽度、标题隐藏、
+   悬停展开都处理好了,自己再写一份等于多一份要跟着版本走的东西。 */
+#side{--tblr-sidebar-width:10.5rem;--tblr-sidebar-folded-width:3rem}
+#side .navbar-brand{font-size:13px;padding:6px 4px 4px;font-weight:600;margin-inline:0}
+#side .nav-link{padding:4px 8px 4px 10px;font-size:12.5px;border-radius:3px}
+#side .nav-link-icon{width:15px;text-align:center;opacity:.85;margin-right:6px}
+#side .nav-link .badge{font-size:10px;padding:1px 5px}
+/* 徽章是「合并」这件事的安全带:分区把东西收了起来,徽章负责让要人管的东西不用点进去
+   也看得见。所以折叠时它不能跟着藏,而是贴到图标角上 : 折叠恰恰是最需要它的时候。 */
+#side.navbar-folded .nav-link{position:relative}
+#side.navbar-folded .nav-link .badge{position:absolute;top:1px;right:3px;font-size:9px;
+  padding:0 3px;margin:0!important}
+#side.navbar-folded #sidetoggle{padding:2px 0;font-size:11px}
+
+#bar{--tblr-navbar-padding-y:0;min-height:26px;font-size:11.5px}
+#bar .container-fluid{gap:0;padding:0}
+#bar .seg{padding:0 9px;border-right:1px solid var(--line2);align-self:stretch;
+  display:flex;align-items:center;gap:6px}
+#bar .seg:last-child{border-right:none}
+#bar .k{color:var(--faint)}
+#bar b{font-variant-numeric:tabular-nums}
+
+.page-body{margin-top:0;padding:7px 0 18px}
+#view{padding:0 9px}
 section[data-view]{display:flex;flex-direction:column;gap:6px}
 section[data-view][hidden]{display:none}
-/* 分区之后盒子不再需要靠外边距互相推开,间距交给 gap 一处管。 */
 #view .box{margin-bottom:0}
 #view #tools{margin-bottom:0}
-@media (max-width:820px){
-  #app{grid-template-columns:42px 1fr}
-  #side{width:42px}
-  #side .lb{display:none}
-  .nv{grid-template-columns:15px;padding:6px 12px}
-}
+
+/* 本页原有的 .box 直接当 Tabler 的卡片用,不去改十二处渲染代码的类名:
+   改类名要动的是 JS 里拼字符串的地方,那正是这份文件最容易改出静默错误的部分。 */
+.box{background:var(--tblr-card-bg);border:1px solid var(--line);border-radius:3px}
+.box>h2{background:var(--panel2);border-bottom:1px solid var(--line);
+  margin:0;padding:4px 9px;font-size:11.5px;font-weight:600;color:var(--dim);
+  letter-spacing:.03em}
 
 /* ---- 概览的关键指标 ----------------------------------------------------------------
    分区之后概览只剩两块盒子,一屏填不满三分之一。空着不是「干净」,是**把已经算出来的
@@ -411,28 +456,49 @@ section[data-view][hidden]{display:none}
 </head>
 <body>
 
-<div id="bar">
-  <div class="seg"><b>任务调度台</b></div>
-  <div class="seg"><span class="k">总数</span><b id="s-total">-</b></div>
-  <div class="seg"><span class="k">失败</span><b id="s-bad">-</b></div>
-  <div class="seg"><span class="k">待处理</span><b id="s-iss">-</b></div>
-  <div class="seg"><span class="k">停用</span><b id="s-off">-</b></div>
-  <div class="seg" id="s-src"></div>
-  <div class="seg"><span class="hot">?</span>帮助 <span class="hot">/</span>过滤 <span class="hot">R</span>重读</div>
-</div>
+<div class="page">
 
+<!-- 侧栏。Tabler 的 navbar-vertical,分区项就是它的 nav-link;
+     .nv 与 data-view 是本页 JS 的挂点,徽章挂在 ms-auto 上靠右。 -->
+<aside class="navbar navbar-vertical navbar-expand-sm" id="side">
+  <div class="container-fluid">
+    <h1 class="navbar-brand">
+      <img src="/favicon.svg" width="19" height="19" alt="">
+      <span class="ms-2">基建维护台</span>
+    </h1>
+    <div class="navbar-collapse collapse show" id="sidenav">
+      <ul class="navbar-nav pt-2" aria-label="分区">
+        <li class="nav-item"><a class="nav-link nv" data-view="overview" href="#overview"><span class="nav-link-icon">◎</span><span class="nav-link-title">概览</span><span class="badge bg-danger ms-auto" id="bg-overview" hidden>0</span></a></li>
+        <li class="nav-item"><a class="nav-link nv" data-view="tasks" href="#tasks"><span class="nav-link-icon">▤</span><span class="nav-link-title">任务</span><span class="badge bg-danger ms-auto" id="bg-tasks" hidden>0</span></a></li>
+        <li class="nav-item"><a class="nav-link nv" data-view="repos" href="#repos"><span class="nav-link-icon">⑂</span><span class="nav-link-title">仓库</span><span class="badge bg-danger ms-auto" id="bg-repos" hidden>0</span></a></li>
+        <li class="nav-item"><a class="nav-link nv" data-view="storage" href="#storage"><span class="nav-link-icon">▢</span><span class="nav-link-title">存储与维护</span><span class="badge bg-danger ms-auto" id="bg-storage" hidden>0</span></a></li>
+        <li class="nav-item"><a class="nav-link nv" data-view="convos" href="#convos"><span class="nav-link-icon">☰</span><span class="nav-link-title">对话历史</span><span class="badge bg-danger ms-auto" id="bg-convos" hidden>0</span></a></li>
+      </ul>
+      <div class="mt-auto pb-2 px-3">
+        <button class="btn btn-sm w-100" id="sidetoggle" title="收起侧栏">&laquo; 收起</button>
+      </div>
+    </div>
+  </div>
+</aside>
 
+<div class="page-wrapper">
 
-<div id="app">
-<nav id="side" aria-label="分区">
-  <button class="nv" data-view="overview"><span class="ic">◎</span><span class="lb">概览</span><span class="bg zero" id="bg-overview">0</span></button>
-  <button class="nv" data-view="tasks"><span class="ic">▤</span><span class="lb">任务</span><span class="bg zero" id="bg-tasks">0</span></button>
-  <button class="nv" data-view="repos"><span class="ic">⑂</span><span class="lb">仓库</span><span class="bg zero" id="bg-repos">0</span></button>
-  <button class="nv" data-view="storage"><span class="ic">▢</span><span class="lb">存储与维护</span><span class="bg zero" id="bg-storage">0</span></button>
-  <button class="nv" data-view="convos"><span class="ic">☰</span><span class="lb">对话历史</span><span class="bg zero" id="bg-convos">0</span></button>
-  <div id="sidefoot"><button id="sidetoggle" title="收起侧栏">&laquo; 收起</button></div>
-</nav>
-<div id="view">
+<!-- 顶栏:全局计数与快捷键提示。sticky 让它滚动时留在原处,
+     侧栏的 top 因此要避开它,否则第一项会被盖住(这个坑踩过一次)。 -->
+<header class="navbar navbar-expand-md sticky-top" id="bar">
+  <div class="container-fluid">
+    <div class="seg"><span class="k">总数</span><b id="s-total">-</b></div>
+    <div class="seg"><span class="k">失败</span><b id="s-bad">-</b></div>
+    <div class="seg"><span class="k">待处理</span><b id="s-iss">-</b></div>
+    <div class="seg"><span class="k">停用</span><b id="s-off">-</b></div>
+    <div class="seg" id="s-src"></div>
+    <div class="seg ms-auto"><span class="hot">?</span>帮助 <span class="hot">/</span>过滤
+      <span class="hot">R</span>重读 <span class="hot">A</span>全摊开</div>
+  </div>
+</header>
+
+<div class="page-body">
+<div class="container-fluid" id="view">
   <section data-view="overview" data-label="概览" hidden>
   <div class="tiles" id="tiles"></div>
   <div class="box" id="todo">
@@ -533,6 +599,8 @@ section[data-view][hidden]{display:none}
     </div>
   </div>
   </section>
+</div>
+</div>
 </div>
 </div>
 
@@ -1036,6 +1104,8 @@ function showView(key, push){
   document.querySelectorAll(".nv").forEach(b=>{
     const cur = b.dataset.view === key;
     if(cur) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+    b.classList.toggle("active", cur);          // Tabler 画选中态看的是这个类
+    b.parentElement.classList.toggle("active", cur);
     b.tabIndex = cur ? 0 : -1;
   });
   if(push && location.hash.slice(1) !== key) location.hash = key;
@@ -1051,7 +1121,10 @@ function setBadge(key, n, warn){
   const el = $("bg-" + key);
   if(!el) return;
   el.textContent = n > 99 ? "99+" : String(n);
-  el.className = "bg" + (n ? (warn ? " warn" : "") : " zero");
+  // 用 hidden 而不是一个 .zero 类来藏:侧栏收起时有一条规则把徽章绝对定位到图标角上,
+  // 一个「宽高为零但仍在文档流里」的徽章会在那里留下一个看不见的偏移。
+  el.hidden = !n;
+  el.className = "badge ms-auto " + (warn ? "bg-warning" : "bg-danger");
 }
 
 function updateBadges(){
@@ -1081,7 +1154,9 @@ document.addEventListener("click", e=>{
   const tl = e.target.closest("[data-goto]");
   if(tl){ showView(tl.dataset.goto, true); return; }
   const nv = e.target.closest(".nv");
-  if(nv){ showView(nv.dataset.view, true); return; }
+  // 分区项现在是 <a href="#xxx">。让浏览器自己跳会同时触发 hashchange,
+  // 于是 showView 跑两遍;更糟的是原生跳转会把页面滚到那个 id 上(并不存在)。
+  if(nv){ e.preventDefault(); showView(nv.dataset.view, true); return; }
 });
 // 方向键在侧栏项之间移焦点,但**不切视图**。APG 把 tab 模式拆成 manual 和 automatic
 // 两种,面板要发请求的场景必须选 manual:仓库、存储、对话历史三个分区各自会真扫一遍,
@@ -1465,11 +1540,21 @@ loadMem();
 $("cvreload").addEventListener("click",loadConvos);
 loadConvos();
 $("sidetoggle").addEventListener("click",()=>{
-  const n=$("side").classList.toggle("narrow");
+  const n=$("side").classList.toggle("navbar-folded");
   $("sidetoggle").textContent = n ? "\u00bb" : "\u00ab 收起";
   try{ localStorage.setItem("tc.narrow", n?"1":"0"); }catch(e){}
 });
 try{ if(localStorage.getItem("tc.narrow")==="1") $("sidetoggle").click(); }catch(e){}
+// Tabler 靠 <html data-bs-theme> 切明暗,本页原来靠 data-theme 与 prefers-color-scheme。
+// 两套开关必须由一处驱动,否则会出现「卡片是暗的、表格是亮的」这种一半一半的状态。
+function syncTheme(){
+  const forced = document.documentElement.getAttribute("data-theme");
+  const dark = forced ? forced === "dark"
+    : matchMedia("(prefers-color-scheme: dark)").matches;
+  document.documentElement.setAttribute("data-bs-theme", dark ? "dark" : "light");
+}
+syncTheme();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", syncTheme);
 showView(location.hash.slice(1) || VIEWS[0], false);
 $("tlin").addEventListener("click",()=>tlZoom(0.7,0.5));
 $("tlout").addEventListener("click",()=>tlZoom(1.4,0.5));

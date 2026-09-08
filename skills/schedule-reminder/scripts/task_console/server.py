@@ -56,7 +56,7 @@ from collections import Counter, defaultdict
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, unquote
 
 import console_store
 import convos
@@ -87,6 +87,7 @@ ACT = HERE / "act.ps1"
 RUNLOG = HERE / "runlog.ps1"
 PAGE = HERE / "console.html"
 ICON = HERE / "icon.svg"
+VENDOR = HERE / "vendor"
 
 NOT_RUN, RUNNING = 0x41303, 0x41301
 VERBS = ("enable", "disable", "run", "stop")
@@ -738,6 +739,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, repos_mod.scan())
             except Exception as e:
                 return self._json(500, {"error": f"{type(e).__name__}: {e}"})
+        if path.startswith("/vendor/"):
+            # 第三方资产随仓发,不吊 CDN:这台控制台正是出事的时候要打开的,
+            # 而出事的时候网络是最不该依赖的东西。
+            # 路径必须解析后再确认仍在 vendor 里,不能只看前缀 :
+            # "/vendor/../../etc" 的前缀是对的。
+            rel = unquote(path[len("/vendor/"):])
+            try:
+                target = (VENDOR / rel).resolve()
+                target.relative_to(VENDOR.resolve())
+            except (ValueError, OSError):
+                return self._json(404, {"error": "not found"})
+            ctype = {".css": "text/css; charset=utf-8",
+                     ".js": "text/javascript; charset=utf-8"}.get(target.suffix, "text/plain")
+            try:
+                return self._send(200, target.read_bytes(), ctype)
+            except OSError:
+                return self._json(404, {"error": "not found"})
         if path in ("/favicon.svg", "/favicon.ico"):
             # --app= 窗口的任务栏图标取的就是页面 favicon,所以这不只是消掉一个 404:
             # 没有它,这个「桌面应用」在任务栏上是一张白纸。

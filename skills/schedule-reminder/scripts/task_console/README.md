@@ -127,7 +127,8 @@ normal user session. The console says so instead of reporting a bare access-deni
 | File | What it is |
 |---|---|
 | `server.py` | the HTTP layer: routing, auth, host allowlist, the two write endpoints |
-| `console.html` | the whole page, no build step and no framework |
+| `console.html` | the whole page: one file, still no build step |
+| `vendor/tabler/` | Tabler v1.5.0 (MIT), the dashboard shell. Vendored, not a CDN link |
 | `collect.ps1` / `act.ps1` / `runlog.ps1` | the Windows side |
 | `evtlog.py` | the fast event log reader (EvtQuery), with the PowerShell path as fallback |
 | `freshness.py` | five-state artifact freshness, a pure function of timestamps |
@@ -138,6 +139,30 @@ normal user session. The console says so instead of reporting a bare access-deni
 | `sysinfo.py` | disk, cache size, abandoned clone staging directories |
 | `retire.py` | the three-place deregistration, planned first and then written |
 | `console_store.py` / `console_ingest.py` / `history.py` / `timeline.py` | the run history layer |
+
+## Third-party assets
+
+The page shell (sidebar, top bar, cards, badges) is [Tabler](https://github.com/tabler/tabler)
+v1.5.0, MIT licensed. The CSS and JS are vendored under `vendor/tabler/` together with the
+upstream `LICENSE`, and served by `server.py` from `/vendor/`.
+
+They are vendored rather than loaded from a CDN on purpose: this console is the thing you open
+when something is already broken, and that is the worst moment to depend on the network. The
+cost is about 776 KB in the repository, paid once.
+
+Tabler is calibrated for calm, low-density panels, which is the opposite of what a 38 by 19
+task grid needs, so the density is pulled back through Tabler's own `--tblr-*` custom
+properties (12px body text, halved table cell padding) rather than by overriding its rules.
+Tuning through the documented variables is what keeps a version bump from silently undoing it.
+
+The colour palette stays the one this page already had. Tabler's surface variables are pointed
+at it, not the other way around: that palette was measured for contrast in both themes on a
+dense table, and two palettes in one page always disagree somewhere with no way to tell which
+one is right.
+
+`/vendor/` is served without a token, because a `<link>` tag cannot send one and there is
+nothing secret in there. That makes "cannot escape the vendor directory" the only control on
+that route, so it is tested directly, including percent-encoded traversal.
 
 ## Data boundary
 
