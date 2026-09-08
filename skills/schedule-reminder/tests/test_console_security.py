@@ -397,3 +397,24 @@ def test_two_different_failures_do_not_produce_the_same_sentence():
     a = S.build_freshness({}, {}, "没有设 TASK_CONSOLE_HEALTH")["reason"]
     b = S.build_freshness({}, {}, "健康监控清单解析失败(/x/y.json)")["reason"]
     assert a != b
+
+
+# ---------- 同一条规则只能有一份实现 ----------
+# server.py 曾经 `from rcnorm import norm_rc as _norm_rc_unused`,然后在下面自己抄了一份
+# 同名实现。渲染侧和写入侧从此是两份代码:当时逐位等价,但任何一侧改了边界条件另一侧不会
+# 跟着变,而症状是**同一个退出码在两个面板上一个算成功一个算失败**,没有任何东西会报警。
+# 别名里的 unused 还让读代码的人以为共享那份已经在用了。
+
+def test_server_uses_the_shared_norm_rc_not_a_copy():
+    import rcnorm
+    assert S.norm_rc is rcnorm.norm_rc, (
+        "server.py 又有自己的 norm_rc 了。同一条规则两份实现,漂了不报警。")
+
+
+def test_norm_rc_still_unwraps_the_hresult_form():
+    """正对照:上面那条 is 断言对着两个都坏掉的实现也会通过,
+    所以这里钉住这条规则本身的行为(实测换来的那两条)。"""
+    assert S.norm_rc(2147942402) == 2, "事件日志把 Win32 码包成 HRESULT,必须解包"
+    assert S.norm_rc(-2147024891) == 5, "带符号 int32 的同一个值也要认"
+    assert S.norm_rc(None) is None, "没有返回码就是 None,不是 0"
+    assert S.norm_rc("") is None
