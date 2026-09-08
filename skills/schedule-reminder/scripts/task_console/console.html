@@ -147,6 +147,13 @@ main{padding:8px}
 table.g{border-collapse:collapse;font-size:11.5px;white-space:nowrap;width:100%}
 /* pointer 只给真的能排序的那张表。#scores 的表头也是 table.g th,
    拿到了 pointer 和 hover,而排序处理器写死 #tbl th[data-k],永远不匹配。 */
+/* 表头粘在**它自己的滚动容器**顶部,不是视口。原来写的是 top:26px(想避开顶栏),
+   那是视口级粘附的写法,而它有两个滚动祖先把它降级成了普通表头:
+   .pad{overflow-x:auto} 和 #dtbox{overflow:hidden}(后者是为圆角加的)。
+   实测滚 900px 后表头在 -509,而 CSS 看起来完全正确 : 这是「看起来能用但不能用」的典型。
+   现在 .pad 自己成为纵向滚动容器(下面那条 max-height),表头 top:0 粘在容器顶部。 */
+#dtbox .pad{max-height:calc(100vh - 190px);overflow:auto}
+#tbl thead th{top:0}
 #tbl th{position:sticky;top:26px;z-index:5;background:var(--panel2);color:var(--dim);
   font-weight:600;text-align:left;padding:3px 6px;border-bottom:1px solid var(--line);
   cursor:pointer;user-select:none;font-size:11px}
@@ -502,7 +509,11 @@ section[data-view][hidden]{display:none}
 /* 等宽显式加回数据。这几处是「要对齐着扫」的东西:数字、路径、任务名、时间戳。
    剩下用比例字体的是大类、说明、触发这三列和状态芯片,它们本来就是散文。 */
 .num{font-family:var(--mono)}
-table.g td.nm,table.g td.lr,table.g td.nr,table.g td.to{font-family:var(--mono)}
+/* .lr/.nr/.to 三个类名在 C 数组里从来没被赋给任何 td,所以这条规则四分之三是死的,
+   而它的死法正好抵消了它宣布的目标:上次/下次/超时三列至今是比例字体、数字不对齐。
+   改成按列的 data-col 选,渲染那边一并补上属性,两处必须一起改。 */
+table.g td.nm,table.g td[data-col="lastRun"],table.g td[data-col="nextRun"],
+table.g td[data-col="timeout"]{font-family:var(--mono)}
 #sckd .r .p,.cv-r .m,.mt-r .c,.tile .v,#bar b,.tlkey{font-family:var(--mono)}
 #help td.hot{font-family:var(--mono)}
 
@@ -884,7 +895,7 @@ function renderFresh(){
   // grace 是「还在宽限期内」,不算要人管;unknown 是「查不成」,算。
   const bad=ts.filter(t=>t.state==="down"||t.state==="never"||t.state==="unknown");
   $("frlist").innerHTML = bad.length
-    ? `<div class="fr-none">${bad.length} 条明细在上面的「要人管的事」</div>`
+    ? `<div class="fr-off">${bad.length} 条明细在上面的「要人管的事」</div>`
     : `<div class="fr-none">全部产物新鲜</div>`;
 }
 
@@ -1058,14 +1069,17 @@ function renderSys(){
   const sz=o=>o&&o.size?kb(o.size.bytes)+(o.size.partial?"+":""):"-";
   let h=`<div class="mt-t">磁盘 <b>${d.usedPct!=null?d.usedPct+"%":"-"}</b>
       <span class="sub">剩 ${d.free!=null?(d.free/1073741824).toFixed(0)+"G":"-"}</span></div>
-    <div class="mt-meter"><i style="width:${d.usedPct||0}%;background:${
-      (d.usedPct||0)>=95?"var(--bad)":(d.usedPct||0)>=85?"var(--warn)":"var(--ok)"}"></i></div>`;
+    ${d.usedPct==null
+      ? `<div class="mt-note">${esc(d.reason||"磁盘没量到")}</div>`
+      : `<div class="mt-meter"><i style="width:${d.usedPct}%;background:${
+          d.usedPct>=95?"var(--bad)":d.usedPct>=85?"var(--warn)":"var(--ok)"}"></i></div>`}`;
   h+=`<div class="mt-rows">`;
   h+=pc.available
     ? `<div class="mt-r"><span class="n">插件缓存</span><span class="c">${sz(pc)}</span>
        ${pc.deletableCount?`<button class="mini danger" data-mt="clean.tempgit" data-name="-"
           title="删除 ${pc.deletableCount} 个废弃克隆暂存目录">🗑${pc.deletableCount}</button>`:""}</div>`
-    : `<div class="mt-r"><span class="n">插件缓存</span><span class="c">未检查</span></div>`;
+    : `<div class="mt-r"><span class="n">插件缓存</span><span class="c">${
+        esc(pc.reason||"未检查")}</span></div>`;
   // partial 要说出来:一个数了一半却报确定数字的体积比不报还糟。
   if((pc.size&&pc.size.partial)||(se.size&&se.size.partial))
     h+=`<div class="mt-r"><span class="n" style="color:var(--warn)">体积只数到上限,带 +</span></div>`;
@@ -1511,11 +1525,11 @@ const C=[
  ["bad","失败",r=>`<td class="num" style="color:${(r.hist&&r.hist.bad)?"var(--bad)":"var(--faint)"}">${r.hist?r.hist.bad:"-"}</td>`,r=>r.hist?r.hist.bad:-1],
  ["stale","陈旧",r=>`<td class="num" style="color:${(r.hist&&r.hist.stale)?"var(--warn)":"var(--faint)"}">${r.hist?r.hist.stale:"-"}</td>`,r=>r.hist?r.hist.stale:-1],
  ["triggers","触发",r=>`<td class="dim" title="${esc(r.triggers)}">${esc((r.triggers||"").slice(0,20))}</td>`,r=>r.triggers||""],
- ["lastRun","上次",r=>`<td class="dim">${esc((r.lastRun||"从未").slice(5))}</td>`,r=>r.lastRun||""],
- ["nextRun","下次",r=>`<td class="dim">${esc((r.nextRun||"-").slice(5))}</td>`,r=>r.nextRun||""],
+ ["lastRun","上次",r=>`<td class="dim" data-col="lastRun">${esc((r.lastRun||"从未").slice(5))}</td>`,r=>r.lastRun||""],
+ ["nextRun","下次",r=>`<td class="dim" data-col="nextRun">${esc((r.nextRun||"-").slice(5))}</td>`,r=>r.nextRun||""],
  ["catchup","补跑",r=>`<td class="${r.catchup?"y":"n"}">${r.catchup?"Y":"N"}</td>`,r=>r.catchup?1:0],
  ["retries","重试",r=>`<td class="num">${r.retries}</td>`,r=>r.retries],
- ["timeout","超时",r=>{const i=(r.timeout==="PT72H"||r.timeout==="PT0S");return `<td style="color:${i?"var(--warn)":"var(--dim)"}">${esc(r.timeout)}</td>`},r=>r.timeout||""],
+ ["timeout","超时",r=>{const i=(r.timeout==="PT72H"||r.timeout==="PT0S");return `<td data-col="timeout" style="color:${i?"var(--warn)":"var(--dim)"}">${esc(r.timeout)}</td>`},r=>r.timeout||""],
  ["artifact","产物",r=>`<td class="${r.artifact?(r.cannotProve?"u":"y"):"u"}" title="${esc(r.artifact||"未声明")}">${r.artifact?(r.cannotProve?"弱":"Y"):"-"}</td>`,r=>r.artifact?(r.cannotProve?1:2):0],
  ["inAllow","备份",r=>{const u=!DATA.summary.allowChecked;return `<td class="${u?"u":r.inAllow?"y":"n"}">${u?"?":r.inAllow?"Y":"N"}</td>`},r=>r.inAllow?1:0],
  ["inHealth","监控",r=>`<td class="${r.inHealth?"y":r.elsewhere?"u":"n"}" title="${esc(r.elsewhere||"")}">${r.inHealth?"Y":r.elsewhere?"代":"N"}</td>`,r=>r.inHealth?1:0],

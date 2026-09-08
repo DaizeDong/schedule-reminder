@@ -9,7 +9,9 @@ TWO RULES, both learned from measurement rather than reasoning:
    the Operational log reports the same outcome as 2147942402 (0x80070000 | 2). Comparing a task's
    declared ok_codes -- small integers like 2, 3, 4 -- against the wrapped form never matches, so
    every task that encodes a verdict in its exit code would read as 0% success while looking
-   entirely plausible.
+   entirely plausible. Measured 2026-09-01: a task whose declared ok code was 2 arrived here as
+   2147942402, and its success rate read 0% until the unwrap was added. The signed-int32 spelling
+   of the same value is also accepted, which is how some readers hand it back.
 
 2. MISSING IS NOT ZERO. Event 100 (task started) carries no return code at all. Returning 0 for it
    writes a fabricated SUCCESS, inflating the success rate by one row per start. None means "this

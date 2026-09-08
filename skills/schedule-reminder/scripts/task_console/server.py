@@ -70,7 +70,11 @@ import retire as retire_mod
 import selfcheck
 import sysinfo
 import timeline
-from rcnorm import norm_rc as _norm_rc_unused
+# 这里原来是 `import norm_rc as _norm_rc_unused`,而下面又抄了一份同名实现,于是渲染侧和
+# 写入侧是两份代码。它们当时逐位等价(20 个输入含各边界实测过),但任何一侧改了边界条件
+# 另一侧不会跟着变,而症状是**同一个退出码在两个面板上一个算成功一个算失败**,不报警。
+# 别名里那个 unused 更糟:它让读代码的人以为共享那份已经在用了。
+from rcnorm import norm_rc
 
 # 在 pythonw(GUI 子系统)下,每个控制台子程序都要新分配一个控制台。那次分配很慢,
 # 而且并发时根本不成立:实测同一条 git 命令,普通 python 下几毫秒,pythonw 下单次
@@ -339,35 +343,6 @@ def load_allowlist() -> tuple[set[str] | None, str | None]:
     if not names:
         return None, f"{p} 的 $TaskNames 解析出 0 个名字,判为未检查而不是全部缺失"
     return names, None
-
-
-def norm_rc(v):
-    """Unwrap a Win32 code that the event log reported as an HRESULT.
-
-    The Task Scheduler stores a plain action return code (LastTaskResult 0x2), but event 201 in the
-    Operational log reports the same thing wrapped as FACILITY_WIN32: 0x80070000 | 2 = 2147942402.
-    Comparing a task's declared ok_codes (small integers like 2, 3, 4) against the wrapped form
-    never matches, so every verdict-encoding task would read as 0% success while looking perfectly
-    Measured 2026-09-01: a task whose declared ok code was 2 arrived here as 2147942402, and its
-    success rate read 0% until the unwrap was added.
-
-    Also accepts the signed-int32 spelling of the same value, which is how some readers hand it back.
-    """
-    # MISSING IS NOT ZERO. Event 100 (task started) carries no ResultCode at all, and returning 0
-    # for it would write a fabricated SUCCESS into a nullable column, inflating every success rate
-    # by one row per start. None means "this event does not carry a return code"; the caller must
-    # skip it rather than count it. Measured 2026-09-02: the previous version returned 0 for None.
-    if v is None or (isinstance(v, str) and not v.strip()):
-        return None
-    try:
-        n = int(str(v), 0)
-    except (TypeError, ValueError):
-        return None
-    if n < 0:
-        n += 1 << 32
-    if 0x80070000 <= n <= 0x8007FFFF:
-        return n & 0xFFFF
-    return n
 
 
 def status_of(t: dict) -> tuple[str, str]:
