@@ -47,10 +47,20 @@ def _powershell() -> str:
 
 
 def _task_state(name: str) -> str | None:
-    """任务此刻是什么状态,拿不到就是 None(没注册)。
+    """任务此刻是什么状态。None 只表示一件事:**确认它没注册**。
 
     判据必须是**状态**而不是**存在**。用「存在」来决定要不要停用,会让一个已经退役的
     任务每次都再被停用一次:动作报告永远说自己改了东西,而幂等就无从谈起。
+
+    ⚠ 这里原来把「确认它不存在」和「我查不到」编码成了同一个 None,而这两件事在退役里
+    导向相反的动作。查不到状态时(任务计划服务异常、CIM 出问题、非管理员、PowerShell
+    起不来)plan 会把 disable 那一步报成 not-found,apply 于是跳过它,却照常把这个任务
+    从备份 allow-list 和健康清单里摘掉 :
+
+        任务还注册着、还启用着、还在按点跑,但它已经不在备份里(换机静默丢失)
+        也不在健康监控里(死了没人知道),而返回值是 ok:True。
+
+    这是三处登记里最坏的一种错位。所以查不到就抛,不返回。
     """
     r = subprocess.run(
         [_powershell(), "-NoProfile", "-Command",
@@ -58,6 +68,12 @@ def _task_state(name: str) -> str | None:
          "if ($t) { Write-Output \"$($t.State)\" }"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         env=dict(os.environ, TC_NAME=name), timeout=90, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+    if r.returncode != 0:
+        from maint import Refused
+        raise Refused(
+            "查不到任务状态(调度器读不出来),拒绝退役: "
+            + ((r.stderr or r.stdout or "").strip()[:200] or f"rc={r.returncode}"),
+            "state_unreadable")
     out = (r.stdout or "").strip()
     return out or None
 
@@ -184,7 +200,19 @@ def apply(name: str, reason: str) -> dict:
             backups.append(str(bak))
             changed = (_rewrite_allowlist(path, name) if step["step"] == "allowlist"
                        else _rewrite_health(path, name))
-            if changed:
-                done.append(step["step"])
+            if not changed:
+                # plan 说这一处要改,写的时候却一个字没动。这只会在 plan 和 rewrite 用了
+                # 两个不同的「这一行是不是它」判据时发生(实测:allow-list 里一行写两个名字,
+                # plan 报 will-change 而 rewrite 的正则整块匹配不上)。
+                #
+                # 吞掉它的后果是本模块开头写的那个:任务被停用了,却仍然留在备份 allow-list 里,
+                # 换机还原时会被原样装回去而且是启用的 :「一份忠实还原一个已知缺陷的备份,
+                # 比忘掉这个任务更糟」。而界面收到的是 ok:True,唯一的线索是 done 数组少一项,
+                # 没有任何地方把 plan 的 will-change 和 apply 的 done 对账。
+                raise Refused(
+                    f"{step['step']}: 计划说要改,实际一个字没动({path.name})。"
+                    "已改的部分留在 .bak 旁边,请人工核对。",
+                    "rewrite_noop")
+            done.append(step["step"])
     return {"ok": True, "name": name, "done": done, "backups": backups,
             "reason": p["reason"]}

@@ -193,3 +193,94 @@ def test_plugin_read_without_claude_says_not_checked(monkeypatch):
     monkeypatch.setattr(M.shutil, "which", lambda _n: None)
     r = M.read_plugins()
     assert r["available"] is False and r["reason"]
+
+
+# ---------- junction 部署的 skill 也要能归档 ----------
+# _child 原来解析**完整目标**再取父目录,而本机 skill 是 junction 部署的
+# (skills/<name> 指向别处的仓库),于是解析后的父目录在 junction 那一边,和 root 对不上。
+# 后果:每个 linked 的条目都挂着一个点了必然失败的归档按钮,而失败信息是一句听起来像
+# 路径穿越攻击的「目标不是配置根目录的直接子项」,把排查方向整个带偏。
+
+def _make_link(link, real):
+    """建一个目录链接。先试 junction(Windows 上不需要管理员,而本机 skill 用的就是它),
+    再退回符号链接。两条都不成才跳过 : 但跳过要说清楚跳的是哪一条,
+    因为这条用例测的正是这次要修的那个情形,静默跳过等于没测。"""
+    import subprocess as sp
+    if os.name == "nt":
+        r = sp.run(["cmd", "/c", "mklink", "/J", str(link), str(real)],
+                   capture_output=True, text=True)
+        if r.returncode == 0:
+            return "junction"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+        return "symlink"
+    except (OSError, NotImplementedError):
+        return None
+
+
+def test_a_junctioned_child_is_still_a_child(tmp_path):
+    root = tmp_path / "skills"; root.mkdir()
+    real = tmp_path / "elsewhere" / "myskill"; real.mkdir(parents=True)
+    link = root / "myskill"
+    kind = _make_link(link, real)
+    if not kind:
+        pytest.skip("junction 和 symlink 都建不了,这条用例没能测到 linked 那一路")
+    assert os.path.realpath(link) != str(link), "链接没真的建成,这条用例会因为错误的理由通过"
+    got = M._child(root, "myskill")
+    assert got == link
+
+
+def test_a_plain_child_still_resolves(tmp_path):
+    """正对照:普通目录不能因为放宽了链接就跟着失效。"""
+    root = tmp_path / "skills"; root.mkdir()
+    (root / "plain").mkdir()
+    assert M._child(root, "plain") == root / "plain"
+
+
+def test_dotdot_is_still_refused_even_if_the_name_gate_is_bypassed(tmp_path, monkeypatch):
+    """纵深防御不能因为这次放宽而丢掉。
+
+    这个洞(Path(root/'..').parent 就是 root 本身,于是比对通过)是测试在干净版本上
+    抓出来的,改用字面判定之后必须仍然挡得住。SAFE_NAME 平时就会拦下 '..',
+    所以要绕过它才能测到第二层。"""
+    import re
+    monkeypatch.setattr(M, "SAFE_NAME", re.compile(r"^.*$"))
+    root = tmp_path / "skills"; root.mkdir()
+    with pytest.raises(M.Refused) as e:
+        M._child(root, "..")
+    assert e.value.code == "not_child", e.value.code
+
+
+# ---------- 插件清单解析不出来时不许装作一切正常 ----------
+
+class _R:
+    def __init__(self, out): self.returncode, self.stdout, self.stderr = 0, out, ""
+
+
+def test_unparseable_plugin_output_is_not_available(monkeypatch, tmp_path):
+    monkeypatch.setattr(M, "_claude", lambda: "claude")
+    monkeypatch.setattr(M.subprocess, "run",
+                        lambda *a, **k: _R("- my-plugin@1 (enabled)\n- other@2 (enabled)\n"))
+    got = M.read_plugins()
+    assert got["available"] is False, got
+    assert "格式" in got["reason"], got["reason"]
+
+
+def test_names_without_status_are_not_reported_as_disabled(monkeypatch):
+    """认出了名字但没认出状态时,不能把每个都画成「已禁用」并邀请人去启用。"""
+    monkeypatch.setattr(M, "_claude", lambda: "claude")
+    monkeypatch.setattr(M.subprocess, "run", lambda *a, **k: _R("❯ alpha\n❯ beta\n"))
+    got = M.read_plugins()
+    assert got["available"] is False, got
+    assert "启用状态" in got["reason"], got["reason"]
+
+
+def test_a_well_formed_listing_is_still_available(monkeypatch):
+    """正对照:格式没变时必须照常可用。
+    没有这一条,把 read_plugins 改成「永远 available False」也能让上面两条通过。"""
+    monkeypatch.setattr(M, "_claude", lambda: "claude")
+    monkeypatch.setattr(M.subprocess, "run",
+                        lambda *a, **k: _R("❯ alpha\n  Status: enabled\n❯ beta\n  Status: disabled\n"))
+    got = M.read_plugins()
+    assert got["available"] is True, got
+    assert [p["enabled"] for p in got["plugins"]] == [True, False]
