@@ -91,11 +91,11 @@ b{font-weight:600}
 #tools{display:flex;align-items:center;gap:6px;padding:5px 8px;flex-wrap:wrap;
   background:var(--panel2);border-bottom:1px solid var(--line)}
 input[type=text],select{font:inherit;background:var(--panel);color:var(--ink);
-  border:1px solid var(--line);padding:2px 6px;border-radius:2px;height:22px}
+  border:1px solid var(--line);padding:2px 6px;border-radius:2px;min-height:22px}
 input[type=text]{width:200px}
 input[type=text]:focus,select:focus{outline:1px solid var(--cyan);outline-offset:-1px;border-color:var(--cyan)}
 button{font:inherit;background:var(--panel);color:var(--dim);border:1px solid var(--line);
-  padding:2px 8px;border-radius:2px;height:22px;cursor:pointer}
+  padding:2px 8px;border-radius:2px;min-height:22px;cursor:pointer}
 button:hover{color:var(--ink);border-color:var(--cyan)}
 button.danger:hover{color:var(--bad);border-color:var(--bad)}
 button:disabled{opacity:.4;cursor:default}
@@ -461,10 +461,14 @@ section[data-view][hidden]{display:none}
   white-space:nowrap}
 .tile .v.ok{color:var(--ok)} .tile .v.bad{color:var(--bad)}
 .tile .v.warn{color:var(--warn)} .tile .v.idle{color:var(--faint)}
-/* 上面两处的 height:auto 不是多余的。本页给工具条写过一条元素选择器
-   `button{height:22px}`,任何拿 <button> 当积木的多行部件都会被它钉死,
-   内容照样按 47px 排,溢出去盖住下一行 : 看起来像排版错乱,不像高度被覆盖。
-   拿 button 做新部件时一律显式写 height:auto。 */
+/* 上面两处的 height:auto 现在是冗余的,留着无害。
+   本页曾给工具条写过 `button{height:22px}` 这条元素选择器,任何拿 <button> 当积木的
+   多行部件都会被它钉死,内容照样按自己的高度排、溢出去盖住下一行 : 看起来像排版错乱,
+   不像高度被覆盖。当时的对策是「拿 button 做新部件时一律显式写 height:auto」,
+   **而那条规矩两次都没被记住**:指标格一次,时间轴的三个缩放按钮一次(换成比例字体后
+   内容涨到 30px,被裁在 21px)。所以这次改的是根,那条元素选择器现在是 min-height,
+   再没有哪个 button 会被它裁掉。**一条要靠每个人每次都记得的规矩,和一条没有的规矩,
+   效果是一样的。** */
 
 
 /* ---- 概览:要人管的事 ------------------------------------------------------------
@@ -512,6 +516,27 @@ table.g td.nm,table.g td.lr,table.g td.nr,table.g td.to{font-family:var(--mono)}
 /* 卡头层级原来是反的:标题 11.5px/--dim,正文 12px/--ink,
    也就是卡片标题是整张卡里最不显眼的东西。 */
 .box>h2{font-size:12.5px;color:var(--ink)}
+
+/* ---- 芯片、顶栏、卡头 ------------------------------------------------------------
+   这三处是「套了现代壳子的老页面」里剩下最明显的。共同点是它们都还在用
+   「直角 + 1px 线 + 全部同字号」这套终端写法,而外壳已经不是终端了。 */
+
+/* 状态芯片原来是直角、min-width:50px 硬撑、10.5px,读起来像终端里的色块不像徽章。
+   形态上它离 Tabler 的 badge 只差一个圆角和一点内距;颜色继续走自己的类,
+   不换成 bg-*-lt : 那套类吃的是 rgb 三元组,换过去等于把配色交给另一套变量。 */
+.st{border-radius:9px;min-width:44px;padding:0 6px;letter-spacing:.02em}
+
+/* 顶栏原来是一排竖线分隔的等宽小字,标签和数字同为 11.5px,也就是没有层级。
+   现在标签压小压灰、数字放大加粗,分隔靠间距而不是竖线 : 26px 的高度放得下。 */
+#bar .seg{border-right:0;padding:0 10px 0 0;gap:5px}
+#bar .k{font-size:10px;letter-spacing:.04em;text-transform:none}
+#bar b{font-size:13.5px;font-weight:600;line-height:1}
+#bar .seg:first-child{padding-left:2px}
+
+/* 卡头原来只是一条灰带。给它一点上下呼吸和一个更实的底线,
+   让「这里是一块的开头」不需要靠颜色去猜。 */
+.box>h2{padding:5px 9px;border-bottom:1px solid var(--line)}
+.box{overflow:hidden}   /* 圆角要真的裁到内容,否则表格的第一行会从圆角里探出来 */
 </style>
 </head>
 <body>
