@@ -421,7 +421,7 @@ def _epoch(stamp: str | None) -> float | None:
         return None
 
 
-def build_freshness(tasks: dict, health: dict) -> dict:
+def build_freshness(tasks: dict, health: dict, health_reason: str | None = None) -> dict:
     """Artifact freshness for every task the health manifest declares.
 
     The manifest is the input, not the task list: a task nobody declared an artifact for cannot be
@@ -429,9 +429,13 @@ def build_freshness(tasks: dict, health: dict) -> dict:
     is 0 and the page says NOT CHECKED instead of drawing an empty green board.
     """
     if not health:
+        # 把 load_health 给出的**具体**原因透传上去,不要在这里换成一句笼统的话。
+        # 「清单解析失败(JSON 坏了)」和「压根没设环境变量」是两件事:前者是需要修的故障,
+        # 后者是没启用。压成同一句之后,页面上没有任何办法把它们分开。
         return {"tasks": [], "summary": {"total": 0, "counts": {}, "judged": 0,
                                          "coverage": 0.0, "bad": 0},
-                "reason": "没有健康清单,新鲜度这一栏是「未检查」,不是通过。"}
+                "reason": health_reason
+                          or "没有健康清单,新鲜度这一栏是「未检查」,不是通过。"}
     rows = {}
     for name, t in tasks.items():
         rows[name] = {
@@ -564,7 +568,7 @@ def build_payload() -> dict:
     tl = timeline.build(tasks, runs.get("tasks") or {})
 
     n_issue = sum(1 for t in tasks.values() for i in t["issues"] if i[0] in ("bad", "warn"))
-    fresh = build_freshness(tasks, health)
+    fresh = build_freshness(tasks, health, warn_health)
     return {
         "groups": groups,
         "freshness": fresh,
