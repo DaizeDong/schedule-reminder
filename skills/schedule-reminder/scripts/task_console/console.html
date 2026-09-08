@@ -296,8 +296,13 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
 .cv-list{padding:0 0 4px 18px;display:none}
 .cv-g.open .cv-list{display:block}
 .cv-r{display:grid;grid-template-columns:1fr auto auto auto;gap:8px;align-items:baseline;
-  font-size:12px;padding:2px 0;border-top:1px solid var(--line2)}
+  font-size:12px;padding:3px 0;border-top:1px solid var(--line2)}
 .cv-r .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 标题和正文是两样东西。改过名之后标题不再透露这场对话在说什么,所以两行都留。 */
+.cv-r .pv{grid-column:1;font-size:11px;color:var(--faint);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
+.cv-r .src.rename{color:var(--cyan);border-color:var(--cyan)}
+.cv-r .src.ai-title{color:var(--dim)}
 .cv-r .src{font-size:9.5px;padding:0 3px;border:1px solid var(--line);border-radius:2px;
   color:var(--faint);white-space:nowrap}
 .cv-r .src.slug,.cv-r .src.id{color:var(--warn);border-color:var(--warn)}
@@ -843,6 +848,11 @@ async function retireTask(name){
 // 「真人」的判据是**打进去的字**(纯字符串)而不是内容块:不区分的话,每个无头运行
 // 都会因为加载的 skill 正文被判成一场多轮对话。
 let CONVOS=null, CV_HUMAN_ONLY=false, CV_OPEN={};
+// 标题从哪来。改过名的单独一种颜色:那是唯一一个人明确说过「这场对话叫这个」的地方,
+// 别的都是推断出来的,看的人有权知道自己在看哪一种。
+const CV_TAG={rename:"名","ai-title":"AI",summary:"概","first-message":"首",slug:"代",id:"?"};
+const CV_SRC={rename:"你用 /rename 起的名字","ai-title":"自动生成的窗口标题",
+  summary:"压缩时写的概括","first-message":"第一条消息",slug:"自动代号",id:"只有会话号"};
 
 async function loadConvos(){
   $("cvnote").textContent="扫描中";
@@ -881,10 +891,11 @@ function renderConvos(){
       <div class="cv-list">${rows.map(r=>`
         <div class="cv-r${r.humanSeen>=2?" human":""}">
           <span class="t" title="${esc(r.title)}">${esc(r.title)}</span>
-          <span class="src ${esc(r.titleFrom)}" title="标题来自 ${esc(r.titleFrom)}">${
-            r.titleFrom==="summary"?"概":r.titleFrom==="first-message"?"首":r.titleFrom==="slug"?"代":"?"}</span>
+          <span class="src ${esc(r.titleFrom)}" title="${esc(CV_SRC[r.titleFrom]||r.titleFrom)}">${
+            CV_TAG[r.titleFrom]||"?"}</span>
           <span class="m">${r.humanSeen?"👤"+r.humanSeen+(r.partial?"+":""):""}</span>
           <span class="m">${cvAge(r.ageHours)} · ${kb(r.bytes)}</span>
+          ${(r.preview&&r.preview!==r.title)?`<span class="pv" title="${esc(r.preview)}">${esc(r.preview)}</span>`:""}
         </div>`).join("")}
         ${g.truncated?`<div class="cv-more">这个目录还有 ${g.count-g.shown.length} 场没列出</div>`:""}
       </div></div>`;

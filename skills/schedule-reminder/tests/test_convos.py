@@ -113,6 +113,94 @@ def test_title_falls_back_to_the_first_typed_message(tmp_path):
     assert row["titleFrom"] == "first-message"
 
 
+def custom_title(name):
+    return line(type="custom-title", customTitle=name, sessionId="s1")
+
+
+def ai_title(name):
+    return line(type="ai-title", aiTitle=name, sessionId="s1")
+
+
+def rename_cmd(name):
+    """老一点的转录里的记法:命令本身带参数,而 content 里是**真实换行**。"""
+    return line(type="system", isMeta=True, cwd="C:/proj",
+                timestamp="2026-09-07T00:00:00Z",
+                content=("<command-name>/rename</command-name>" + chr(10) +
+                         "            <command-message>rename</command-message>" + chr(10) +
+                         "            <command-args>" + name + "</command-args>"))
+
+
+def test_custom_title_beats_everything(tmp_path):
+    # 那是唯一一个人明确说过「这场对话叫这个」的地方,别的都是推断出来的。
+    session(tmp_path, "g", "a",
+            ai_title("自动起的名字") + custom_title("我起的名字") + user_typed("第一句话"))
+    row = C.scan(root=str(tmp_path), now=NOW)["groups"][0]["shown"][0]
+    assert row["title"] == "我起的名字"
+    assert row["titleFrom"] == "rename"
+    # 自动标题仍然带在结果里,只是没被选中。
+    assert row["aiTitle"] == "自动起的名字"
+
+
+def test_rename_command_args_also_count_as_a_name(tmp_path):
+    session(tmp_path, "g", "a", ai_title("自动的") + rename_cmd("命令改的名"))
+    row = C.scan(root=str(tmp_path), now=NOW)["groups"][0]["shown"][0]
+    assert row["title"] == "命令改的名" and row["titleFrom"] == "rename"
+
+
+def test_rename_with_empty_args_is_not_a_name(tmp_path):
+    """敲了 /rename 但没带参数。空字符串不是名字。
+
+    断言的是 renamed 这个字段本身,不只是最终标题:光看标题的话,下游那个「空串是假值」
+    的判断会把这道闸兜住,于是把闸拆掉测试照样全绿。实测投毒时正是如此。
+    """
+    session(tmp_path, "g", "a", rename_cmd("") + ai_title("自动的"))
+    row = C.scan(root=str(tmp_path), now=NOW)["groups"][0]["shown"][0]
+    assert row["renamed"] is None
+    assert row["title"] == "自动的" and row["titleFrom"] == "ai-title"
+
+
+def test_a_transcript_that_merely_mentions_the_command_is_not_renamed(tmp_path):
+    """只是提到那条命令的转录,不能被当成改过名。
+
+    实测踩过:一份讨论这段代码的转录里写着这个模式,扫描器把自己的正则源码当成了
+    对话的名字。判据是这条记录的 content 必须**本身就是**那条命令。
+    """
+    # 放在**顶层 content** 里,和真实那份一模一样。放进 message.content 的话根本走不到
+    # 那道闸(取不到顶层 content 就先被跳过了),于是这条用例什么都证明不了。
+    mention = line(type="user", cwd="C:/proj", timestamp="2026-09-07T00:00:00Z",
+                   content="我们要找的是 <command-name>/rename</command-name> "
+                           "后面的 <command-args>(.*?)</command-args>")
+    session(tmp_path, "g", "a", mention + ai_title("自动的"))
+    row = C.scan(root=str(tmp_path), now=NOW)["groups"][0]["shown"][0]
+    assert row["titleFrom"] == "ai-title"
+
+
+def test_the_last_rename_wins(tmp_path):
+    # 同一场对话可以改名多次。
+    session(tmp_path, "g", "a", custom_title("第一次") + custom_title("第二次"))
+    assert C.scan(root=str(tmp_path), now=NOW)["groups"][0]["shown"][0]["title"] == "第二次"
+
+
+def test_ai_title_beats_the_first_message(tmp_path):
+    # 没改过名时,窗口上显示的就是这一行。
+    session(tmp_path, "g", "a", user_typed("很长的第一句话") + ai_title("自动概括"))
+    row = C.scan(root=str(tmp_path), now=NOW)["groups"][0]["shown"][0]
+    assert row["title"] == "自动概括" and row["titleFrom"] == "ai-title"
+
+
+def test_a_title_marker_split_across_read_chunks_is_still_found(tmp_path, monkeypatch):
+    """标记正好跨在两个读块之间也要找得到。
+
+    默认块是四兆,任何真实标记都不可能被切开,于是那段边界逻辑在正常运行里**永远跑不到**。
+    把块调小是唯一能真的检验它的办法。漏掉的表现是「这场对话没有名字」:
+    一个看起来完全正常的答案,没有任何东西会变红。
+    """
+    monkeypatch.setattr(C, "CHUNK", 7)
+    session(tmp_path, "g", "a", "x" * 300 + chr(10) + custom_title("跨块的名字"))
+    row = C.scan(root=str(tmp_path), now=NOW)["groups"][0]["shown"][0]
+    assert row["title"] == "跨块的名字"
+
+
 def test_summary_wins_over_the_first_message(tmp_path):
     body = line(type="summary", summary="给控制台加一块对话历史",
                 cwd="C:/proj", timestamp="2026-09-07T00:00:00Z") + user_typed("随便说点什么")
