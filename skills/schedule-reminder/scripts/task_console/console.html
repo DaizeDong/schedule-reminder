@@ -842,7 +842,12 @@ function renderFresh(){
   // 没有清单就说没有清单。画一块空的绿板等于用「没检查」冒充「没问题」。
   if(F.reason){
     $("frnote").textContent="";
-    $("frstack").innerHTML=""; $("frcov").textContent="0%";
+    $("frstack").innerHTML="";
+    // 这里原来写 "0%"。控制台是轮询刷新的,而这个分支只设 textContent 不碰颜色和 tooltip,
+    // 所以上一轮覆盖率 >=80% 染成绿色之后清单被删,这一轮会渲染出一个**绿色的 0%**
+    // 外加一句陈旧的「12/12 个任务拿到了判据」。三样都要一起重置。
+    $("frcov").textContent="-";
+    $("frcov").style.color=""; $("frcov").title="";
     $("frkey").innerHTML=""; $("frboard").innerHTML="";
     $("frlist").innerHTML=`<div class="fr-off">${esc(F.reason)}</div>`;
     return;
@@ -1354,7 +1359,11 @@ function renderTodo(){
     rows.push({v:"storage", src:"存储", nm:"系统盘",
                why:"已用 "+SYS.disk.usedPct+"%", sev:3});
 
-  if(MEM && MEM.available){
+  // available 只说「目录读到了」,不说 MEMORY.md 读到了。MEMORY.md 被改名或删掉时
+  // linePct/bytePct 是 null,而 `||0` 把它折成 0,于是板子显示绿色的「0%」,
+  // 副标题字面印出「null/200 行」。两条硬上限此刻完全没在量任何东西,
+  // 而屏幕上说它离上限还有 100%。
+  if(MEM && MEM.available && (MEM.linePct != null || MEM.bytePct != null)){
     const p = Math.max(MEM.linePct||0, MEM.bytePct||0);
     if(p >= 90) rows.push({v:"storage", src:"存储", nm:"MEMORY.md",
       why:"索引 "+p+"%,逼近硬上限", sev:p>=100?3:2});
@@ -1362,6 +1371,20 @@ function renderTodo(){
 
   rows.sort((a,b)=> b.sev-a.sev || a.src.localeCompare(b.src));
   $("todon").textContent = rows.length ? rows.length + " 条" : "";
+  // 主表读不到时不能说「没有要人管的事」。collect.ps1 挂掉(任务计划服务坏了、
+  // 找不到 PowerShell、采集抛异常)时,默认打开的就是这一屏:六个指标格显示「未检查」,
+  // 而这块明确写着一句肯定的绿色结论,来自一次根本没发生的检查。
+  // 错误正文躺在另一个 hidden 的分区里,人要点进去才看得到。
+  const dataBroken = (typeof DATA === "undefined") || !DATA || !Array.isArray(DATA.groups);
+  if(dataBroken){
+    box.innerHTML = '<div class="rw" style="cursor:default">'
+      + '<span class="dot" style="background:var(--bad)"></span>'
+      + '<span class="src">任务</span>'
+      + '<span class="nm">读取失败</span>'
+      + '<span class="why">任务数据没读到,这张清单不完整。明细在「任务」分区</span></div>';
+    $("todon").textContent = "不完整";
+    return;
+  }
   if(!rows.length){
     box.innerHTML = '<div class="none">没有要人管的事</div>';
     return;
@@ -1389,7 +1412,13 @@ function renderTiles(){
     out.push(tile("tasks","任务",S.total,`失败 ${S.bad} · 停用 ${S.disabled}`,S.bad?"bad":"ok"));
   } else out.push(tile("tasks","任务","-","未检查","idle"));
 
-  if(typeof DATA !== "undefined" && DATA && DATA.freshness && DATA.freshness.summary){
+  // reason 要先判。没有健康清单时后端仍然返回一个 summary(total/bad 全是 0),
+  // 所以「有没有 summary」这个条件永远成立,这一格拿到 bad=0 走绿色,
+  // 印出「0 / 覆盖 0% · 共 0」 : 读起来是「零个产物过期」,实际上一个任务都没被检查。
+  // 数值和副标题必须一起换掉:只把大字换成 "-" 而留着「共 0」,那个零照样像一个结论。
+  if(typeof DATA !== "undefined" && DATA && DATA.freshness && DATA.freshness.reason){
+    out.push(tile("#frbox","产物新鲜度","-", DATA.freshness.reason, "idle"));
+  } else if(typeof DATA !== "undefined" && DATA && DATA.freshness && DATA.freshness.summary){
     const F = DATA.freshness.summary;
     // 这一格原来 data-goto="overview",而它自己就渲染在 overview 里:
     // 点了 showView 什么都不会变,唯一效果是滚回页顶。改成滚到灯板那一块。
