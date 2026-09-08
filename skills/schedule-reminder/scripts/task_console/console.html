@@ -147,6 +147,8 @@ table.g td.nm{max-width:230px;overflow:hidden;text-overflow:ellipsis;font-weight
    赢,这一列被压成 34px、只显示一个字加省略号。一列只显示一个字比没有这一列更差:
    它既读不出内容,又占着 34px。
    改成给一个真实的宽度区间,放不下就让 .pad 横向滚(它本来就有 overflow-x:auto)。 */
+table.g tr[data-scat]{cursor:pointer}
+table.g tr[data-scat]:hover{background:var(--cur)}
 table.g td.ds{min-width:170px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .st{display:inline-block;min-width:50px;text-align:center;padding:0 4px;font-size:10.5px}
 .st.ok{color:var(--ok);background:var(--okb)}
@@ -1151,6 +1153,8 @@ function updateBadges(){
 }
 
 document.addEventListener("click", e=>{
+  const tk = e.target.closest("[data-task]");
+  if(tk){ focusTask(tk.dataset.task); return; }
   const tl = e.target.closest("[data-goto]");
   if(tl){ showView(tl.dataset.goto, true); return; }
   const nv = e.target.closest(".nv");
@@ -1201,11 +1205,11 @@ function renderTodo(){
   // 看不出哪一份是对的。
   if(typeof DATA !== "undefined" && DATA && Array.isArray(DATA.groups))
     DATA.groups.flatMap(g=>g.rows||[]).filter(r=>r.sk==="bad").forEach(r=>rows.push(
-      {v:"tasks", src:"任务", nm:r.name, why:r.sl || "上次运行失败", sev:3}));
+      {v:"tasks", src:"任务", nm:r.name, task:r.name, why:r.sl || "上次运行失败", sev:3}));
 
   if(typeof DATA !== "undefined" && DATA && DATA.freshness && Array.isArray(DATA.freshness.tasks))
     DATA.freshness.tasks.filter(r=>r.state==="down"||r.state==="never").forEach(r=>rows.push(
-      {v:"overview", src:"产物", nm:r.name,
+      {v:"tasks", src:"产物", nm:r.name, task:r.name,
        why:(r.reasons && r.reasons[0]) || (r.state==="never" ? "从未运行过" : "产物过期"),
        sev:r.state==="never" ? 2 : 3}));
 
@@ -1229,7 +1233,12 @@ function renderTodo(){
     box.innerHTML = '<div class="none">没有要人管的事</div>';
     return;
   }
-  box.innerHTML = rows.map(r=>`<div class="rw" data-goto="${r.v}">
+  // 任务与产物两类行都指向某个具体任务,所以带上任务名,点了直接过滤到它。
+  // 之前它们统一走 data-goto,而产物行的目标就是它自己所在的 overview,
+  // 于是点了 hash 不变、什么也不发生 : 一个指向自己的跳转,和一个坏掉的跳转,
+  // 在用的人那里是同一件事。
+  box.innerHTML = rows.map(r=>`<div class="rw" ${r.task
+      ? `data-task="${esc(r.task)}"` : `data-goto="${r.v}"`}>
     <span class="dot" style="background:var(--${r.sev>=3?"bad":"warn"})"></span>
     <span class="src">${esc(r.src)}</span>
     <span class="nm" title="${esc(r.nm)}">${esc(r.nm)}</span>
@@ -1305,7 +1314,9 @@ function pc(v){ if(v==null) return `<td class="num u">-</td>`;
 function renderScores(){
   $("scores").innerHTML=`<thead><tr><th>大类</th><th class="num">数</th><th class="num">健康%</th>
     <th class="num">备份%</th><th class="num">监控%</th><th class="num">调度卫生%</th></tr></thead><tbody>`
-    +(DATA.scores||[]).map(s=>`<tr><td>${esc(s.cat)}</td><td class="num">${s.n}</td>${pc(s.health)}${pc(s.backup)}${pc(s.watched)}${pc(s.hygiene)}</tr>`).join("")
+    // 每一行挂上它自己的大类。之前这张表的格子有 cursor:pointer 却没有任何处理器,
+    // 那是最糟的一种:它主动告诉你可以点,然后什么也不做。
+    +(DATA.scores||[]).map(s=>`<tr data-scat="${esc(s.cat)}" title="只看这一类"><td>${esc(s.cat)}</td><td class="num">${s.n}</td>${pc(s.health)}${pc(s.backup)}${pc(s.watched)}${pc(s.hygiene)}</tr>`).join("")
     +`</tbody>`;
 }
 
@@ -1422,13 +1433,41 @@ async function act(names, verb){
   busy=false;
   await load();
 }
+
+// ================= 跨区跳转 ========================================================
+// 分区改造引入了一整类静默失效的动作:「点这边、改那边」。灯板上一格的处理器一直都在,
+// 它把任务表过滤到那一格 : 可任务表在 tasks 分区里,而你点格子的时候人在 overview,
+// 那张表是 display:none 的。过滤真的跑了,只是发生在一块看不见的地方,不报错、不提示。
+//
+// 所以凡是跨区的动作都必须先把目标分区切出来。下面两个函数是唯一的入口,
+// 所有「显示了任务名的地方」都走它们,而不是各自去改一次过滤框。
+function focusTask(name){
+  showView("tasks", true);
+  const q = $("q");
+  // 再点同一个就取消过滤:一个只能进不能退的过滤,用一次就得手动清一次。
+  q.value = (q.value === name) ? "" : name;
+  $("cat").value = "";        // 大类过滤会和任务名过滤互相缩小,同时开着等于两道条件
+  if (DATA) render();
+  const tr = document.querySelector("#tbl tbody tr");
+  if (tr) tr.scrollIntoView({block: "nearest"});
+}
+
+function focusCategory(cat){
+  showView("tasks", true);
+  $("q").value = "";
+  const sel2 = $("cat");
+  sel2.value = (sel2.value === cat) ? "" : cat;
+  if (DATA) render();
+}
+
 const targets = () => sel.size ? Array.from(sel) : (VIEW[cur] ? [VIEW[cur].name] : []);
 
 document.addEventListener("click",e=>{
   // 点灯板上的一格 = 把下面的任务表过滤到它。再点一次同一格就清空过滤。
   const fc=e.target.closest("[data-fr]");
-  if(fc){ const n=fc.dataset.fr; const q=$("q");
-    q.value = (q.value===n) ? "" : n; render(); q.focus(); return; }
+  if(fc){ focusTask(fc.dataset.fr); return; }
+  const sc=e.target.closest("[data-scat]");
+  if(sc){ focusCategory(sc.dataset.scat); return; }
   const cg=e.target.closest(".cv-gh");
   if(cg){ const k=cg.parentElement.dataset.cv; CV_OPEN[k]=!CV_OPEN[k]; renderConvos(); return; }
   if(e.target.id==="cvonly"){ CV_HUMAN_ONLY=e.target.checked; renderConvos(); return; }
@@ -1468,6 +1507,20 @@ document.addEventListener("keydown",e=>{
   }
   const k=e.key;
   if(k==="?"){ $("help").hidden=false; return; }
+  // 表格相关的键只在任务分区里有意义。不拦的话,人在仓库分区按 j,
+  // 光标在一张 display:none 的表里往下走一行,按 d 甚至会停用光标所在的那个任务 :
+  // 屏幕上完全没有反应,而动作真的发生了。这比不响应危险得多。
+  const TABLE_KEYS = "jkgGxaresd";
+  if(CURVIEW !== "tasks" && !$("view").classList.contains("all")
+     && (TABLE_KEYS.indexOf(k) >= 0 || k === "Enter"
+         || k === "ArrowDown" || k === "ArrowUp")){
+    if(k === "j" || k === "k" || k === "ArrowDown" || k === "ArrowUp"
+       || k === "Enter" || k === "g" || k === "G"){
+      // 移动类的键:与其无声吞掉,不如把人带到那张表上,这是他按 j 的本意。
+      e.preventDefault(); showView("tasks", true); return;
+    }
+    return;   // 动作类的键(r/s/e/d/x/a)直接不受理:静默执行一个破坏性动作是最坏的结果
+  }
   if(k==="/"){ e.preventDefault(); $("q").focus(); $("q").select(); return; }
   if(k==="R"){ load(); return; }
   // Shift+A:摊开或收回全部分区,只为让 Ctrl+F 能搜到全部内容。
