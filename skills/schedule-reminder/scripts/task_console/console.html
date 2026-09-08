@@ -28,7 +28,17 @@
    Sarasa Mono SC:许可没问题,但整族 62.7MB,单字重 CJK 子集仍要一次离线 pyftsubset,
    正是这个工具不能有的构建步骤。 */
 :root{
-  --bg:#EEF1F2; --panel:#FFFFFF; --panel2:#F6F8F9; --line:#D3DBDF; --line2:#E4EAED;
+  /* 两档字体。外壳(侧栏、顶栏、卡头、标签)用比例字体,数据用等宽。
+     整页等宽是这页最像老页面的单点:Tabler 的外壳预期比例字体,喂给它等宽,
+     结构对了字形不对。Grafana / Datadog 的做法都是 chrome 比例、数据等宽。
+     ⚠ --mono 早就被 .mt-t b / .rp-r .n / .cv-gh .dir / #todo .nm 四处引用,
+     却从来没定义过,一直吃 inherit 兜底。定义它顺手修掉那四处静默失效。 */
+  --ui:system-ui,"Segoe UI","Microsoft YaHei",sans-serif;
+  --mono:"Cascadia Mono",Consolas,NSimSun,"Courier New",monospace;
+  --bg:#EEF1F2;
+  --tblr-danger-rgb:171,49,35; --tblr-success-rgb:44,122,85;
+  --tblr-warning-rgb:140,98,16; --tblr-primary-rgb:14,107,117;
+ --panel:#FFFFFF; --panel2:#F6F8F9; --line:#D3DBDF; --line2:#E4EAED;
   --ink:#141C22; --dim:#5C6B75; --faint:#8797A1;
   --sel:#0E6B7522; --cur:#0E6B7514;
   --amber:#9A6B0F; --cyan:#0E6B75;
@@ -42,6 +52,9 @@
   --sel:#3FA9B433; --cur:#3FA9B41A;
   --amber:#D9A441; --cyan:#4FB0BD;
   --ok:#5FAF7F; --bad:#D2685E; --warn:#D0A047; --idle:#7E8E99;
+  --tblr-danger-rgb:210,104,94; --tblr-success-rgb:95,175,127;
+  --tblr-warning-rgb:208,160,71; --tblr-primary-rgb:79,176,189;
+
   --okb:#5FAF7F1E; --badb:#D2685E1E; --warnb:#D0A0471E; --idleb:#7E8E991E;
   --h0:#1A242A; --h1:#2A5744; --h2:#3C8663; --h3:#87692E; --h4:#985B3B; --h5:#A54A3F;
 }}
@@ -51,13 +64,16 @@
   --sel:#3FA9B433; --cur:#3FA9B41A;
   --amber:#D9A441; --cyan:#4FB0BD;
   --ok:#5FAF7F; --bad:#D2685E; --warn:#D0A047; --idle:#7E8E99;
+  --tblr-danger-rgb:210,104,94; --tblr-success-rgb:95,175,127;
+  --tblr-warning-rgb:208,160,71; --tblr-primary-rgb:79,176,189;
+
   --okb:#5FAF7F1E; --badb:#D2685E1E; --warnb:#D0A0471E; --idleb:#7E8E991E;
   --h0:#1A242A; --h1:#2A5744; --h2:#3C8663; --h3:#87692E; --h4:#985B3B; --h5:#A54A3F;
 }
 *{box-sizing:border-box}
 html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--ink);
-  font:12px/1.45 "Cascadia Mono",Consolas,NSimSun,"Courier New",monospace;
+  font:12px/1.45 var(--ui);
   -webkit-font-smoothing:antialiased}
 b{font-weight:600}
 .dim{color:var(--dim)} .faint{color:var(--faint)}
@@ -104,6 +120,7 @@ main{padding:8px}
 /* 拖动态的类挂在 .tl 上而不是 .tltrack 上:后者每次渲染都会被替换掉,类会跟着消失。 */
 .tl.drag .tltrack{cursor:grabbing}
 .tlrow{display:flex;align-items:center;height:15px;border-bottom:1px solid var(--line2)}
+.tlrow{cursor:pointer}
 .tlrow:hover{background:var(--cur)}
 .tlname{width:186px;flex:none;padding-right:8px;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;font-size:11px}
@@ -128,7 +145,9 @@ main{padding:8px}
 .hm td.h3{background:var(--h3)}.hm td.h4{background:var(--h4)}.hm td.h5{background:var(--h5)}
 
 table.g{border-collapse:collapse;font-size:11.5px;white-space:nowrap;width:100%}
-table.g th{position:sticky;top:26px;z-index:5;background:var(--panel2);color:var(--dim);
+/* pointer 只给真的能排序的那张表。#scores 的表头也是 table.g th,
+   拿到了 pointer 和 hover,而排序处理器写死 #tbl th[data-k],永远不匹配。 */
+#tbl th{position:sticky;top:26px;z-index:5;background:var(--panel2);color:var(--dim);
   font-weight:600;text-align:left;padding:3px 6px;border-bottom:1px solid var(--line);
   cursor:pointer;user-select:none;font-size:11px}
 table.g th:hover{color:var(--ink)}
@@ -149,6 +168,10 @@ table.g td.nm{max-width:230px;overflow:hidden;text-overflow:ellipsis;font-weight
    改成给一个真实的宽度区间,放不下就让 .pad 横向滚(它本来就有 overflow-x:auto)。 */
 table.g tr[data-scat]{cursor:pointer}
 table.g tr[data-scat]:hover{background:var(--cur)}
+/* 展开出来的明细行也是 table.g tbody tr,继承了行的 pointer 和 hover,
+   但展开处理器要求 [data-name],它没有。 */
+#tbl tr.det{cursor:default}
+#tbl tr.det:hover{background:transparent}
 table.g td.ds{min-width:170px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .st{display:inline-block;min-width:50px;text-align:center;padding:0 4px;font-size:10.5px}
 .st.ok{color:var(--ok);background:var(--okb)}
@@ -193,7 +216,10 @@ tr.det>td{background:var(--panel2);white-space:normal;padding:6px 10px 8px;borde
 .fr-key{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--dim);padding:6px 10px 0}
 .fr-key span{display:inline-flex;align-items:center;gap:4px}
 .fr-board{display:flex;flex-wrap:wrap;gap:3px;padding:8px 10px}
-.fr-c{width:15px;height:15px;border-radius:2px;cursor:pointer;border:1px solid transparent}
+/* pointer 只给真的带 data-fr 的灯板格。图例块共用 .fr-c 类,就在灯板正上方,
+   长得一模一样,却不是可点对象。 */
+.fr-c[data-fr]{cursor:pointer}
+.fr-c{width:15px;height:15px;border-radius:2px;border:1px solid transparent}
 .fr-c.s-up{background:var(--ok)}
 .fr-c.s-running{background:var(--cyan)}
 .fr-c.s-grace{background:var(--warn)}
@@ -202,7 +228,7 @@ tr.det>td{background:var(--panel2);white-space:normal;padding:6px 10px 8px;borde
 .fr-c.s-never{background:repeating-linear-gradient(45deg,var(--amber),var(--amber) 2px,
   transparent 2px,transparent 4px);border-color:var(--amber)}
 .fr-c.s-unknown{background:transparent;border:1px dashed var(--faint)}
-.fr-c:hover{outline:2px solid var(--cyan);outline-offset:1px}
+.fr-c[data-fr]:hover{outline:2px solid var(--cyan);outline-offset:1px}
 .fr-list{padding:0 10px 9px;display:flex;flex-direction:column;gap:1px}
 .fr-r{display:grid;grid-template-columns:14px minmax(120px,190px) 1fr auto;gap:9px;
   align-items:center;font-size:12px;padding:3px 0;border-top:1px solid var(--line2)}
@@ -408,7 +434,7 @@ button.mini{min-width:auto;padding:0 5px;font-size:10.5px;white-space:nowrap}
 
 .page-body{margin-top:0;padding:7px 0 18px}
 #view{padding:0 9px}
-section[data-view]{display:flex;flex-direction:column;gap:6px}
+section[data-view]{display:flex;flex-direction:column;gap:6px;scroll-margin-top:32px}
 section[data-view][hidden]{display:none}
 #view .box{margin-bottom:0}
 #view #tools{margin-bottom:0}
@@ -466,6 +492,26 @@ section[data-view][hidden]{display:none}
 #view.all section[data-view]::before{content:attr(data-label);font-size:11px;color:var(--dim);
   letter-spacing:.04em;padding:2px 0;border-bottom:1px solid var(--line);margin-top:4px}
 #view.all section[data-view]:first-of-type::before{margin-top:0}
+
+/* 等宽显式加回数据。这几处是「要对齐着扫」的东西:数字、路径、任务名、时间戳。
+   剩下用比例字体的是大类、说明、触发这三列和状态芯片,它们本来就是散文。 */
+.num{font-family:var(--mono)}
+table.g td.nm,table.g td.lr,table.g td.nr,table.g td.to{font-family:var(--mono)}
+#sckd .r .p,.cv-r .m,.mt-r .c,.tile .v,#bar b,.tlkey{font-family:var(--mono)}
+#help td.hot{font-family:var(--mono)}
+
+/* 三处原来都是 gap:1px 铺在 --line 底色上画分隔线。单看每一处都合理,
+   三处叠起来整页就是一张连续的网格纸,而那正是「像老页面」最主要的来源。
+   改成真的间隙 + 各自边框:同样是分隔,但读起来是几张卡片而不是一个表格区域。 */
+.tiles{gap:6px;background:none;border:0}
+.tile{border:1px solid var(--line);border-radius:3px}
+.rp-grid{gap:5px;background:none}
+.rp-r{border:1px solid var(--line);border-radius:3px}
+.mt-grid{gap:8px;background:none}
+.mt-col{border:1px solid var(--line);border-radius:3px}
+/* 卡头层级原来是反的:标题 11.5px/--dim,正文 12px/--ink,
+   也就是卡片标题是整张卡里最不显眼的东西。 */
+.box>h2{font-size:12.5px;color:var(--ink)}
 </style>
 </head>
 <body>
@@ -513,7 +559,7 @@ section[data-view][hidden]{display:none}
 
 <div class="page-body">
 <div class="container-fluid" id="view">
-  <section data-view="overview" data-label="概览" hidden>
+  <section id="overview" data-view="overview" data-label="概览" hidden>
   <div class="tiles" id="tiles"></div>
   <div class="box" id="todo">
     <h2>要人管的事 <span class="sub" id="todon"></span></h2>
@@ -534,7 +580,7 @@ section[data-view][hidden]{display:none}
     <div class="fr-list" id="frlist"></div>
   </div>
   </section>
-  <section data-view="tasks" data-label="任务" hidden>
+  <section id="tasks" data-view="tasks" data-label="任务" hidden>
 <div id="tools">
   <input type="text" id="q" placeholder="过滤任务名 / 大类 / 说明   /" autocomplete="off">
   <select id="cat"><option value="">全部大类</option></select>
@@ -578,7 +624,7 @@ section[data-view][hidden]{display:none}
     <div class="pad" style="padding:0"><table class="g" id="scores"></table></div>
   </div>
   </section>
-  <section data-view="repos" data-label="仓库" hidden>
+  <section id="repos" data-view="repos" data-label="仓库" hidden>
 <div class="box" id="rpbox">
     <h2>仓库<span class="n" id="rpnote">读取中</span>
       <span style="flex:none"><button id="rpreload" title="重新扫描">↻</button></span>
@@ -589,7 +635,7 @@ section[data-view][hidden]{display:none}
     </div>
   </div>
   </section>
-  <section data-view="storage" data-label="存储与维护" hidden>
+  <section id="storage" data-view="storage" data-label="存储与维护" hidden>
 <div class="box" id="mtbox">
     <h2>维护<span class="n" id="mtnote">读取中</span>
       <span style="flex:none"><button id="mtreload" title="重新读取">↻</button></span>
@@ -602,7 +648,7 @@ section[data-view][hidden]{display:none}
     </div>
   </div>
   </section>
-  <section data-view="convos" data-label="对话历史" hidden>
+  <section id="convos" data-view="convos" data-label="对话历史" hidden>
 <div class="box" id="cvbox">
     <h2>对话历史<span class="n" id="cvnote">读取中</span>
       <span style="flex:none"><button id="cvreload" title="重新扫描">↻</button></span>
@@ -714,7 +760,7 @@ function renderTL(){
     const evt=(r.eventDriven.length&&!r.points.length&&!r.spans.length)
       ? `<span class="tlevt">${esc(r.eventDriven.join("/"))} 触发,无固定时刻</span>`:"";
     const nowBar=vis(nowM)?`<i class="tlnow" style="left:${tlPos(nowM)}%"></i>`:"";
-    return `<div class="tlrow"><div class="tlname" title="${esc(r.name)}${r.desc?" : "+esc(r.desc):""}">${esc(r.name)}</div>
+    return `<div class="tlrow" data-task="${esc(r.name)}"><div class="tlname" title="${esc(r.name)}${r.desc?" : "+esc(r.desc):""}">${esc(r.name)}</div>
       <div class="tltrack">${spans}${marks}${acts}${evt}${nowBar}</div></div>`;
   }).join("");
   $("tl").innerHTML=`<div class="hours">${tlTicks()}</div>${rows}`;
@@ -787,7 +833,10 @@ function renderFresh(){
   // 同一段文字在一屏里出现两次,读的人得先分辨这是两件事还是一件事。
   // 这块保留聚合视图(条形图、覆盖率、热力图),它回答的是「整体什么样」,清单回答「是哪几条」。
   // 但不能就这么让明细消失 : 留一行指路,否则下次有人会以为它坏了。
-  const bad=ts.filter(t=>t.state!=="up"&&t.state!=="running"&&t.state!=="paused");
+  // 这里的口径必须和「要人管的事」清单**逐字**一致,否则这句话会指着一张
+  // 不包含那几条的清单报数。清单收的是 down / never / unknown 三种:
+  // grace 是「还在宽限期内」,不算要人管;unknown 是「查不成」,算。
+  const bad=ts.filter(t=>t.state==="down"||t.state==="never"||t.state==="unknown");
   $("frlist").innerHTML = bad.length
     ? `<div class="fr-none">${bad.length} 条明细在上面的「要人管的事」</div>`
     : `<div class="fr-none">全部产物新鲜</div>`;
@@ -1123,6 +1172,16 @@ function showView(key, push){
     b.tabIndex = cur ? 0 : -1;
   });
   if(push && location.hash.slice(1) !== key) location.hash = key;
+  // 摊开态下所有分区都可见(#view.all 用 !important 压过 hidden),
+  // 于是「切分区」这个动作没有任何可见效果,只剩滚动归零。
+  // 这时正确的行为是滚到那一段,而不是滚到页顶 : 否则每一次跳转看起来都像坏了。
+  // 摊开态下「切分区」本来没有可见效果:所有分区都显示着,写 hidden 被 !important 压掉,
+  // 于是点侧栏只剩滚动归零,看起来像坏了。
+  // 试过三种滚到那一段的做法,没有一种稳:scrollIntoView 差 538px;自己算绝对位置
+  // 五个分区里只有两个落点对;交回浏览器原生锚点又和 .nv 上的 preventDefault 打架。
+  // 所以不滚了,直接收回摊开 : 点侧栏的本意就是「我要看这一类」,而摊开是「我暂时全都要看」。
+  // Ctrl+F 需要摊开时随时再按 Shift+A,那条路径没有被拿走。
+  $("view").classList.remove("all");
   // 切分区时把滚动位置归零。不归零的话从一屏很长的分区切到一屏很短的,
   // 看到的是一片空白,而那看起来像「这一类什么都没有」。
   const v = $("view"); if(v) v.scrollTop = 0;
@@ -1168,7 +1227,16 @@ document.addEventListener("click", e=>{
   const tk = e.target.closest("[data-task]");
   if(tk){ focusTask(tk.dataset.task); return; }
   const tl = e.target.closest("[data-goto]");
-  if(tl){ showView(tl.dataset.goto, true); return; }
+  if(tl){
+    const g = tl.dataset.goto;
+    // 以 # 开头的目标是「滚到本分区里的某一块」,不是切分区。
+    if(g.charAt(0) === "#"){
+      const el2 = document.querySelector(g);
+      if(el2) el2.scrollIntoView({block:"start", behavior:"smooth"});
+      return;
+    }
+    showView(g, true); return;
+  }
   const nv = e.target.closest(".nv");
   // 分区项现在是 <a href="#xxx">。让浏览器自己跳会同时触发 hashchange,
   // 于是 showView 跑两遍;更糟的是原生跳转会把页面滚到那个 id 上(并不存在)。
@@ -1220,10 +1288,12 @@ function renderTodo(){
       {v:"tasks", src:"任务", nm:r.name, task:r.name, why:r.sl || "上次运行失败", sev:3}));
 
   if(typeof DATA !== "undefined" && DATA && DATA.freshness && Array.isArray(DATA.freshness.tasks))
-    DATA.freshness.tasks.filter(r=>r.state==="down"||r.state==="never").forEach(r=>rows.push(
+    DATA.freshness.tasks.filter(r=>r.state==="down"||r.state==="never"
+                                   ||r.state==="unknown").forEach(r=>rows.push(
       {v:"tasks", src:"产物", nm:r.name, task:r.name,
-       why:(r.reasons && r.reasons[0]) || (r.state==="never" ? "从未运行过" : "产物过期"),
-       sev:r.state==="never" ? 2 : 3}));
+       why:(r.reasons && r.reasons[0]) ||
+           (r.state==="never" ? "从未运行过" : r.state==="unknown" ? "查不成" : "产物过期"),
+       sev:r.state==="down" ? 3 : 2}));
 
   if(REPOS && REPOS.available && Array.isArray(REPOS.repos))
     REPOS.repos.filter(r=>r.state!=="clean").forEach(r=>rows.push(
@@ -1270,9 +1340,11 @@ function renderTiles(){
 
   if(typeof DATA !== "undefined" && DATA && DATA.freshness && DATA.freshness.summary){
     const F = DATA.freshness.summary;
-    out.push(tile("overview","产物新鲜度",F.bad,
+    // 这一格原来 data-goto="overview",而它自己就渲染在 overview 里:
+    // 点了 showView 什么都不会变,唯一效果是滚回页顶。改成滚到灯板那一块。
+    out.push(tile("#frbox","产物新鲜度",F.bad,
       `覆盖 ${Math.round((F.coverage||0)*100)}% · 共 ${F.total}`, F.bad?"bad":"ok"));
-  } else out.push(tile("overview","产物新鲜度","-","未检查","idle"));
+  } else out.push(tile("#frbox","产物新鲜度","-","未检查","idle"));
 
   if(REPOS && REPOS.available && REPOS.summary){
     const R = REPOS.summary;
