@@ -652,7 +652,7 @@ table.g td.nm,table.g td.lr,table.g td.nr,table.g td.to{font-family:var(--mono)}
     <div class="pad"><table class="hm" id="heat"></table></div>
   </div>
 <div class="box" id="scbox">
-    <h2>大类汇总 <span class="n">四维都是百分比可横向比较。未检查显示 - 而不是 0</span></h2>
+    <h2>大类汇总 <span class="n">上面那张明细表按大类聚合而来,点一行只看这一类。四维都是百分比可横向比较,未检查显示 - 而不是 0</span></h2>
     <div class="pad" style="padding:0"><table class="g" id="scores"></table></div>
   </div>
   </section>
@@ -1402,8 +1402,11 @@ function renderTiles(){
 
   if(MEM && MEM.available){
     const p = Math.max(MEM.linePct||0, MEM.bytePct||0);
+    // 取大的那个:两条上限哪条先撞都是撞。副标题要说出取的是哪一条,
+    // 否则这个百分比对不上配置屏那两条独立的条,看起来像两处在打架。
+    const pWhich = (MEM.linePct||0) >= (MEM.bytePct||0) ? "行数" : "字节";
     out.push(tile("storage","记忆索引",p+"%",
-      `${MEM.indexLines}/${MEM.hardLines} 行 · 冷层 ${MEM.cold}`,
+      `${pWhich}占比 · ${MEM.indexLines}/${MEM.hardLines} 行 · 冷层 ${MEM.cold}`,
       p>=100?"bad":p>=90?"warn":"ok"));
   } else out.push(tile("storage","记忆索引","-","未检查","idle"));
 
@@ -1493,12 +1496,12 @@ function detail(r){
    ["真实运行",r.runs?`启动 ${r.runs.starts} · 完成 ${r.runs.done} · 被杀 ${r.runs.killed} · 超时 ${r.runs.timedOut} · 启动失败 ${r.runs.failStart} · 返回码 ${rcs||"无"}${r.runs.okApplied?` (声明 ${r.runs.okApplied.join(",")} 也算成功)`:""}`:'<span class="u">运行日志里还没有记录</span>'],
   ].map(x=>`<dt>${x[0]}</dt><dd>${x[1]}</dd>`).join("");
   const iss=r.issues.length?`<ul class="iss">${r.issues.map(i=>`<li class="${i[0]}">${esc(i[1])}</li>`).join("")}</ul>`:"";
-  const acts=`<div style="margin-top:6px;display:flex;gap:5px">
-    ${r.state==="Disabled"?`<button data-act="enable" data-name="${esc(r.name)}">启用</button>`
-                          :`<button class="danger" data-act="disable" data-name="${esc(r.name)}">停用</button>`}
-    <button data-act="run" data-name="${esc(r.name)}">立即运行</button>
-    ${r.state==="Running"?`<button class="danger" data-act="stop" data-name="${esc(r.name)}">停止</button>`:""}</div>`;
-  return `<tr class="det"><td colspan="${shownCols().length}"><div class="det"><dl>${dl}</dl>${iss}${acts}</div></td></tr>`;
+  // 展开态原来还有一组 启用/停用/立即运行/停止 按钮,是行内操作列的真子集(少一个退役)。
+  // 而这个文件里早就写下过决定:「动作长在每一行上,而不是藏在展开态和键盘快捷键里」。
+  // 动作提到行上之后,展开态那份没删,于是同一个按钮在同一屏出现两次,
+  // 而其中一份还比另一份少一个动作 : 两份不完全一样的重复,比完全一样的更糟,
+  // 因为人会以为差别是有意义的。
+  return `<tr class="det"><td colspan="${shownCols().length}"><div class="det"><dl>${dl}</dl>${iss}</div></td></tr>`;
 }
 
 function render(){
@@ -1510,7 +1513,11 @@ function render(){
   $("s-src").innerHTML=`<span class="k">数据</span>${esc(S.generated)}`
     +((DATA.history&&DATA.history.available)?` <span class="faint">观察${DATA.history.days.length}d</span>`:` <span class="faint">无观察</span>`)
     +((DATA.runlog&&DATA.runlog.available)?` <span class="faint">运行日志${DATA.runlog.count}</span>`:` <span class="faint">无运行日志</span>`);
-  $("warns").innerHTML=(DATA.warnings||[]).map(w=>`<div class="warn-line">${esc(w)}</div>`).join("");
+  // 含「历史」的那条警告不在这里重复:热力图不可用时会把它印在图的标题上(renderHeat),
+  // 贴在图上比躺在警告堆里有用 : 人是在图空着的时候才想知道为什么空。
+  $("warns").innerHTML=(DATA.warnings||[])
+    .filter(w=>w.indexOf("历史")<0)
+    .map(w=>`<div class="warn-line">${esc(w)}</div>`).join("");
   renderFresh();
   updateBadges();
   renderTL(); renderHeat(); renderScores();
