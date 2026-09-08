@@ -130,3 +130,47 @@ def test_real_read_reports_dropped_and_truncated_honestly():
         assert r["truncated"] is True
     # 解析不了的事件必须被数出来:悄悄丢掉会让「没记录」和「读不懂」变成同一个空列表。
     assert isinstance(r["dropped"], int)
+
+
+# ---------- enabled 必须和 runlog.ps1 说的是同一件事 ----------
+# read() 返回的 enabled 原来只表示「EvtQuery 打得开」,而 runlog.ps1 里的同名键表示的是
+# **通道配置里的 IsEnabled**,server.py 按后者的语义去解释前者。
+# 通道被关掉(Windows 默认就是关的)但通道文件还在时,EvtQuery 打得开、返回零条,
+# 快路报 enabled=True,于是永远不会回落到 PowerShell 那条,那句
+# 「日志是关闭的,开启它是开始记录不是恢复记录」永远不出现。
+# 页面于是印出「运行日志 0」——正是本模块开头写的那句要防的事。
+
+def test_a_disabled_channel_is_reported_as_disabled(monkeypatch):
+    monkeypatch.setattr(E, "channel_enabled", lambda: (False, None))
+    got = E.read(days=1)
+    assert got["enabled"] is False
+    assert "开始记录" in got["reason"], got["reason"]
+    assert got["events"] == []
+
+
+def test_an_unreadable_channel_config_is_not_treated_as_enabled(monkeypatch):
+    """问不出来不能当成开着。那样就退回了「把查不成当成正常」的老形态。"""
+    monkeypatch.setattr(E, "channel_enabled", lambda: (None, "读不到通道配置: OSError"))
+    got = E.read(days=1)
+    assert got["enabled"] is False
+    assert "通道配置" in got["reason"], got["reason"]
+
+
+@pytest.mark.skipif(not E.available()[0], reason="没有 pywin32,读不了真通道")
+def test_an_enabled_channel_still_reads_events():
+    """正对照:通道开着时必须照常读。
+    没有这一条,把 read 改成「永远 enabled False」也能让上面两条通过。"""
+    got = E.read(days=7, max_events=5)
+    assert got["enabled"] is True, got.get("reason")
+    assert got.get("partial") is False
+
+
+def test_no_more_items_is_a_normal_end_not_a_failure():
+    """EvtNext 读完时也会抛(259)。不区分的话每一次正常读完都会被报成
+    「读到一半失败」,而一个天天误报的提示很快就会被无视。"""
+    class E259(Exception):
+        winerror = 259
+    assert E._is_no_more(E259()) is True
+    class Other(Exception):
+        winerror = 5
+    assert E._is_no_more(Other()) is False

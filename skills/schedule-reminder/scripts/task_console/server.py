@@ -274,8 +274,28 @@ def load_from_db():
             "visibleRuns": sum((runs_by_day.get(task) or {}).values()),
             "byDay": by_day.get(task, {}),
         }
-    hist = {
+    # available 原来硬编码成 True,和库里有没有行无关。文本那条路的同一个判断是相反的
+    # (history.load 在一条都没解析出来时返回 available=False 加一句明确的原因)。
+    # 于是同一个事实(没有可用的观察序列)在两条代码路径上得到相反的答案,而页面只信 available:
+    # 一个只有 schema 没有数据的库,会让热力图走正常分支画一张空表、健康% 全是「-」,
+    # 而没有任何一处说「库里还没有观察数据」。
+    #
+    # 判据用**窗口内实际拿到的天数**,不用全表行数:全表有行但最近 45 天为空,
+    # 同样是「这张图没东西可画」,而那时摄入器很可能已经停了。
+    if not all_days:
+        _rows = cov["health"]["rows"]
+        _why = ("数据库里还没有观察数据,跑一次 console_ingest.py --backfill"
+                if not _rows else
+                f"最近这个窗口内没有观察(全表 {_rows} 行,最后一条在 "
+                f"{cov['health'].get('to') or '未知'}),摄入器可能已经停了")
+        hist = {"available": False, "reason": _why, "source": "db",
+                "matched": _rows, "skipped": 0, "days": [], "tasks": {},
+                "lastIngest": cov.get("lastIngest")}
+    else:
+      hist = {
         "available": True, "reason": None, "source": "db",
+        # lastIngest 原来算完就被丢掉,而它正是区分「摄入器挂了」和「本来就没跑过」的唯一信号。
+        "lastIngest": cov.get("lastIngest"),
         "matched": cov["health"]["rows"], "skipped": 0, "days": all_days, "tasks": htasks,
         "caveat": ("健康率来自每小时轮询的观察序列,不是每次运行的成功率:一个坏了一整天的任务贡献约 24 条"
                    "不健康观察而不是 1 条。「实成功率」那一列才是每次运行的,来自 Windows 运行日志。"),
@@ -527,6 +547,11 @@ def build_payload() -> dict:
             "cat": g["cat"],
             "n": n,
             "health": round(sum(hs) / len(hs), 1) if hs else None,
+            # 健康% 的分母是「本类里**有观察记录的**任务数」,而同一行另外三列的分母是
+            # 「本类任务数」n,页面上原来只给出 n。一个 10 个任务、只有 1 个被轮询到且它
+            # 100% 的大类会显示「数 10 · 健康 100.0(绿)」:一个被喂了几乎空输入的检查器
+            # 打印出了满分绿色,而它的分母不在屏幕上任何地方。
+            "healthN": len(hs),
             "backup": round(100.0 * sum(1 for r in rows if r["inAllow"]) / n, 1) if (allow is not None and n) else None,
             "watched": round(100.0 * sum(1 for r in rows if r["inHealth"] or r.get("elsewhere")) / n, 1) if (health and n) else None,
             "hygiene": round(100.0 * sched_ok / n, 1) if n else None,
@@ -548,9 +573,15 @@ def build_payload() -> dict:
         "groups": groups,
         "freshness": fresh,
         "warnings": warnings,
-        "history": {k: hist[k] for k in ("available", "days", "caveat", "matched", "source")
+        # ⚠ 这是一层字段白名单。把 available 改成 False 却忘了让 reason 出现在这里,
+        # 页面上就只剩一个没有原因的 False : 实测过一次,空库那条判定生效了而 reason 是空的。
+        # 凡是新增一个「说明为什么」的字段,都要同时加进这里,否则它到不了页面。
+        # lastIngest 同理:它是区分「摄入器挂了」和「本来就没跑过」的唯一信号。
+        "history": {k: hist[k] for k in ("available", "reason", "days", "caveat",
+                                         "matched", "source", "lastIngest")
                     if k in hist},
-        "runlog": {k: runs[k] for k in ("available", "since", "oldest", "count", "note")
+        "runlog": {k: runs[k] for k in ("available", "reason", "since", "oldest",
+                                        "count", "note", "partial")
                    if k in runs},
         "scores": scores,
         "timeline": tl,
