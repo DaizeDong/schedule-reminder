@@ -324,7 +324,7 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
   padding:5px 0;display:flex;flex-direction:column;gap:1px;width:150px;
   position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto}
 #side.narrow{width:42px}
-.nv{display:grid;grid-template-columns:15px 1fr auto;gap:7px;align-items:center;
+.nv{display:grid;grid-template-columns:15px 1fr auto;gap:7px;align-items:center;height:auto;
   padding:5px 9px;font-size:12.5px;color:var(--dim);cursor:pointer;border:0;
   background:none;text-align:left;width:100%;font-family:inherit;
   border-left:2px solid transparent}
@@ -363,9 +363,9 @@ section[data-view][hidden]{display:none}
    分区之后概览只剩两块盒子,一屏填不满三分之一。空着不是「干净」,是**把已经算出来的
    东西藏进了别的分区**:每一格都是别处早就算好的数字,放在这里只是让人不用先点进去。
    每格可点,点了就跳到那一类,所以它同时是导航。 */
-.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:1px;
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:1px;
   background:var(--line);border:1px solid var(--line)}
-.tile{background:var(--panel);padding:8px 10px 9px;display:flex;flex-direction:column;gap:2px;
+.tile{background:var(--panel);padding:8px 10px 9px;display:flex;flex-direction:column;gap:2px;height:auto;
   cursor:pointer;border:0;text-align:left;font-family:inherit;min-width:0}
 .tile:hover{background:var(--cur)}
 .tile .k{font-size:10.5px;color:var(--faint);letter-spacing:.03em;white-space:nowrap}
@@ -374,6 +374,27 @@ section[data-view][hidden]{display:none}
   white-space:nowrap}
 .tile .v.ok{color:var(--ok)} .tile .v.bad{color:var(--bad)}
 .tile .v.warn{color:var(--warn)} .tile .v.idle{color:var(--faint)}
+/* 上面两处的 height:auto 不是多余的。本页给工具条写过一条元素选择器
+   `button{height:22px}`,任何拿 <button> 当积木的多行部件都会被它钉死,
+   内容照样按 47px 排,溢出去盖住下一行 : 看起来像排版错乱,不像高度被覆盖。
+   拿 button 做新部件时一律显式写 height:auto。 */
+
+
+/* ---- 概览:要人管的事 ------------------------------------------------------------
+   概览排完六格指标只占了不到三分之一屏,剩下一片空。空着不是干净:六格告诉你「有 11 个
+   仓库要人管」,却不告诉你是哪 11 个,于是还得点进去。这张清单把四个分区里判为要人管的
+   行合到一处,每行点一下跳到它所属的分区。
+   六格回答「有没有事」,这张清单回答「是哪些事」。 */
+#todo .rw{display:grid;grid-template-columns:6px 62px 1fr auto;gap:8px;align-items:baseline;
+  padding:2px 0;border-bottom:1px solid var(--line2);cursor:pointer}
+#todo .rw:last-child{border-bottom:0}
+#todo .rw:hover{background:var(--cur)}
+#todo .dot{width:6px;height:6px;border-radius:1px;align-self:center}
+#todo .src{font-size:10.5px;color:var(--faint);white-space:nowrap}
+#todo .nm{font-family:var(--mono);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+#todo .why{font-size:11px;color:var(--dim);white-space:nowrap}
+#todo .none{color:var(--ok);font-size:11.5px;padding:3px 0}
 </style>
 </head>
 <body>
@@ -402,6 +423,10 @@ section[data-view][hidden]{display:none}
 <div id="view">
   <section data-view="overview" hidden>
   <div class="tiles" id="tiles"></div>
+  <div class="box" id="todo">
+    <h2>要人管的事 <span class="sub" id="todon"></span></h2>
+    <div id="todod"></div>
+  </div>
 <div id="sck"><span class="lab">自检</span><span class="dots" id="sckdots"></span>
     <span class="sum" id="scksum">读取中</span><button id="scktog">明细</button></div>
 <div id="sckd"></div>
@@ -627,12 +652,6 @@ const FR_ORDER=["down","never","grace","unknown","paused","running","up"];
 const FR_COLOR={up:"var(--ok)",running:"var(--cyan)",grace:"var(--warn)",down:"var(--bad)",
                 paused:"var(--idle)",never:"var(--amber)",unknown:"var(--faint)"};
 
-function frAge(t){
-  if(!t.last_run) return "";
-  const h=(Date.now()/1000-t.last_run)/3600;
-  return h<48 ? h.toFixed(1)+"h" : (h/24).toFixed(0)+"d";
-}
-
 function renderFresh(){
   const F=DATA.freshness;
   if(!F){ $("frbox").style.display="none"; return; }
@@ -669,13 +688,13 @@ function renderFresh(){
       +`title="${esc(t.name)} : ${FR_LABEL[t.state]}${why?" : "+esc(why):""}"></i>`;
   }).join("");
 
+  // 明细搬到了上面的「要人管的事」:那张清单列的就是这几条,一字不差。
+  // 同一段文字在一屏里出现两次,读的人得先分辨这是两件事还是一件事。
+  // 这块保留聚合视图(条形图、覆盖率、热力图),它回答的是「整体什么样」,清单回答「是哪几条」。
+  // 但不能就这么让明细消失 : 留一行指路,否则下次有人会以为它坏了。
   const bad=ts.filter(t=>t.state!=="up"&&t.state!=="running"&&t.state!=="paused");
   $("frlist").innerHTML = bad.length
-    ? bad.map(t=>`<div class="fr-r">
-        <i class="fr-c s-${t.state}" style="cursor:default"></i>
-        <span class="nm" title="${esc(t.label||t.name)}">${esc(t.name)}</span>
-        <span class="why">${esc((t.reasons||[]).join(" · "))}</span>
-        <span class="ag">${esc(frAge(t))}</span></div>`).join("")
+    ? `<div class="fr-none">${bad.length} 条明细在上面的「要人管的事」</div>`
     : `<div class="fr-none">全部产物新鲜</div>`;
 }
 
@@ -1018,6 +1037,7 @@ function setBadge(key, n, warn){
 
 function updateBadges(){
   renderTiles();
+  renderTodo();
   // 概览:产物新鲜度里判坏的,加上自检读不到的来源。
   let ov = 0;
   if(typeof DATA !== "undefined" && DATA && DATA.freshness && DATA.freshness.summary)
@@ -1057,6 +1077,56 @@ function tile(view, key, val, sub, cls){
     <span class="v ${cls||""}">${esc(String(val))}</span>
     <span class="s">${esc(sub||"")}</span></button>`;
 }
+
+
+// 要人管的事:把四个分区里判为「要人管」的行合到一处。
+// 只搬结论,不重新判定 : 判定各自留在各自的模块里,这里再判一次就等于把同一条规则写两遍,
+// 而两份规则一定会漂。
+function renderTodo(){
+  const box = $("todod"); if(!box) return;
+  const rows = [];
+
+  // 任务:sk 是任务模块自己的判定键,bad 这一档就是它判失败的那些。
+  // 不在这里另立一套「怎么算失败」 : 两份规则一定会漂,而漂的时候两块内容都还在正常渲染,
+  // 看不出哪一份是对的。
+  if(typeof DATA !== "undefined" && DATA && Array.isArray(DATA.groups))
+    DATA.groups.flatMap(g=>g.rows||[]).filter(r=>r.sk==="bad").forEach(r=>rows.push(
+      {v:"tasks", src:"任务", nm:r.name, why:r.sl || "上次运行失败", sev:3}));
+
+  if(typeof DATA !== "undefined" && DATA && DATA.freshness && Array.isArray(DATA.freshness.tasks))
+    DATA.freshness.tasks.filter(r=>r.state==="down"||r.state==="never").forEach(r=>rows.push(
+      {v:"overview", src:"产物", nm:r.name,
+       why:(r.reasons && r.reasons[0]) || (r.state==="never" ? "从未运行过" : "产物过期"),
+       sev:r.state==="never" ? 2 : 3}));
+
+  if(REPOS && REPOS.available && Array.isArray(REPOS.repos))
+    REPOS.repos.filter(r=>r.state!=="clean").forEach(r=>rows.push(
+      {v:"repos", src:"仓库", nm:r.name, why:REPO_WHY[r.state] || r.state, sev:2}));
+
+  if(SYS && SYS.disk && SYS.disk.usedPct >= 95)
+    rows.push({v:"storage", src:"存储", nm:"系统盘",
+               why:"已用 "+SYS.disk.usedPct+"%", sev:3});
+
+  if(MEM && MEM.available){
+    const p = Math.max(MEM.linePct||0, MEM.bytePct||0);
+    if(p >= 90) rows.push({v:"storage", src:"存储", nm:"MEMORY.md",
+      why:"索引 "+p+"%,逼近硬上限", sev:p>=100?3:2});
+  }
+
+  rows.sort((a,b)=> b.sev-a.sev || a.src.localeCompare(b.src));
+  $("todon").textContent = rows.length ? rows.length + " 条" : "";
+  if(!rows.length){
+    box.innerHTML = '<div class="none">没有要人管的事</div>';
+    return;
+  }
+  box.innerHTML = rows.map(r=>`<div class="rw" data-goto="${r.v}">
+    <span class="dot" style="background:var(--${r.sev>=3?"bad":"warn"})"></span>
+    <span class="src">${esc(r.src)}</span>
+    <span class="nm" title="${esc(r.nm)}">${esc(r.nm)}</span>
+    <span class="why">${esc(r.why)}</span></div>`).join("");
+}
+const REPO_WHY = {dirty:"有未提交改动", unpushed:"有未推送提交",
+                  detached:"游离 HEAD", error:"读不出来"};
 
 function renderTiles(){
   const el = $("tiles"); if(!el) return;
