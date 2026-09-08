@@ -893,7 +893,7 @@ function renderFresh(){
   // 这里的口径必须和「要人管的事」清单**逐字**一致,否则这句话会指着一张
   // 不包含那几条的清单报数。清单收的是 down / never / unknown 三种:
   // grace 是「还在宽限期内」,不算要人管;unknown 是「查不成」,算。
-  const bad=ts.filter(t=>t.state==="down"||t.state==="never"||t.state==="unknown");
+  const bad=ts.filter(t=>FR_ATT().indexOf(t.state) >= 0);
   $("frlist").innerHTML = bad.length
     ? `<div class="fr-off">${bad.length} 条明细在上面的「要人管的事」</div>`
     : `<div class="fr-none">全部产物新鲜</div>`;
@@ -1269,8 +1269,10 @@ function updateBadges(){
   renderTodo();
   // 概览:产物新鲜度里判坏的,加上自检读不到的来源。
   let ov = 0;
-  if(typeof DATA !== "undefined" && DATA && DATA.freshness && DATA.freshness.summary)
-    ov += DATA.freshness.summary.bad || 0;
+  if(typeof DATA !== "undefined" && DATA && DATA.freshness && DATA.freshness.summary){
+    const FS = DATA.freshness.summary;
+    ov += (FS.attention != null ? FS.attention : FS.bad) || 0;
+  }
   if(SCK && !SCK.ok) ov += (SCK.broken || []).length || 1;
   setBadge("overview", ov, false);
 
@@ -1346,6 +1348,17 @@ function tile(view, key, val, sub, cls){
 // 要人管的事:把四个分区里判为「要人管」的行合到一处。
 // 只搬结论,不重新判定 : 判定各自留在各自的模块里,这里再判一次就等于把同一条规则写两遍,
 // 而两份规则一定会漂。
+// 这两个函数是「要人管的集合」的唯一读取点。后端不给时才回落到一份写死的默认,
+// 而回落本身要看得见 : 一个静默回落的默认值,和后端真给了这个值,在页面上长得一样。
+function FR_ATT(){
+  const S = (typeof DATA !== "undefined" && DATA && DATA.freshness && DATA.freshness.summary) || {};
+  return S.attentionStates || ["down","never","unknown"];
+}
+function RP_ATT(){
+  const S = (REPOS && REPOS.summary) || {};
+  return S.attentionStates || ["unpushed","dirty","error"];
+}
+
 function renderTodo(){
   const box = $("todod"); if(!box) return;
   const rows = [];
@@ -1358,15 +1371,16 @@ function renderTodo(){
       {v:"tasks", src:"任务", nm:r.name, task:r.name, why:r.sl || "上次运行失败", sev:3}));
 
   if(typeof DATA !== "undefined" && DATA && DATA.freshness && Array.isArray(DATA.freshness.tasks))
-    DATA.freshness.tasks.filter(r=>r.state==="down"||r.state==="never"
-                                   ||r.state==="unknown").forEach(r=>rows.push(
+    // 状态集合来自后端 summary.attentionStates,不在这里再写一遍。
+    // 两处各写一份的后果是它们会漂,而漂的时候两处都还在正常渲染。
+    DATA.freshness.tasks.filter(r=>FR_ATT().indexOf(r.state) >= 0).forEach(r=>rows.push(
       {v:"tasks", src:"产物", nm:r.name, task:r.name,
        why:(r.reasons && r.reasons[0]) ||
            (r.state==="never" ? "从未运行过" : r.state==="unknown" ? "查不成" : "产物过期"),
        sev:r.state==="down" ? 3 : 2}));
 
   if(REPOS && REPOS.available && Array.isArray(REPOS.repos))
-    REPOS.repos.filter(r=>r.state!=="clean").forEach(r=>rows.push(
+    REPOS.repos.filter(r=>RP_ATT().indexOf(r.state) >= 0).forEach(r=>rows.push(
       {v:"repos", src:"仓库", nm:r.name, why:REPO_WHY[r.state] || r.state, sev:2}));
 
   if(SYS && SYS.disk && SYS.disk.usedPct >= 95)
@@ -1436,8 +1450,11 @@ function renderTiles(){
     const F = DATA.freshness.summary;
     // 这一格原来 data-goto="overview",而它自己就渲染在 overview 里:
     // 点了 showView 什么都不会变,唯一效果是滚回页顶。改成滚到灯板那一块。
-    out.push(tile("#frbox","产物新鲜度",F.bad,
-      `覆盖 ${Math.round((F.coverage||0)*100)}% · 共 ${F.total}`, F.bad?"bad":"ok"));
+    // 用 attention 不用 bad:attention 含 unknown(查不成),而查不成正是这块板子
+    // 最该喊出来的那一类。bad 留给别处表示「判成坏的」。
+    const fa = (F.attention != null) ? F.attention : F.bad;
+    out.push(tile("#frbox","产物新鲜度",fa,
+      `覆盖 ${Math.round((F.coverage||0)*100)}% · 共 ${F.total}`, fa?"bad":"ok"));
   } else out.push(tile("#frbox","产物新鲜度","-","未检查","idle"));
 
   if(REPOS && REPOS.available && REPOS.summary){
