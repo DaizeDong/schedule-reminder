@@ -176,3 +176,58 @@ def test_disable_failure_stops_before_touching_files(cfg, monkeypatch):
     assert e.value.code == "disable_failed"
     # 停用都没成的情况下改配置文件,会造出「配置里没有、任务还在跑」的错位。
     assert al.read_text(encoding="utf-8") == before
+
+
+# ---------- 「查不到状态」不能被当成「它不存在」 ----------
+# 这两件事在退役里导向相反的动作,而它们原来编码成了同一个 None。
+# 查不到时 plan 把 disable 报成 not-found,apply 于是跳过它,却照常把这个任务从
+# 备份 allow-list 和健康清单里摘掉:任务还注册着、还启用着、还在按点跑,
+# 但它已经不在备份里(换机静默丢失)也不在健康监控里(死了没人知道),
+# 而返回值是 ok:True。这是三处登记里最坏的一种错位。
+
+class _FakeRun:
+    def __init__(self, rc, out="", err=""):
+        self.returncode, self.stdout, self.stderr = rc, out, err
+
+
+def test_unreadable_state_is_refused_not_treated_as_absent(monkeypatch):
+    monkeypatch.setattr(R.subprocess, "run",
+                        lambda *a, **k: _FakeRun(1, "", "Access is denied."))
+    with pytest.raises(Refused) as e:
+        R._task_state("Alpha")
+    assert e.value.code == "state_unreadable", e.value.code
+
+
+def test_a_genuinely_absent_task_still_returns_none(monkeypatch):
+    """正对照:rc=0 且没有输出,才是「确认它没注册」。
+    没有这一条,把 _task_state 改成「永远抛」也能让上面那条通过。"""
+    monkeypatch.setattr(R.subprocess, "run", lambda *a, **k: _FakeRun(0, "", ""))
+    assert R._task_state("Alpha") is None
+
+
+def test_a_present_task_returns_its_state(monkeypatch):
+    monkeypatch.setattr(R.subprocess, "run", lambda *a, **k: _FakeRun(0, "Ready\n", ""))
+    assert R._task_state("Alpha") == "Ready"
+
+
+# ---------- 计划说要改、实际没改成,不能报成功 ----------
+# 只会在 plan 和 rewrite 用了两个不同的「这一行是不是它」判据时发生。
+# 吞掉它的后果:任务被停用了,却仍然留在备份 allow-list 里,换机还原会把它原样装回去
+# 而且是启用的。而界面收到的是 ok:True,唯一线索是 done 数组少一项。
+
+def test_a_rewrite_that_changes_nothing_is_refused(cfg, monkeypatch):
+    monkeypatch.setattr(R, "_rewrite_allowlist", lambda p, n: False)
+    with pytest.raises(Refused) as e:
+        R.apply("Alpha", "because")
+    assert e.value.code == "rewrite_noop", e.value.code
+
+
+def test_the_same_path_succeeds_when_the_rewrite_really_changes_something(cfg):
+    """正对照:不加桩时同一条路径必须成功。
+    否则上面那条对着一个「永远抛」的 apply 也会通过。"""
+    al, hp, calls = cfg
+    got = R.apply("Alpha", "because")
+    assert got["ok"] is True
+    assert "allowlist" in got["done"] and "health" in got["done"], got
+    assert "'Alpha'," not in al.read_text(encoding="utf-8")
+    assert "'AlphaBeta'," in al.read_text(encoding="utf-8"), "别名不能被顺手带走"

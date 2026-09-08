@@ -69,14 +69,23 @@ def _child(root: Path, name: str) -> Path:
         raise Refused(f"名字不合法: {name!r}", "bad_name")
     p = (root / name)
     try:
-        # 解析**完整目标**再取它的父目录,而不是解析 p.parent。
-        # 后者会被 ".." 骗过去:Path(root/"..").parent 就是 root 本身,于是比对通过,
-        # 而这个路径实际指向 root 的上一级。这个洞是测试在干净版本上直接抓出来的。
-        target = os.path.realpath(p)
-        parent = os.path.dirname(target)
+        # 用 abspath 而不是 realpath:abspath 会把 ".." 按字面消掉,
+        # 所以 Path(root/"..") 的父目录变成 root 的**上上级**、比对失败 :
+        # 那个洞(Path(root/"..").parent 就是 root 本身)照样堵着,
+        # 而这个洞正是测试在干净版本上抓出来的,不能因为这次改动重新打开。
+        #
+        # ⚠ 但**不能解析最后一段**。本机的 skill 是 junction 部署的
+        # (skills/<name> 指向别处的仓库),realpath 会跟过去,于是解析后的父目录是
+        # junction 目标那边的目录,和 root 对不上。后果是:skill 面板上每个 linked 的
+        # 条目都挂着一个点了必然失败的归档按钮,而失败信息是一句听起来像路径穿越攻击的
+        # 「目标不是配置根目录的直接子项」,把排查方向整个带偏。
+        # 这里要判的是「这个**名字**确实挂在 root 下」,不是「它指向哪里」;
+        # 指向哪里是 junction 的自由,不是越界。
+        parent = os.path.dirname(os.path.abspath(p))
+        root_abs = os.path.abspath(root)
     except OSError as e:
         raise Refused(f"解析不了路径: {e}", "unresolvable") from e
-    if os.path.normcase(parent) != os.path.normcase(os.path.realpath(root)):
+    if os.path.normcase(parent) != os.path.normcase(root_abs):
         raise Refused("目标不是配置根目录的直接子项", "not_child")
     return p
 
@@ -171,13 +180,28 @@ def read_plugins(timeout: int = 40) -> dict:
     if r.returncode != 0:
         return {"available": False, "reason": f"claude plugin list 退出 {r.returncode}"}
     out, cur = [], None
-    for line in (r.stdout or "").splitlines():
+    lines = (r.stdout or "").splitlines()
+    for line in lines:
         t = line.strip()
         if t.startswith("❯"):
             cur = {"name": t.lstrip("❯ ").strip(), "enabled": None}
             out.append(cur)
         elif cur is not None and t.startswith("Status:"):
             cur["enabled"] = ("enabled" in t) or ("loaded" in t)
+    # 解析器是按 `claude plugin list` 当前的输出格式写的,而那个格式随时会变。
+    # 格式一变就会出现两种都不报错的坏法:
+    #   一是一条都没认出来 -> 显示「插件 0 共 0」,和一台真的没装插件的机器逐字相同;
+    #   二是认出了名字但没认出 Status -> 每个插件的 enabled 是 None,页面把 None 当假,
+    #      于是每一个都被画成「已禁用」并挂上一个「启用」按钮 : 一个看起来完全正常、
+    #      可以点的界面,描述的却是一台并不存在的机器,而且它邀请人去启用一个已经启用的插件。
+    # 两种都要说出来,而不是让「解析不出来」和「本来就是这样」长得一样。
+    if lines and not out:
+        return {"available": False,
+                "reason": "插件清单解析不出来(claude plugin list 的输出格式可能变了)"}
+    unknown = [p["name"] for p in out if p["enabled"] is None]
+    if unknown:
+        return {"available": False, "plugins": out,
+                "reason": f"{len(unknown)} 个插件读不出启用状态(输出格式可能变了)"}
     return {"available": True, "plugins": out}
 
 
