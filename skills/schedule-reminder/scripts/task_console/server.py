@@ -59,6 +59,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import console_store
+import convos
 import evtlog
 import freshness
 import history
@@ -720,6 +721,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(403, {"error": "bad token"})
             try:
                 return self._json(200, sysinfo.read())
+            except Exception as e:
+                return self._json(500, {"error": f"{type(e).__name__}: {e}"})
+        if path == "/api/convos":
+            if not self._authed():
+                return self._json(403, {"error": "bad token"})
+            try:
+                return self._json(200, convos.scan())
             except Exception as e:
                 return self._json(500, {"error": f"{type(e).__name__}: {e}"})
         if path == "/api/repos":

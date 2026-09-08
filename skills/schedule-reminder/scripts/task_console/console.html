@@ -274,6 +274,37 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
 .d-clean{background:var(--ok)} .d-dirty{background:var(--warn)}
 .d-unpushed{background:var(--bad)} .d-error{background:var(--bad)}
 .d-detached{background:var(--idle)}
+
+/* ---- 对话历史 ----------------------------------------------------------------------
+   按对话创建时所在的目录分组。标题来自对话自己,而标题**从哪来**也画出来:
+   一个由代号充数的标题和一句真概括长得一样,但信息量差着量级。 */
+#cvbox .pad{padding:7px 10px 9px}
+.cv-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:11px;
+  color:var(--dim);margin-bottom:6px}
+.cv-head b{font-variant-numeric:tabular-nums;color:var(--ink);font-size:13px}
+.cv-head label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
+.cv-g{border-top:1px solid var(--line2)}
+.cv-gh{display:grid;grid-template-columns:10px 1fr auto auto;gap:8px;align-items:center;
+  padding:4px 0;cursor:pointer;font-size:12px}
+.cv-gh:hover{background:var(--cur)}
+.cv-gh .caret{color:var(--faint);font-size:9px;transition:none}
+.cv-gh .dir{font-family:var(--mono,inherit);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;direction:rtl;text-align:left}
+.cv-gh .n{font-variant-numeric:tabular-nums;color:var(--faint);font-size:11px;white-space:nowrap}
+.cv-gh .hm{font-variant-numeric:tabular-nums;color:var(--cyan);font-size:11px;
+  white-space:nowrap;min-width:34px;text-align:right}
+.cv-list{padding:0 0 4px 18px;display:none}
+.cv-g.open .cv-list{display:block}
+.cv-r{display:grid;grid-template-columns:1fr auto auto auto;gap:8px;align-items:baseline;
+  font-size:12px;padding:2px 0;border-top:1px solid var(--line2)}
+.cv-r .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cv-r .src{font-size:9.5px;padding:0 3px;border:1px solid var(--line);border-radius:2px;
+  color:var(--faint);white-space:nowrap}
+.cv-r .src.slug,.cv-r .src.id{color:var(--warn);border-color:var(--warn)}
+.cv-r .m{font-variant-numeric:tabular-nums;color:var(--faint);font-size:11px;white-space:nowrap}
+.cv-r.human .t{color:var(--ink);font-weight:500}
+.cv-r .t{color:var(--dim)}
+.cv-more{font-size:11px;color:var(--warn);padding:3px 0}
 </style>
 </head>
 <body>
@@ -323,6 +354,16 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
     <div class="pad">
       <div class="rp-head" id="rphead"></div>
       <div class="rp-grid" id="rpgrid"></div>
+    </div>
+  </div>
+
+  <div class="box" id="cvbox">
+    <h2>对话历史<span class="n" id="cvnote">读取中</span>
+      <span style="flex:none"><button id="cvreload" title="重新扫描">↻</button></span>
+    </h2>
+    <div class="pad">
+      <div class="cv-head" id="cvhead"></div>
+      <div id="cvgroups"></div>
     </div>
   </div>
   <div class="box" id="mtbox">
@@ -797,6 +838,59 @@ async function retireTask(name){
   }catch(e){ toast(`${name}: ${e.message}`,"bad"); }
 }
 
+
+// 对话历史。1026 份转录只读头尾,首扫几秒、之后走缓存零点几秒。
+// 「真人」的判据是**打进去的字**(纯字符串)而不是内容块:不区分的话,每个无头运行
+// 都会因为加载的 skill 正文被判成一场多轮对话。
+let CONVOS=null, CV_HUMAN_ONLY=false, CV_OPEN={};
+
+async function loadConvos(){
+  $("cvnote").textContent="扫描中";
+  try{ CONVOS=await api("/api/convos"); $("cvnote").textContent=""; }
+  catch(e){ $("cvnote").textContent="失败:"+e.message; return; }
+  renderConvos();
+}
+
+function cvAge(h){ return h<24 ? h.toFixed(0)+"h" : (h/24).toFixed(0)+"d"; }
+
+function renderConvos(){
+  if(!CONVOS) return;
+  if(!CONVOS.available){
+    $("cvhead").innerHTML=`<span style="color:var(--warn)">${esc(CONVOS.reason)}</span>`;
+    $("cvgroups").innerHTML=""; return;
+  }
+  const S=CONVOS.summary;
+  $("cvhead").innerHTML=`<span>共 <b>${S.files}</b> 场</span>`
+    +`<span><b style="color:var(--cyan)">${S.humanish}</b> 场真人多轮</span>`
+    +`<span>${S.groups} 个目录 · ${kb(S.bytes)}</span>`
+    +`<label><input type="checkbox" id="cvonly"${CV_HUMAN_ONLY?" checked":""}> 只看真人</label>`
+    // 读不动的必须报出来:悄悄跳过会让「没有这些对话」和「我没读到」变成同一个数字。
+    +(S.unreadable?`<span style="color:var(--bad)">读不动 ${S.unreadable}</span>`:"");
+
+  const groups=CONVOS.groups.filter(g=>!CV_HUMAN_ONLY||g.humanish);
+  $("cvgroups").innerHTML=groups.map(g=>{
+    const rows=g.shown.filter(r=>!CV_HUMAN_ONLY||r.humanSeen>=2);
+    const open=CV_OPEN[g.cwd]?" open":"";
+    return `<div class="cv-g${open}" data-cv="${esc(g.cwd)}">
+      <div class="cv-gh">
+        <span class="caret">${open?"▼":"▶"}</span>
+        <span class="dir" title="${esc(g.cwd)}">${esc(g.cwd)}</span>
+        <span class="hm">${g.humanish?"👤"+g.humanish:""}</span>
+        <span class="n">${g.count} 场 · ${kb(g.bytes)}</span>
+      </div>
+      <div class="cv-list">${rows.map(r=>`
+        <div class="cv-r${r.humanSeen>=2?" human":""}">
+          <span class="t" title="${esc(r.title)}">${esc(r.title)}</span>
+          <span class="src ${esc(r.titleFrom)}" title="标题来自 ${esc(r.titleFrom)}">${
+            r.titleFrom==="summary"?"概":r.titleFrom==="first-message"?"首":r.titleFrom==="slug"?"代":"?"}</span>
+          <span class="m">${r.humanSeen?"👤"+r.humanSeen+(r.partial?"+":""):""}</span>
+          <span class="m">${cvAge(r.ageHours)} · ${kb(r.bytes)}</span>
+        </div>`).join("")}
+        ${g.truncated?`<div class="cv-more">这个目录还有 ${g.count-g.shown.length} 场没列出</div>`:""}
+      </div></div>`;
+  }).join("");
+}
+
 function renderHeat(){
   const H=DATA.history||{};
   if(!H.available){ $("hmnote").textContent=(DATA.warnings||[]).find(w=>w.indexOf("历史")>=0)||"无历史"; $("heat").innerHTML=""; return; }
@@ -945,6 +1039,9 @@ document.addEventListener("click",e=>{
   const fc=e.target.closest("[data-fr]");
   if(fc){ const n=fc.dataset.fr; const q=$("q");
     q.value = (q.value===n) ? "" : n; render(); q.focus(); return; }
+  const cg=e.target.closest(".cv-gh");
+  if(cg){ const k=cg.parentElement.dataset.cv; CV_OPEN[k]=!CV_OPEN[k]; renderConvos(); return; }
+  if(e.target.id==="cvonly"){ CV_HUMAN_ONLY=e.target.checked; renderConvos(); return; }
   const rt=e.target.closest("button[data-retire]");
   if(rt){ e.stopPropagation(); retireTask(rt.dataset.retire); return; }
   const mt=e.target.closest("button[data-mt]");
@@ -1042,6 +1139,8 @@ $("rpreload").addEventListener("click",loadRepos);
 loadRepos();
 loadSys();
 loadMem();
+$("cvreload").addEventListener("click",loadConvos);
+loadConvos();
 $("tlin").addEventListener("click",()=>tlZoom(0.7,0.5));
 $("tlout").addEventListener("click",()=>tlZoom(1.4,0.5));
 $("tlreset").addEventListener("click",tlReset);
