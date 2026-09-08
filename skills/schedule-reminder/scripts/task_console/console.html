@@ -358,6 +358,8 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
 .cv-r .m{font-variant-numeric:tabular-nums;color:var(--faint);font-size:11px;white-space:nowrap}
 .cv-r.human .t{color:var(--ink);font-weight:500}
 .cv-r .t{color:var(--dim)}
+.cv-r[data-cvfile]{cursor:pointer;border-radius:2px}
+.cv-r[data-cvfile]:hover{background:var(--cur)}
 .cv-more{font-size:11px;color:var(--warn);padding:3px 0}
 
 /* ================= 把 Tabler 接到本页的调色板与密度上 ==============================
@@ -1176,7 +1178,8 @@ function renderConvos(){
         <span class="n">${g.count} 场 · ${kb(g.bytes)}</span>
       </div>
       <div class="cv-list">${rows.map(r=>`
-        <div class="cv-r${r.humanSeen>=2?" human":""}">
+        <div class="cv-r${r.humanSeen>=2?" human":""}" data-cvfile="${esc(r.file||"")}"
+             title="点一下复制转录路径">
           <span class="t" title="${esc(r.title)}">${esc(r.title)}</span>
           <span class="src ${esc(r.titleFrom)}" title="${esc(CV_SRC[r.titleFrom]||r.titleFrom)}">${
             CV_TAG[r.titleFrom]||"?"}</span>
@@ -1602,6 +1605,18 @@ document.addEventListener("click",e=>{
   if(fc){ focusTask(fc.dataset.fr); return; }
   const sc=e.target.closest("[data-scat]");
   if(sc){ focusCategory(sc.dataset.scat); return; }
+  const cvr=e.target.closest(".cv-r[data-cvfile]");
+  if(cvr && cvr.dataset.cvfile){
+    // 复制而不是「打开」:浏览器里没有安全的方式去开一个本地文件,
+    // 而路径粘到终端里就能用。navigator.clipboard 在非 https 下可能不可用,
+    // 所以失败时把路径显示出来让人自己选,而不是静默什么也不发生。
+    const p = cvr.dataset.cvfile;
+    const ok = () => toast("路径已复制:" + p.slice(-52));
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(p).then(ok, ()=>toast(p, "bad"));
+    } else { toast(p, "bad"); }
+    return;
+  }
   const cg=e.target.closest(".cv-gh");
   if(cg){ const k=cg.parentElement.dataset.cv; CV_OPEN[k]=!CV_OPEN[k]; renderConvos(); return; }
   if(e.target.id==="cvonly"){ CV_HUMAN_ONLY=e.target.checked; renderConvos(); return; }
