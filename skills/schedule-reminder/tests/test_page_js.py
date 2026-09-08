@@ -77,3 +77,48 @@ def test_the_check_can_actually_fail():
     rc, err = check(poisoned)
     assert rc != 0
     assert "else" in err.lower()
+
+
+# ---------- 固定高度的元素选择器 ----------
+# 这一条是为一个犯了两次的错写的:样式表里曾有 `button{height:22px}`,一条元素选择器,
+# 于是任何拿 <button> 当积木的多行部件都被钉死,内容照自己的高度排、溢出去盖住下一行。
+# 屏幕上看是排版错乱,不像高度被覆盖,而且各项高度的数字读起来完全「合理」。
+# 第一次是概览的六个指标格,第二次是时间轴的三个缩放按钮(换成比例字体后内容涨到 30px)。
+# 当时的对策是「以后记得写 height:auto」,两次都没记住。所以改成 min-height 并在这里钉住。
+
+import re as _re
+
+
+def _page_style():
+    """页面里所有 <style> 块拼起来。"""
+    html = open(PAGE, encoding="utf-8").read()
+    blocks = _re.findall(r"<style>(.*?)</style>", html, _re.S)
+    assert blocks, "页面里一个 <style> 都没读到,这条检查会因为没东西可查而打印绿色"
+    css = chr(10).join(blocks)
+    # 注释要剥掉:样式表里那段解释为什么不能写死高度的注释,本身就引用了 `button{height:22px}`
+    # 这个反例,于是检查器把讲这条规则的话当成了这条规则。
+    # 一道会被「讨论它自己」触发的闸,最后一定会被人关掉。
+    return _re.sub(r"/\*.*?\*/", "", css, flags=_re.S)
+
+
+# td/th 不在名单里:在表格布局里 height 本来就被当成最小值,内容多了格子会自己长,
+# 所以那不是这个 bug。把它们算进来只会逼着下一个人去放宽这条检查,
+# 而放宽过的检查会连真的那一类一起放过。
+# `[^-]height` 写不得:它要求 height 前面必须有一个字符,于是 `button{height:22px}`
+# 这种把 height 放在第一条的写法直接漏掉。这个盲区是下面那条负对照抓出来的,
+# 而它正是「负对照不是走过场」的实例:第一版正则对着页面打印绿色,同时漏掉一半形状。
+_FIXED_H = _re.compile(r"(?<![.#\w-])(button|input|select)\s*\{[^}]*?(?<!-)height\s*:\s*\d")
+
+
+def test_no_element_selector_pins_a_fixed_height():
+    css = _page_style()
+    hits = [m.group(0)[:70] for m in _FIXED_H.finditer(css)]
+    assert not hits, (
+        "元素选择器上写死 height 会裁掉任何多行部件,用 min-height。命中: " + repr(hits))
+
+
+def test_the_fixed_height_rule_can_actually_fire():
+    """负对照:把那条规则投毒回去,上面的检查必须命中。
+    不做这一步的话,一个正则写错的检查和一个真没发现问题的检查打印出的绿色一模一样。"""
+    poisoned = _page_style() + "\nbutton{height:22px}\n"
+    assert _FIXED_H.search(poisoned), "投毒后仍未命中,这条正则是空拦的"
