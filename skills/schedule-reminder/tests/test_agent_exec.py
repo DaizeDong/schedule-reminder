@@ -605,4 +605,12 @@ def test_the_acting_order_follows_llmcall_routing(monkeypatch):
     monkeypatch.setenv("LLMCALL_CHAIN", "claude")
     assert agent_run._approach_chains() == (["claude"],)
     monkeypatch.delenv("LLMCALL_CHAIN", raising=False)
-    assert agent_run._approach_chains() == (["codex"], ["cc"], ["claude"])
+    # The default ladder is llmcall's to decide, so read it from there rather than restating it.
+    # This assertion used to spell out ("codex", "cc", "claude") and went red the day llmcall put
+    # codexg in front, which is the same mistake the docstring warns about, made one level up:
+    # a test that restates the ladder is another place the switch has to be thrown.
+    # It can still fail: were _approach_chains to answer from its own list, it would stop matching.
+    import llmcall
+    expected = tuple([n] for n in llmcall.active_chain() if n)
+    assert agent_run._approach_chains() == expected
+    assert len(expected) >= 2, "a one rung ladder would make this test unable to catch a wrong order"
