@@ -592,6 +592,7 @@ table.g td.nm,table.g td.lr,table.g td.nr,table.g td.to{font-family:var(--mono)}
   <select id="cat"><option value="">全部大类</option></select>
   <label class="tg"><input type="checkbox" id="only"> 只看有问题</label>
   <label class="tg"><input type="checkbox" id="hideoff"> 隐藏停用</label>
+  <button id="hygtog" title="调度卫生:补跑 / 重试 / 超时 / 产物 / 备份 / 监控"></button>
   <button id="refresh">重新读取</button>
   <span class="faint" id="cnt"></span>
 </div>
@@ -690,6 +691,13 @@ table.g td.nm,table.g td.lr,table.g td.nr,table.g td.to{font-family:var(--mono)}
 const TOKEN = "__TOKEN__";
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 let DATA=null, ROWS=[], VIEW=[], cur=0, sel=new Set(), sortKey="cat", asc=true, busy=false;
+// 调度卫生那六列几乎不变,平铺在每天都动的列旁边只会稀释后者。默认收起,一键展开。
+// 收起不是隐藏:按钮上一直印着它藏了几列,而且状态记在 localStorage 里,
+// 一个记不住的开关每次都要重按,等于没有。
+const HYGIENE = ["catchup","retries","timeout","artifact","inAllow","inHealth"];
+let HYG_OPEN = false;
+try{ HYG_OPEN = localStorage.getItem("tc.hyg") === "1"; }catch(e){}
+const shownCols = () => HYG_OPEN ? C : C.filter(c => HYGIENE.indexOf(c[0]) < 0);
 // 时间轴可视窗口,单位分钟。整天是 [0,1440];缩放和拖动只改这两个数,所有位置都由它们算出来。
 let tlFrom=0, tlTo=1440;
 const TL_MIN_SPAN=5;    // 最小窗口 5 分钟。实测深度缩放时一帧 1.1ms,成本由 25 行固定的
@@ -1465,7 +1473,7 @@ function detail(r){
                           :`<button class="danger" data-act="disable" data-name="${esc(r.name)}">停用</button>`}
     <button data-act="run" data-name="${esc(r.name)}">立即运行</button>
     ${r.state==="Running"?`<button class="danger" data-act="stop" data-name="${esc(r.name)}">停止</button>`:""}</div>`;
-  return `<tr class="det"><td colspan="${C.length}"><div class="det"><dl>${dl}</dl>${iss}${acts}</div></td></tr>`;
+  return `<tr class="det"><td colspan="${shownCols().length}"><div class="det"><dl>${dl}</dl>${iss}${acts}</div></td></tr>`;
 }
 
 function render(){
@@ -1494,8 +1502,9 @@ function render(){
     return asc?c:-c;});
   if(cur>=VIEW.length) cur=Math.max(0,VIEW.length-1);
   $("cnt").textContent=`${VIEW.length}/${ROWS.length} 行`+(sel.size?` · 已选 ${sel.size}`:"");
-  $("tbl").innerHTML=`<thead><tr>${C.map(c=>`<th data-k="${c[0]}" class="${sortKey===c[0]?"s"+(asc?" a":""):""}">${c[1]}</th>`).join("")}</tr></thead>`
-    +`<tbody>${VIEW.map((r,i)=>`<tr data-i="${i}" data-name="${esc(r.name)}" class="${i===cur?"cur":""}${sel.has(r.name)?" sel":""}">${C.map(c=>c[2](r)).join("")}</tr>`).join("")}</tbody>`;
+  const CC=shownCols();
+  $("tbl").innerHTML=`<thead><tr>${CC.map(c=>`<th data-k="${c[0]}" class="${sortKey===c[0]?"s"+(asc?" a":""):""}">${c[1]}</th>`).join("")}</tr></thead>`
+    +`<tbody>${VIEW.map((r,i)=>`<tr data-i="${i}" data-name="${esc(r.name)}" class="${i===cur?"cur":""}${sel.has(r.name)?" sel":""}">${CC.map(c=>c[2](r)).join("")}</tr>`).join("")}</tbody>`;
   renderBulk();
 }
 
@@ -1707,6 +1716,16 @@ $("tlout").addEventListener("click",()=>tlZoom(1.4,0.5));
 $("tlreset").addEventListener("click",tlReset);
 $("help").addEventListener("click",()=>$("help").hidden=true);
 $("refresh").addEventListener("click",load);
+function syncHygBtn(){
+  const b=$("hygtog"); if(!b) return;
+  b.textContent = HYG_OPEN ? "收起卫生列" : "卫生列 +" + HYGIENE.length;
+}
+$("hygtog").addEventListener("click",()=>{
+  HYG_OPEN = !HYG_OPEN;
+  try{ localStorage.setItem("tc.hyg", HYG_OPEN?"1":"0"); }catch(e){}
+  syncHygBtn(); if(DATA) render();
+});
+syncHygBtn();
 $("q").addEventListener("input",()=>{ if(DATA) render(); });
 ["cat","only","hideoff"].forEach(id=>$(id).addEventListener("change",()=>{ if(DATA) render(); }));
 load();
