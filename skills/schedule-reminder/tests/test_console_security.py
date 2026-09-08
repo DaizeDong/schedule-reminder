@@ -370,3 +370,30 @@ def test_every_response_carries_the_frame_ban_not_just_the_page(srv):
     for p in ("/favicon.svg", "/vendor/tabler/tabler.min.css", "/api/selfcheck"):
         h = _headers(srv, p)
         assert "frame-ancestors 'none'" in h.get("content-security-policy", ""), p
+
+
+# ---------- 「未检查」不能被压成「零」 ----------
+# build_freshness 在没有健康清单时仍然返回一个 summary(total/bad 全是 0),
+# 前端「有没有 summary」那个条件因此永远成立,于是概览最显眼的那块板子印出绿色的 0。
+# 后端这一半的责任是:把 load_health 给出的**具体**原因带上去。
+# 「清单 JSON 坏了」和「压根没设环境变量」是两件事,前者要修,后者是没启用;
+# 压成同一句之后,页面上没有任何办法把它们分开。
+
+def test_build_freshness_passes_the_specific_reason_through():
+    got = S.build_freshness({}, {}, "健康监控清单解析失败(/x/y.json): Expecting value")
+    assert got["summary"]["bad"] == 0
+    assert "解析失败" in got["reason"], got["reason"]
+
+
+def test_build_freshness_still_says_something_when_no_reason_is_given():
+    """正对照:调用方没给原因时不能变成空字符串或 None,
+    否则前端那句 `if(reason)` 会走回「有 summary 就当成功」的老路。"""
+    got = S.build_freshness({}, {}, None)
+    assert got["reason"], got["reason"]
+
+
+def test_two_different_failures_do_not_produce_the_same_sentence():
+    """这条才是这一组的重点:两种故障必须在页面上长得不一样。"""
+    a = S.build_freshness({}, {}, "没有设 TASK_CONSOLE_HEALTH")["reason"]
+    b = S.build_freshness({}, {}, "健康监控清单解析失败(/x/y.json)")["reason"]
+    assert a != b
