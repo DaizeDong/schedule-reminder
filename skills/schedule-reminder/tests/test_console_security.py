@@ -250,3 +250,45 @@ def test_retire_without_a_reason_is_refused(srv):
 def test_convos_read_without_token_is_403(srv):
     st, _ = call(srv, "GET", "/api/convos")
     assert st == 403
+
+
+# ---------- vendor 静态资产 ----------
+# vendor 下是随仓发的第三方资产(Tabler),刻意免令牌:<link> 和 <script> 标签发不了
+# 自定义请求头,而这里面没有任何秘密。免令牌就意味着这条路径唯一的控制是「不许爬出
+# vendor 目录」,所以它必须被单独测,并且要有一个证明它不是空拦的正对照。
+
+def test_vendor_serves_a_real_asset(srv):
+    st, body = call(srv, "GET", "/vendor/tabler/tabler.min.css")
+    assert st == 200, st
+    assert b"Tabler" in body[:400], body[:120]
+
+
+def test_vendor_asset_needs_no_token(srv):
+    # 正对照:证明上面那条 200 不是因为测试恰好带了令牌。
+    st, _ = call(srv, "GET", "/vendor/tabler/tabler.min.css", token=None)
+    assert st == 200, st
+
+
+@pytest.mark.parametrize("path", [
+    "/vendor/../server.py",
+    "/vendor/tabler/../../server.py",
+    "/vendor/%2e%2e/server.py",          # 百分号编码:前缀检查看不出来
+    "/vendor/tabler/%2e%2e%2f%2e%2e%2fserver.py",
+])
+def test_vendor_refuses_to_climb_out(srv, path):
+    st, _ = call(srv, "GET", path)
+    assert st == 404, f"{path} 爬出去了: {st}"
+
+
+def test_vendor_traversal_target_actually_exists(srv):
+    # 负对照:上面那些 404 必须是被闸挡的,不能是「文件本来就不在」。
+    # server.py 就在 vendor 的上两级,真的存在;直接确认一下,
+    # 否则那四条断言全都可以在闸门被拆掉之后照样通过。
+    import server as S2
+    from pathlib import Path
+    assert (Path(S2.VENDOR).parent / "server.py").is_file()
+
+
+def test_vendor_missing_file_is_404(srv):
+    st, _ = call(srv, "GET", "/vendor/tabler/nope.css")
+    assert st == 404, st
