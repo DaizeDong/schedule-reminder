@@ -1301,6 +1301,12 @@ document.getElementById("side").addEventListener("keydown", e=>{
   else if(e.key==="End") j = navs.length-1;
   else return;
   e.preventDefault();
+  // 必须停止冒泡。上面那段注释说「方向键只移焦点不切视图」,理由是三个分区各自会真扫一遍;
+  // 但没有 stopPropagation 的话,同一次按键会被文档级处理器再吃一遍,
+  // 于是在仓库分区按一下方向键就切走了,注释想避免的连锁扫描照样发生;
+  // 在任务分区则是表格光标跟着悄悄往下走一行,而人没在看表,
+  // 之后按 d 作用在自己没选过的行上。
+  e.stopPropagation();
   navs[j].tabIndex = 0; navs[j].focus();
 });
 window.addEventListener("hashchange", ()=>showView(location.hash.slice(1), false));
@@ -1654,19 +1660,48 @@ document.addEventListener("keydown",e=>{
     if(e.key==="Escape") document.activeElement.blur();
     return;
   }
+  // 带修饰键的一律不接管。这一条不是洁癖:r/s/e/d 是运行/停止/启用/停用,
+  // 而 Ctrl+R 刷新、Ctrl+S 保存、Ctrl+D 收藏、Ctrl+A 全选是浏览器里最常用的四个组合。
+  // 不看修饰键的话,按 Ctrl+R 会先对光标行发一次「立即运行」再刷新,
+  // 而刷新把 toast 一起带走,屏幕上什么都不剩,只有任务真的跑了一次。
+  // Shift 例外:G / A / ? 本来就是 Shift 组合。
+  if(e.ctrlKey || e.metaKey || e.altKey) return;
+  // 焦点在可交互元素上时不接管。两个后果:一是 Enter 被下面 preventDefault 吃掉之后,
+  // 整页没有一个按钮或链接能用键盘激活;二是人 Tab 到第 12 行的按钮上按 d,
+  // 被停用的是光标行(初值第 1 行),而确认框里出现的是另一个名字,
+  // 读起来像页面在确认「你选的那个」。
+  const ae = document.activeElement;
+  if(ae && ae !== document.body && ae.closest("button,a,[tabindex],summary,label")) return;
   const k=e.key;
   if(k==="?"){ $("help").hidden=false; return; }
   // 表格相关的键只在任务分区里有意义。不拦的话,人在仓库分区按 j,
   // 光标在一张 display:none 的表里往下走一行,按 d 甚至会停用光标所在的那个任务 :
   // 屏幕上完全没有反应,而动作真的发生了。这比不响应危险得多。
   const TABLE_KEYS = "jkgGxaresd";
-  if(CURVIEW !== "tasks" && !$("view").classList.contains("all")
+  // 判据从「当前分区是不是 tasks」换成「任务表这会儿在不在视口里」。
+  // 旧判据在摊开态(Shift+A)下整体失效,而摊开的用意正是「为了 Ctrl+F 全页搜」:
+  // 那时人往下滚着看会话或仓库,任务表在几屏之外,按到 r 或 s 就在完全看不见的地方
+  // 运行或停掉光标行那个任务,只留右下角一条四秒后消失的提示。
+  // 「在不在视口里」在两种模式下都成立,而且它问的正是守卫真正想问的那件事。
+  const tblVisible = (() => {
+    const t = $("tbl");
+    if(!t || !t.offsetParent) return false;
+    const r = t.getBoundingClientRect();
+    return r.bottom > 0 && r.top < window.innerHeight;
+  })();
+  if(!tblVisible
      && (TABLE_KEYS.indexOf(k) >= 0 || k === "Enter"
          || k === "ArrowDown" || k === "ArrowUp")){
     if(k === "j" || k === "k" || k === "ArrowDown" || k === "ArrowUp"
        || k === "Enter" || k === "g" || k === "G"){
       // 移动类的键:与其无声吞掉,不如把人带到那张表上,这是他按 j 的本意。
-      e.preventDefault(); showView("tasks", true); return;
+      // 摊开态下表本来就渲染着,只是滚出了视口,所以滚过去而不是收回摊开 :
+      // 收回摊开会把人刚才为了 Ctrl+F 摊开的那个状态一起拿走。
+      e.preventDefault();
+      if($("view").classList.contains("all")){
+        const t = $("tbl"); if(t) t.scrollIntoView({block:"center"});
+      } else showView("tasks", true);
+      return;
     }
     return;   // 动作类的键(r/s/e/d/x/a)直接不受理:静默执行一个破坏性动作是最坏的结果
   }
