@@ -18,6 +18,15 @@ import shutil
 import subprocess
 from pathlib import Path
 
+# 在 pythonw(GUI 子系统)下,每个控制台子程序都要新分配一个控制台。那次分配很慢,
+# 而且并发时根本不成立:实测同一条 git 命令,普通 python 下几毫秒,pythonw 下单次
+# 4.5 秒,四个并发全部 15 秒超时。加上这个标志之后单次降到 0.08 秒。
+#
+# 这个坑只在生产形态下出现,而开发期测试都是用普通 python 跑的:探针必须复现真实的
+# 调用形状,否则测的是另一个程序。
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 # 名字闸。skill 目录名和插件名都过这一道。刻意不含路径分隔符、点号开头、空格。
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,79}$")
 
@@ -156,7 +165,7 @@ def read_plugins(timeout: int = 40) -> dict:
         return {"available": False, "reason": "找不到 claude 可执行文件,插件这一栏是「未检查」。"}
     try:
         r = subprocess.run([exe, "plugin", "list"], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=timeout)
+                           encoding="utf-8", errors="replace", timeout=timeout, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
     except (OSError, subprocess.SubprocessError) as e:
         return {"available": False, "reason": f"读插件清单失败: {e.__class__.__name__}"}
     if r.returncode != 0:
@@ -221,7 +230,7 @@ def act(action: str, name: str, arg: str | None = None) -> dict:
         raise Refused(f"插件名不合法: {name!r}", "bad_name")
     verb = "enable" if action == "plugin.enable" else "disable"
     r = subprocess.run([exe, "plugin", verb, name], capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", timeout=90)
+                       encoding="utf-8", errors="replace", timeout=90, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
     if r.returncode != 0:
         raise Refused(f"claude plugin {verb} 退出 {r.returncode}: {(r.stderr or r.stdout or '').strip()[:200]}", "plugin_failed")
     return {"ok": True, "out": (r.stdout or "").strip()[:400]}

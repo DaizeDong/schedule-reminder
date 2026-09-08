@@ -136,3 +136,18 @@ def test_probed_counts_only_sources_actually_read(bundle, tmp_path):
 def test_every_source_key_is_unique():
     keys = [s[0] for s in SC.SOURCES] + [b[0] for b in SC.BUNDLED]
     assert len(keys) == len(set(keys))
+
+
+def test_every_panel_source_is_in_the_source_table():
+    """页面上每一块面板的来源都必须出现在自检表里。
+
+    这条是补一个实测漏洞:自检报「读到 12/12」的同时,页面上有三块面板显示「未检查」。
+    一个漏掉了三个来源的自检打印满分,和一个真的全绿的自检长得一模一样,
+    而它恰恰是整页里唯一负责回答「我到底看了多少东西」的那一块。
+    """
+    known = {v for _k, _t, v, _kind, _age, _req in SC.SOURCES if v}
+    for var in ("TASK_CONSOLE_REPOS", "TASK_CONSOLE_PLUGIN_CACHE",
+                "TASK_CONSOLE_SESSIONS", "TASK_CONSOLE_MEMORY_ARCHIVER",
+                "TASK_CONSOLE_VISIBILITY", "TASK_CONSOLE_SKILLS",
+                "TASK_CONSOLE_MEMORY", "TASK_CONSOLE_HEALTH"):
+        assert var in known, f"{var} 是某块面板的来源,但自检不知道它存在"

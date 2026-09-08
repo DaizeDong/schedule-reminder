@@ -21,6 +21,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+# 在 pythonw(GUI 子系统)下,每个控制台子程序都要新分配一个控制台。那次分配很慢,
+# 而且并发时根本不成立:实测同一条 git 命令,普通 python 下几毫秒,pythonw 下单次
+# 4.5 秒,四个并发全部 15 秒超时。加上这个标志之后单次降到 0.08 秒。
+#
+# 这个坑只在生产形态下出现,而开发期测试都是用普通 python 跑的:探针必须复现真实的
+# 调用形状,否则测的是另一个程序。
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 INDEX_HARD_LINES = 200
 INDEX_HARD_BYTES = 25600
 
@@ -133,7 +142,7 @@ def act(verb: str, slug: str) -> dict:
     cmd = [sys.executable, str(sp), "--memory-dir", str(root), f"--{verb}", slug]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=120)
+                           encoding="utf-8", errors="replace", timeout=120, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
     except (OSError, subprocess.SubprocessError) as e:
         raise Refused(f"调不动归档器: {e.__class__.__name__}", "archiver_failed") from e
     if r.returncode != 0:

@@ -36,6 +36,11 @@ SOURCES = (
     ("skill_archive", "skill 归档区", "TASK_CONSOLE_SKILL_ARCHIVE", "dir", None, False),
     ("memory", "记忆池", "TASK_CONSOLE_MEMORY", "dir", None, False),
     ("claude", "claude 可执行文件", "TASK_CONSOLE_CLAUDE", "file", None, False),
+    ("repos", "仓库根目录", "TASK_CONSOLE_REPOS", "dir", None, False),
+    ("visibility", "仓库可见性表", "TASK_CONSOLE_VISIBILITY", "file", None, False),
+    ("archiver", "记忆归档器", "TASK_CONSOLE_MEMORY_ARCHIVER", "file", None, False),
+    ("plugin_cache", "插件缓存", "TASK_CONSOLE_PLUGIN_CACHE", "dir", None, False),
+    ("sessions", "会话转录目录", "TASK_CONSOLE_SESSIONS", "dir", None, False),
 )
 
 # 随包发布的文件。它们没有环境变量:缺了就是安装坏了,而不是没配。
