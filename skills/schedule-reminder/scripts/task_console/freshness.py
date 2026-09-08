@@ -200,5 +200,17 @@ def evaluate(decls, rows, now, mtime_of=None):
             # 覆盖率不是装饰:它是「这个检查器有没有真的查到东西」的体检。
             "coverage": round(judged / total, 4) if total else 0.0,
             "bad": counts.get(DOWN, 0) + counts.get(NEVER, 0),
+            # 「要人管」这个集合由这里单点决定,页面三处(指标格、侧栏徽章、清单)
+            # 一律读 attention,不在 JS 里各写一遍状态集合。
+            #
+            # 之前 bad 不含 UNKNOWN 而前端清单含,于是同一屏上出现三个数字:
+            # 大字格 0、灯板下面写「1 条明细在上面」、清单里真有 1 行。
+            # UNKNOWN 恰恰是这个项目最在意的那一类(**没查成**),它在最显眼的那一格里
+            # 被静默吃掉、显示成绿色的零。
+            #
+            # bad 保留原义(判成坏的)并继续被别处使用;attention 是「要人管的」,
+            # 两个名字分别说清自己是什么,而不是让一个名字承担两种含义。
+            "attention": counts.get(DOWN, 0) + counts.get(NEVER, 0) + counts.get(UNKNOWN, 0),
+            "attentionStates": [DOWN, NEVER, UNKNOWN],
         },
     }

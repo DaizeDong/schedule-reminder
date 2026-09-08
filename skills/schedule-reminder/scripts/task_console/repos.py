@@ -164,6 +164,12 @@ def scan(root: str | None = None, now: float | None = None, workers: int = 10) -
             "counts": counts,
             # 要人管的:没推的、脏的、扫不动的。detached 单独看,它常常是刻意的。
             "attention": counts.get(UNPUSHED, 0) + counts.get(DIRTY, 0) + counts.get(ERROR, 0),
+            # 这个集合必须显式说出来,因为页面上有三处要用它。之前前端自己写了
+            # `state !== "clean"`,于是一个游离 HEAD 的仓会让指标格显示绿色的 0、
+            # 侧栏徽章不亮,而正下方的清单里有一行「仓库 · 游离 HEAD」 :
+            # 后端明确决定「detached 不算要人管」,前端把这个决定推翻了一半。
+            # 判定只能留一份,而这一份在这里。
+            "attentionStates": [UNPUSHED, DIRTY, ERROR],
             "unknownUpstream": sum(1 for x in out if x.get("unpushedKnown") is False),
         },
     }

@@ -205,3 +205,39 @@ def test_summary_bad_counts_down_and_never():
     rs = {"A": rows()["T"], "B": dict(rows()["T"], last_rc=F.RC_NOT_RUN)}
     out = F.evaluate(decls, rs, NOW, mtime_of=lambda p: (NOW - 900 * H, None))
     assert out["summary"]["bad"] == 2
+
+
+# ---------- 「要人管」只能有一份定义 ----------
+# 之前 summary.bad 不含 UNKNOWN,而页面上的清单含,于是同一屏出现三个数字:
+# 大字格 0、灯板下面写「1 条明细在上面」、清单里真有 1 行。
+# UNKNOWN 恰恰是这个项目最在意的那一类(没查成),它在最显眼的那一格里被静默吃掉。
+
+def _decl(name):
+    return {"name": name, "artifact": "~/nope", "artifact_max_age_hours": 1}
+
+
+def test_attention_counts_unknown_but_bad_does_not():
+    """两个字段各自说清自己是什么,而不是让一个名字承担两种含义。"""
+    # 声明了一个任务,但调度器里没有它 -> UNKNOWN(查不成)
+    out = F.evaluate([_decl("Nope")], {}, NOW, mtime_of=lambda p: (NOW - 1 * H, None))
+    st = {t["name"]: t["state"] for t in out["tasks"]}
+    assert st.get("Nope") == F.UNKNOWN, st
+    assert out["summary"]["bad"] == 0, "bad 不含 unknown,这是它原来的含义"
+    assert out["summary"]["attention"] == 1, "attention 必须含 unknown"
+
+
+def test_attention_states_is_published_for_the_page_to_read():
+    """页面三处都读这个列表。它不在 payload 里的话,前端会回落到自己写死的一份,
+    而那正是这条缺陷的成因。"""
+    out = F.evaluate([], {}, NOW)
+    assert out["summary"]["attentionStates"] == [F.DOWN, F.NEVER, F.UNKNOWN]
+
+
+def test_attention_is_a_superset_of_bad():
+    """正对照:写反了(比如漏加一项、或把 bad 也改成含 unknown)这条会红,
+    而只断言「含 unknown」的那一条不会。"""
+    out = F.evaluate([_decl("X"), _decl("Y")], {}, NOW,
+                     mtime_of=lambda p: (NOW - 1 * H, None))
+    s2 = out["summary"]
+    assert s2["attention"] >= s2["bad"]
+    assert s2["attention"] == sum(s2["counts"].get(k, 0) for k in s2["attentionStates"])
