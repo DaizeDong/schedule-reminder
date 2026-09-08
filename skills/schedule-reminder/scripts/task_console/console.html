@@ -319,17 +319,19 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
    所以改成左边一列、一次只显示一类。合并最大的风险是**藏起来之后没人再看见**,而这个
    控制台的全部价值就是「打开就在眼前」。对策是侧边栏每一项自己会亮:哪一类里有要人管的
    东西,数字就长在那一项上,不点进去也看得见。 */
-#app{display:grid;grid-template-columns:auto 1fr;min-height:calc(100vh - 62px)}
+/* 62 是 #tools 还挂在全局顶部时留下的旧值。tools 已经搬进任务分区,现在顶上只剩 26px 的 #bar。 */
+#app{display:grid;grid-template-columns:auto 1fr;min-height:calc(100vh - 26px)}
 #side{background:var(--panel2);border-right:1px solid var(--line);
   padding:5px 0;display:flex;flex-direction:column;gap:1px;width:150px;
-  position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto}
+  /* top 必须避开 #bar:两者都 sticky 到 0 而 #bar 的 z-index 是 30,一滚起来侧栏第一项就被盖掉 21px。 */
+  position:sticky;top:26px;align-self:start;max-height:calc(100vh - 26px);overflow:auto}
 #side.narrow{width:42px}
 .nv{display:grid;grid-template-columns:15px 1fr auto;gap:7px;align-items:center;height:auto;
   padding:5px 9px;font-size:12.5px;color:var(--dim);cursor:pointer;border:0;
   background:none;text-align:left;width:100%;font-family:inherit;
   border-left:2px solid transparent}
 .nv:hover{background:var(--cur);color:var(--ink)}
-.nv[aria-current="true"]{background:var(--sel);color:var(--ink);
+.nv[aria-current]{background:var(--sel);color:var(--ink);
   border-left-color:var(--cyan);font-weight:500}
 .nv .ic{font-size:12px;text-align:center;opacity:.85}
 .nv .bg{font-size:10px;font-variant-numeric:tabular-nums;padding:0 5px;border-radius:8px;
@@ -395,6 +397,16 @@ section[data-view][hidden]{display:none}
   white-space:nowrap}
 #todo .why{font-size:11px;color:var(--dim);white-space:nowrap}
 #todo .none{color:var(--ok);font-size:11.5px;padding:3px 0}
+
+/* ---- 一页模式 -------------------------------------------------------------------
+   分区把页面从五屏压到一屏,代价是任意时刻有五分之四的内容处在 display:none 里,
+   浏览器的 Ctrl+F 搜不到。徽章解决的是「哪一类有事」,解决不了「我记得在哪儿见过
+   一个词」,而这个台子的全部价值是打开就在眼前,Ctrl+F 正是「在眼前」最物理的定义。
+   Shift+A 全摊开,再按收回。顺带也是打印和整页截图模式。 */
+#view.all section[data-view]{display:flex!important}
+#view.all section[data-view]::before{content:attr(data-label);font-size:11px;color:var(--dim);
+  letter-spacing:.04em;padding:2px 0;border-bottom:1px solid var(--line);margin-top:4px}
+#view.all section[data-view]:first-of-type::before{margin-top:0}
 </style>
 </head>
 <body>
@@ -421,7 +433,7 @@ section[data-view][hidden]{display:none}
   <div id="sidefoot"><button id="sidetoggle" title="收起侧栏">&laquo; 收起</button></div>
 </nav>
 <div id="view">
-  <section data-view="overview" hidden>
+  <section data-view="overview" data-label="概览" hidden>
   <div class="tiles" id="tiles"></div>
   <div class="box" id="todo">
     <h2>要人管的事 <span class="sub" id="todon"></span></h2>
@@ -442,7 +454,7 @@ section[data-view][hidden]{display:none}
     <div class="fr-list" id="frlist"></div>
   </div>
   </section>
-  <section data-view="tasks" hidden>
+  <section data-view="tasks" data-label="任务" hidden>
 <div id="tools">
   <input type="text" id="q" placeholder="过滤任务名 / 大类 / 说明   /" autocomplete="off">
   <select id="cat"><option value="">全部大类</option></select>
@@ -486,7 +498,7 @@ section[data-view][hidden]{display:none}
     <div class="pad" style="padding:0"><table class="g" id="scores"></table></div>
   </div>
   </section>
-  <section data-view="repos" hidden>
+  <section data-view="repos" data-label="仓库" hidden>
 <div class="box" id="rpbox">
     <h2>仓库<span class="n" id="rpnote">读取中</span>
       <span style="flex:none"><button id="rpreload" title="重新扫描">↻</button></span>
@@ -497,7 +509,7 @@ section[data-view][hidden]{display:none}
     </div>
   </div>
   </section>
-  <section data-view="storage" hidden>
+  <section data-view="storage" data-label="存储与维护" hidden>
 <div class="box" id="mtbox">
     <h2>维护<span class="n" id="mtnote">读取中</span>
       <span style="flex:none"><button id="mtreload" title="重新读取">↻</button></span>
@@ -510,7 +522,7 @@ section[data-view][hidden]{display:none}
     </div>
   </div>
   </section>
-  <section data-view="convos" hidden>
+  <section data-view="convos" data-label="对话历史" hidden>
 <div class="box" id="cvbox">
     <h2>对话历史<span class="n" id="cvnote">读取中</span>
       <span style="flex:none"><button id="cvreload" title="重新扫描">↻</button></span>
@@ -535,6 +547,7 @@ section[data-view][hidden]{display:none}
     <tr><td class="hot">r</td><td>立即运行</td><td class="hot">s</td><td>停止</td></tr>
     <tr><td class="hot">e</td><td>启用</td><td class="hot">d</td><td>停用(需确认)</td></tr>
     <tr><td class="hot">/</td><td>跳到过滤框</td><td class="hot">R</td><td>重新读取</td></tr>
+    <tr><td class="hot">Shift+A</td><td>摊开全部分区(为了 Ctrl+F)</td><td class="hot">← →</td><td>侧栏内移动</td></tr>
   </table>
   <p class="faint" style="margin:8px 0 0">有选中行时 r/s/e/d 作用于整个选择,否则作用于光标行。点任意处关闭。</p>
 </div></div>
@@ -1016,8 +1029,14 @@ function showView(key, push){
   document.querySelectorAll("section[data-view]").forEach(sec=>{
     sec.hidden = sec.dataset.view !== key;
   });
+  // 导航语境里 aria-current 的值是 "page",不是 "true";非当前项直接摘掉属性,
+  // 留一个 aria-current="false" 虽然合法,但读屏会把它念出来。
+  // 同时做 roving tabindex:整条侧栏在 Tab 序列里只占一格。这不是无障碍装饰 :
+  // 这个台子的表格已经是 j/k 驱动的,侧栏是全页唯一还要连按六下 Tab 才能越过的地方。
   document.querySelectorAll(".nv").forEach(b=>{
-    b.setAttribute("aria-current", String(b.dataset.view === key));
+    const cur = b.dataset.view === key;
+    if(cur) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+    b.tabIndex = cur ? 0 : -1;
   });
   if(push && location.hash.slice(1) !== key) location.hash = key;
   // 切分区时把滚动位置归零。不归零的话从一屏很长的分区切到一屏很短的,
@@ -1063,6 +1082,22 @@ document.addEventListener("click", e=>{
   if(tl){ showView(tl.dataset.goto, true); return; }
   const nv = e.target.closest(".nv");
   if(nv){ showView(nv.dataset.view, true); return; }
+});
+// 方向键在侧栏项之间移焦点,但**不切视图**。APG 把 tab 模式拆成 manual 和 automatic
+// 两种,面板要发请求的场景必须选 manual:仓库、存储、对话历史三个分区各自会真扫一遍,
+// 对话历史首扫一千多份转录要好几秒。焦点扫一遍就打四次真实扫描,那不是导航,是压测。
+document.getElementById("side").addEventListener("keydown", e=>{
+  const navs = [...document.querySelectorAll("#side .nv")];
+  const i = navs.indexOf(document.activeElement);
+  if(i < 0) return;
+  let j = -1;
+  if(e.key==="ArrowDown"||e.key==="ArrowRight") j = (i+1) % navs.length;
+  else if(e.key==="ArrowUp"||e.key==="ArrowLeft") j = (i-1+navs.length) % navs.length;
+  else if(e.key==="Home") j = 0;
+  else if(e.key==="End") j = navs.length-1;
+  else return;
+  e.preventDefault();
+  navs[j].tabIndex = 0; navs[j].focus();
 });
 window.addEventListener("hashchange", ()=>showView(location.hash.slice(1), false));
 
@@ -1360,6 +1395,14 @@ document.addEventListener("keydown",e=>{
   if(k==="?"){ $("help").hidden=false; return; }
   if(k==="/"){ e.preventDefault(); $("q").focus(); $("q").select(); return; }
   if(k==="R"){ load(); return; }
+  // Shift+A:摊开或收回全部分区,只为让 Ctrl+F 能搜到全部内容。
+  // 摊开时刻意不动 hash : hash 的含义是「我在看哪一类」,摊开是「我暂时全都要看」,
+  // 两件事。混进一个状态里,刷新会回到一个你没选过的形态。
+  if(k==="A"){
+    const v=$("view"); const all=v.classList.toggle("all");
+    if(!all) showView(CURVIEW, false);
+    return;
+  }
   if(k==="Escape"){ sel.clear(); render(); return; }
   if(k==="j"||k==="ArrowDown"){ e.preventDefault(); cur=Math.min(cur+1,VIEW.length-1); render(); focusCur(); return; }
   if(k==="k"||k==="ArrowUp"){ e.preventDefault(); cur=Math.max(cur-1,0); render(); focusCur(); return; }
