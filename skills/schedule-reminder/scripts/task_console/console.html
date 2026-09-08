@@ -311,6 +311,69 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
 .cv-r.human .t{color:var(--ink);font-weight:500}
 .cv-r .t{color:var(--dim)}
 .cv-more{font-size:11px;color:var(--warn);padding:3px 0}
+
+/* ================= 应用外壳 =========================================================
+   九块盒子竖着堆是四千七百多像素,五屏。信息本身并不多,是**结构**在浪费:每一块都要滚
+   过去才看得到,而一个要滚五屏才能看完的运维台,实际效果是每次只看最上面那一块。
+
+   所以改成左边一列、一次只显示一类。合并最大的风险是**藏起来之后没人再看见**,而这个
+   控制台的全部价值就是「打开就在眼前」。对策是侧边栏每一项自己会亮:哪一类里有要人管的
+   东西,数字就长在那一项上,不点进去也看得见。 */
+#app{display:grid;grid-template-columns:auto 1fr;min-height:calc(100vh - 62px)}
+#side{background:var(--panel2);border-right:1px solid var(--line);
+  padding:5px 0;display:flex;flex-direction:column;gap:1px;width:150px;
+  position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto}
+#side.narrow{width:42px}
+.nv{display:grid;grid-template-columns:15px 1fr auto;gap:7px;align-items:center;
+  padding:5px 9px;font-size:12.5px;color:var(--dim);cursor:pointer;border:0;
+  background:none;text-align:left;width:100%;font-family:inherit;
+  border-left:2px solid transparent}
+.nv:hover{background:var(--cur);color:var(--ink)}
+.nv[aria-current="true"]{background:var(--sel);color:var(--ink);
+  border-left-color:var(--cyan);font-weight:500}
+.nv .ic{font-size:12px;text-align:center;opacity:.85}
+.nv .bg{font-size:10px;font-variant-numeric:tabular-nums;padding:0 5px;border-radius:8px;
+  background:var(--bad);color:#fff;font-weight:600;min-width:15px;text-align:center}
+.nv .bg.warn{background:var(--warn)}
+.nv .bg.zero{display:none}
+#side.narrow .nv{grid-template-columns:15px;padding:6px 12px}
+#side.narrow .lb{display:none}
+/* 收起时徽章不能一起藏掉:那正好把「不点进去也看得见」这件事取消了。 */
+#side.narrow .bg{position:absolute;margin-left:9px;margin-top:-11px;font-size:9px;padding:0 3px}
+#side.narrow .nv{position:relative}
+#side.narrow #sidefoot{padding:5px 8px}
+#sidefoot{margin-top:auto;padding:5px 9px}
+#sidefoot button{font:inherit;font-size:11px;color:var(--faint);background:none;border:0;
+  cursor:pointer;padding:2px 0}
+#sidefoot button:hover{color:var(--cyan)}
+#view{min-width:0;padding:7px 9px 18px}
+section[data-view]{display:flex;flex-direction:column;gap:6px}
+section[data-view][hidden]{display:none}
+/* 分区之后盒子不再需要靠外边距互相推开,间距交给 gap 一处管。 */
+#view .box{margin-bottom:0}
+#view #tools{margin-bottom:0}
+@media (max-width:820px){
+  #app{grid-template-columns:42px 1fr}
+  #side{width:42px}
+  #side .lb{display:none}
+  .nv{grid-template-columns:15px;padding:6px 12px}
+}
+
+/* ---- 概览的关键指标 ----------------------------------------------------------------
+   分区之后概览只剩两块盒子,一屏填不满三分之一。空着不是「干净」,是**把已经算出来的
+   东西藏进了别的分区**:每一格都是别处早就算好的数字,放在这里只是让人不用先点进去。
+   每格可点,点了就跳到那一类,所以它同时是导航。 */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:1px;
+  background:var(--line);border:1px solid var(--line)}
+.tile{background:var(--panel);padding:8px 10px 9px;display:flex;flex-direction:column;gap:2px;
+  cursor:pointer;border:0;text-align:left;font-family:inherit;min-width:0}
+.tile:hover{background:var(--cur)}
+.tile .k{font-size:10.5px;color:var(--faint);letter-spacing:.03em;white-space:nowrap}
+.tile .v{font-size:19px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.15}
+.tile .s{font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.tile .v.ok{color:var(--ok)} .tile .v.bad{color:var(--bad)}
+.tile .v.warn{color:var(--warn)} .tile .v.idle{color:var(--faint)}
 </style>
 </head>
 <body>
@@ -325,22 +388,25 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
   <div class="seg"><span class="hot">?</span>帮助 <span class="hot">/</span>过滤 <span class="hot">R</span>重读</div>
 </div>
 
-<div id="tools">
-  <input type="text" id="q" placeholder="过滤任务名 / 大类 / 说明   /" autocomplete="off">
-  <select id="cat"><option value="">全部大类</option></select>
-  <label class="tg"><input type="checkbox" id="only"> 只看有问题</label>
-  <label class="tg"><input type="checkbox" id="hideoff"> 隐藏停用</label>
-  <button id="refresh">重新读取</button>
-  <span class="faint" id="cnt"></span>
-</div>
 
-<main>
-  <div id="sck"><span class="lab">自检</span><span class="dots" id="sckdots"></span>
+
+<div id="app">
+<nav id="side" aria-label="分区">
+  <button class="nv" data-view="overview"><span class="ic">◎</span><span class="lb">概览</span><span class="bg zero" id="bg-overview">0</span></button>
+  <button class="nv" data-view="tasks"><span class="ic">▤</span><span class="lb">任务</span><span class="bg zero" id="bg-tasks">0</span></button>
+  <button class="nv" data-view="repos"><span class="ic">⑂</span><span class="lb">仓库</span><span class="bg zero" id="bg-repos">0</span></button>
+  <button class="nv" data-view="storage"><span class="ic">▢</span><span class="lb">存储与维护</span><span class="bg zero" id="bg-storage">0</span></button>
+  <button class="nv" data-view="convos"><span class="ic">☰</span><span class="lb">对话历史</span><span class="bg zero" id="bg-convos">0</span></button>
+  <div id="sidefoot"><button id="sidetoggle" title="收起侧栏">&laquo; 收起</button></div>
+</nav>
+<div id="view">
+  <section data-view="overview" hidden>
+  <div class="tiles" id="tiles"></div>
+<div id="sck"><span class="lab">自检</span><span class="dots" id="sckdots"></span>
     <span class="sum" id="scksum">读取中</span><button id="scktog">明细</button></div>
-  <div id="sckd"></div>
-  <div id="warns"></div>
-
-  <div class="box" id="frbox">
+<div id="sckd"></div>
+<div id="warns"></div>
+<div class="box" id="frbox">
     <h2>产物新鲜度<span class="n" id="frnote"></span></h2>
     <div class="fr-head">
       <div class="fr-stack" id="frstack"></div>
@@ -350,40 +416,21 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
     <div class="fr-board" id="frboard"></div>
     <div class="fr-list" id="frlist"></div>
   </div>
-
-
-
-  <div class="box" id="rpbox">
-    <h2>仓库<span class="n" id="rpnote">读取中</span>
-      <span style="flex:none"><button id="rpreload" title="重新扫描">↻</button></span>
-    </h2>
-    <div class="pad">
-      <div class="rp-head" id="rphead"></div>
-      <div class="rp-grid" id="rpgrid"></div>
-    </div>
+  </section>
+  <section data-view="tasks" hidden>
+<div id="tools">
+  <input type="text" id="q" placeholder="过滤任务名 / 大类 / 说明   /" autocomplete="off">
+  <select id="cat"><option value="">全部大类</option></select>
+  <label class="tg"><input type="checkbox" id="only"> 只看有问题</label>
+  <label class="tg"><input type="checkbox" id="hideoff"> 隐藏停用</label>
+  <button id="refresh">重新读取</button>
+  <span class="faint" id="cnt"></span>
+</div>
+<div class="box" id="dtbox">
+    <h2>明细 <span class="n">j/k 移动 · x 选中 · a 全选 · Enter 展开 · r 运行 · e 启用 · d 停用 · s 停止</span></h2>
+    <div class="pad" style="padding:0"><table class="g" id="tbl"></table></div>
   </div>
-
-  <div class="box" id="cvbox">
-    <h2>对话历史<span class="n" id="cvnote">读取中</span>
-      <span style="flex:none"><button id="cvreload" title="重新扫描">↻</button></span>
-    </h2>
-    <div class="pad">
-      <div class="cv-head" id="cvhead"></div>
-      <div id="cvgroups"></div>
-    </div>
-  </div>
-  <div class="box" id="mtbox">
-    <h2>维护<span class="n" id="mtnote">读取中</span>
-      <span style="flex:none"><button id="mtreload" title="重新读取">↻</button></span>
-    </h2>
-    <div class="mt-grid">
-      <div class="mt-col" id="mt-skills"></div>
-      <div class="mt-col" id="mt-memory"></div>
-      <div class="mt-col" id="mt-plugins"></div>
-      <div class="mt-col" id="mt-sys"></div>
-    </div>
-  </div>
-  <div class="box" id="tlbox">
+<div class="box" id="tlbox">
     <h2>今日时间轴
       <span class="n" id="tlnote"></span>
       <span style="flex:none;display:flex;gap:4px;align-items:center">
@@ -405,22 +452,52 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
       </div>
     </div>
   </div>
-
-  <div class="box">
-    <h2>明细 <span class="n">j/k 移动 · x 选中 · a 全选 · Enter 展开 · r 运行 · e 启用 · d 停用 · s 停止</span></h2>
-    <div class="pad" style="padding:0"><table class="g" id="tbl"></table></div>
-  </div>
-
-  <div class="box">
+<div class="box" id="hmbox">
     <h2>健康热力图 <span class="n" id="hmnote"></span></h2>
     <div class="pad"><table class="hm" id="heat"></table></div>
   </div>
-
-  <div class="box">
+<div class="box" id="scbox">
     <h2>大类汇总 <span class="n">四维都是百分比可横向比较。未检查显示 - 而不是 0</span></h2>
     <div class="pad" style="padding:0"><table class="g" id="scores"></table></div>
   </div>
-</main>
+  </section>
+  <section data-view="repos" hidden>
+<div class="box" id="rpbox">
+    <h2>仓库<span class="n" id="rpnote">读取中</span>
+      <span style="flex:none"><button id="rpreload" title="重新扫描">↻</button></span>
+    </h2>
+    <div class="pad">
+      <div class="rp-head" id="rphead"></div>
+      <div class="rp-grid" id="rpgrid"></div>
+    </div>
+  </div>
+  </section>
+  <section data-view="storage" hidden>
+<div class="box" id="mtbox">
+    <h2>维护<span class="n" id="mtnote">读取中</span>
+      <span style="flex:none"><button id="mtreload" title="重新读取">↻</button></span>
+    </h2>
+    <div class="mt-grid">
+      <div class="mt-col" id="mt-skills"></div>
+      <div class="mt-col" id="mt-memory"></div>
+      <div class="mt-col" id="mt-plugins"></div>
+      <div class="mt-col" id="mt-sys"></div>
+    </div>
+  </div>
+  </section>
+  <section data-view="convos" hidden>
+<div class="box" id="cvbox">
+    <h2>对话历史<span class="n" id="cvnote">读取中</span>
+      <span style="flex:none"><button id="cvreload" title="重新扫描">↻</button></span>
+    </h2>
+    <div class="pad">
+      <div class="cv-head" id="cvhead"></div>
+      <div id="cvgroups"></div>
+    </div>
+  </div>
+  </section>
+</div>
+</div>
 
 <div id="bulk" hidden></div>
 <div id="toast"></div>
@@ -676,6 +753,7 @@ async function loadSelfcheck(){
   try{ SCK=await api("/api/selfcheck"); }
   catch(e){ $("scksum").innerHTML=`<span class="bad">自检本身失败:${esc(e.message)}</span>`; return; }
   renderSelfcheck();
+  updateBadges();
 }
 function renderSelfcheck(){
   if(!SCK) return;
@@ -710,6 +788,7 @@ async function loadRepos(){
   try{ REPOS=await api("/api/repos"); $("rpnote").textContent=""; }
   catch(e){ $("rpnote").textContent="失败:"+e.message; return; }
   renderRepos();
+  updateBadges();
 }
 
 function renderRepos(){
@@ -753,6 +832,7 @@ let SYS=null;
 async function loadSys(){
   try{ SYS=await api("/api/sys"); }catch(e){ SYS={error:e.message}; }
   renderSys();
+  updateBadges();
 }
 function renderSys(){
   const el=$("mt-sys"); if(!el) return;
@@ -788,6 +868,7 @@ let MEM=null;
 async function loadMem(){
   try{ MEM=await api("/api/mem"); }catch(e){ MEM={error:e.message}; }
   renderMem();
+  updateBadges();
 }
 function renderMem(){
   const el=$("mt-memory"); if(!el||!MEM) return;
@@ -903,6 +984,122 @@ function renderConvos(){
   }).join("");
 }
 
+
+// ================= 外壳:分区切换与徽章 ==============================================
+// 路由就是 location.hash,没有路由库。五个分区、一个哈希,引一个库只会多一份要维护的东西。
+// hash 还顺带给了两个白送的好处:刷新回到原来那一屏,以及可以把某一屏发给自己。
+const VIEWS = ["overview", "tasks", "repos", "storage", "convos"];
+let CURVIEW = null;
+
+function showView(key, push){
+  if(VIEWS.indexOf(key) < 0) key = VIEWS[0];
+  CURVIEW = key;
+  document.querySelectorAll("section[data-view]").forEach(sec=>{
+    sec.hidden = sec.dataset.view !== key;
+  });
+  document.querySelectorAll(".nv").forEach(b=>{
+    b.setAttribute("aria-current", String(b.dataset.view === key));
+  });
+  if(push && location.hash.slice(1) !== key) location.hash = key;
+  // 切分区时把滚动位置归零。不归零的话从一屏很长的分区切到一屏很短的,
+  // 看到的是一片空白,而那看起来像「这一类什么都没有」。
+  const v = $("view"); if(v) v.scrollTop = 0;
+  window.scrollTo(0, 0);
+}
+
+// 侧栏徽章。这是「合并」这件事的安全带:分区把东西收了起来,徽章负责让要人管的东西
+// 不用点进去也看得见。少了它,合并就是纯粹的藏。
+function setBadge(key, n, warn){
+  const el = $("bg-" + key);
+  if(!el) return;
+  el.textContent = n > 99 ? "99+" : String(n);
+  el.className = "bg" + (n ? (warn ? " warn" : "") : " zero");
+}
+
+function updateBadges(){
+  renderTiles();
+  // 概览:产物新鲜度里判坏的,加上自检读不到的来源。
+  let ov = 0;
+  if(typeof DATA !== "undefined" && DATA && DATA.freshness && DATA.freshness.summary)
+    ov += DATA.freshness.summary.bad || 0;
+  if(SCK && !SCK.ok) ov += (SCK.broken || []).length || 1;
+  setBadge("overview", ov, false);
+
+  if(typeof DATA !== "undefined" && DATA && DATA.summary)
+    setBadge("tasks", DATA.summary.bad || 0, false);
+
+  if(REPOS && REPOS.available && REPOS.summary)
+    setBadge("repos", REPOS.summary.attention || 0, false);
+
+  // 存储:磁盘吃紧或记忆索引逼近硬上限。两者都是「还没坏但快了」,所以用警告色而不是红色。
+  let st = 0, stWarn = true;
+  if(SYS && SYS.disk && SYS.disk.usedPct >= 95) st += 1;
+  if(MEM && MEM.available && (MEM.linePct >= 90 || MEM.bytePct >= 90)) st += 1;
+  setBadge("storage", st, stWarn);
+}
+
+document.addEventListener("click", e=>{
+  const tl = e.target.closest("[data-goto]");
+  if(tl){ showView(tl.dataset.goto, true); return; }
+  const nv = e.target.closest(".nv");
+  if(nv){ showView(nv.dataset.view, true); return; }
+});
+window.addEventListener("hashchange", ()=>showView(location.hash.slice(1), false));
+
+
+// 概览的关键指标。每一格都是别的分区早就算好的数字,搬到这里只是让人不用先点进去;
+// 点一下就跳过去看细节。所以它既是概览也是导航。
+// 拿不到的那一格显示「未检查」而不是零 : 一个还没读到的数字和一个真的是零的数字,
+// 在一块大字号的板子上长得一模一样,而这块板子正是给人扫一眼用的。
+function tile(view, key, val, sub, cls){
+  return `<button class="tile" data-goto="${view}" title="${esc(sub||"")}">
+    <span class="k">${esc(key)}</span>
+    <span class="v ${cls||""}">${esc(String(val))}</span>
+    <span class="s">${esc(sub||"")}</span></button>`;
+}
+
+function renderTiles(){
+  const el = $("tiles"); if(!el) return;
+  const out = [];
+
+  if(typeof DATA !== "undefined" && DATA && DATA.summary){
+    const S = DATA.summary;
+    out.push(tile("tasks","任务",S.total,`失败 ${S.bad} · 停用 ${S.disabled}`,S.bad?"bad":"ok"));
+  } else out.push(tile("tasks","任务","-","未检查","idle"));
+
+  if(typeof DATA !== "undefined" && DATA && DATA.freshness && DATA.freshness.summary){
+    const F = DATA.freshness.summary;
+    out.push(tile("overview","产物新鲜度",F.bad,
+      `覆盖 ${Math.round((F.coverage||0)*100)}% · 共 ${F.total}`, F.bad?"bad":"ok"));
+  } else out.push(tile("overview","产物新鲜度","-","未检查","idle"));
+
+  if(REPOS && REPOS.available && REPOS.summary){
+    const R = REPOS.summary;
+    out.push(tile("repos","仓库要人管",R.attention,
+      `共 ${R.total} · 无上游 ${R.unknownUpstream}`, R.attention?"bad":"ok"));
+  } else out.push(tile("repos","仓库","-","未检查","idle"));
+
+  if(SYS && SYS.disk && SYS.disk.usedPct != null){
+    const d = SYS.disk;
+    out.push(tile("storage","磁盘已用",d.usedPct+"%",
+      `剩 ${(d.free/1073741824).toFixed(0)}G`, d.usedPct>=95?"bad":d.usedPct>=85?"warn":"ok"));
+  } else out.push(tile("storage","磁盘","-","未检查","idle"));
+
+  if(MEM && MEM.available){
+    const p = Math.max(MEM.linePct||0, MEM.bytePct||0);
+    out.push(tile("storage","记忆索引",p+"%",
+      `${MEM.indexLines}/${MEM.hardLines} 行 · 冷层 ${MEM.cold}`,
+      p>=100?"bad":p>=90?"warn":"ok"));
+  } else out.push(tile("storage","记忆索引","-","未检查","idle"));
+
+  if(CONVOS && CONVOS.available && CONVOS.summary){
+    const C2 = CONVOS.summary;
+    out.push(tile("convos","对话",C2.files,`真人 ${C2.humanish} · ${C2.groups} 个目录`,""));
+  } else out.push(tile("convos","对话","-","未检查","idle"));
+
+  el.innerHTML = out.join("");
+}
+
 function renderHeat(){
   const H=DATA.history||{};
   if(!H.available){ $("hmnote").textContent=(DATA.warnings||[]).find(w=>w.indexOf("历史")>=0)||"无历史"; $("heat").innerHTML=""; return; }
@@ -998,6 +1195,7 @@ function render(){
     +((DATA.runlog&&DATA.runlog.available)?` <span class="faint">运行日志${DATA.runlog.count}</span>`:` <span class="faint">无运行日志</span>`);
   $("warns").innerHTML=(DATA.warnings||[]).map(w=>`<div class="warn-line">${esc(w)}</div>`).join("");
   renderFresh();
+  updateBadges();
   renderTL(); renderHeat(); renderScores();
 
   const q=$("q").value.trim().toLowerCase(), cat=$("cat").value;
@@ -1153,6 +1351,13 @@ loadSys();
 loadMem();
 $("cvreload").addEventListener("click",loadConvos);
 loadConvos();
+$("sidetoggle").addEventListener("click",()=>{
+  const n=$("side").classList.toggle("narrow");
+  $("sidetoggle").textContent = n ? "\u00bb" : "\u00ab 收起";
+  try{ localStorage.setItem("tc.narrow", n?"1":"0"); }catch(e){}
+});
+try{ if(localStorage.getItem("tc.narrow")==="1") $("sidetoggle").click(); }catch(e){}
+showView(location.hash.slice(1) || VIEWS[0], false);
 $("tlin").addEventListener("click",()=>tlZoom(0.7,0.5));
 $("tlout").addEventListener("click",()=>tlZoom(1.4,0.5));
 $("tlreset").addEventListener("click",tlReset);
