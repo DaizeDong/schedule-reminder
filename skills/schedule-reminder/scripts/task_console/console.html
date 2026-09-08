@@ -387,6 +387,10 @@ body{font-size:12px}
 #side .nav-link{padding:4px 8px 4px 10px;font-size:12.5px;border-radius:3px}
 #side .nav-link-icon{width:15px;text-align:center;opacity:.85;margin-right:6px}
 #side .nav-link .badge{font-size:10px;padding:1px 5px}
+/* 这些小按钮原来是单字符图标,同一个 ⏸ 在三处分别表示归档移出、禁用、归档进冷层,
+   而它长得像暂停,三个含义一个都不是。改成文字之后要给够宽度,
+   否则两个汉字会被压成一个半。 */
+button.mini{min-width:auto;padding:0 5px;font-size:10.5px;white-space:nowrap}
 /* 徽章是「合并」这件事的安全带:分区把东西收了起来,徽章负责让要人管的东西不用点进去
    也看得见。所以折叠时它不能跟着藏,而是贴到图标角上 : 折叠恰恰是最需要它的时候。 */
 #side.navbar-folded .nav-link{position:relative}
@@ -815,7 +819,7 @@ function renderMaint(){
       ${k.linked?`<span class="lk" title="junction,指向别处的仓库">↗</span>`:""}
       <span class="c">${k.archived?"":k.chars}</span>
       <button class="mini${k.archived?"":" danger"}" data-mt="${k.archived?"skill.restore":"skill.archive"}"
-        data-name="${esc(k.name)}" title="${k.archived?"还原":"归档移出"}">${k.archived?"⏵":"⏸"}</button>
+        data-name="${esc(k.name)}" title="${k.archived?"从归档区还原回来":"移出到归档区,不再占描述预算"}">${k.archived?"还原":"归档"}</button>
     </div>`).join("");
     el.innerHTML=`<div class="mt-t">SKILL <b>${S.liveCount}</b>
         <span class="sub">${S.budgetChars} 字符</span></div>
@@ -836,7 +840,7 @@ function renderMaint(){
         return `<div class="mt-r${p.enabled?"":" off"}">
           <span class="n" title="${esc(p.name)}">${esc(nm)}</span>
           <button class="mini${p.enabled?" danger":""}" data-mt="${p.enabled?"plugin.disable":"plugin.enable"}"
-            data-name="${esc(p.name)}" title="${p.enabled?"禁用":"启用"}">${p.enabled?"⏸":"⏵"}</button>
+            data-name="${esc(p.name)}" title="${p.enabled?"禁用这个插件":"启用这个插件"}">${p.enabled?"禁用":"启用"}</button>
         </div>`;}).join("")}</div>`;
   }
 }
@@ -931,7 +935,7 @@ function renderRepos(){
       <i class="dot d-${r.state}"></i>
       <span class="n">${esc(r.name)}${r.nested?" <span class=\"lk\">↗</span>":""}</span>
       ${vis}<span class="m">${bits.join(" ")}</span>
-      <button class="mini" data-mt="repo.fetch" data-name="${esc(r.name)}" title="fetch">↓</button>
+      <button class="mini" data-mt="repo.fetch" data-name="${esc(r.name)}" title="git fetch,只取不合">fetch</button>
     </div>`;
   }).join("");
 }
@@ -1007,7 +1011,7 @@ function renderMem(){
         <span class="n" title="${esc(b.slug)}">${esc(b.slug)}</span>
         <span class="c">${kb(b.bytes)}</span>
         ${MEM.archiverConfigured?`<button class="mini danger" data-mt="memory.archive"
-          data-name="${esc(b.slug)}" title="归档进冷层">⏸</button>`:""}</div>`).join("")
+          data-name="${esc(b.slug)}" title="移进冷层,索引里只留一行指路">归档</button>`:""}</div>`).join("")
     + `</div>`;
 }
 
