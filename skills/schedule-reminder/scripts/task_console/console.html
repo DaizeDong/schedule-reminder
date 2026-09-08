@@ -324,7 +324,7 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
 .d-unpushed{background:var(--bad)} .d-error{background:var(--bad)}
 .d-detached{background:var(--idle)}
 
-/* ---- 对话历史 ----------------------------------------------------------------------
+/* ---- 会话(对话历史) ----------------------------------------------------------------------
    按对话创建时所在的目录分组。标题来自对话自己,而标题**从哪来**也画出来:
    一个由代号充数的标题和一句真概括长得一样,但信息量差着量级。 */
 #cvbox .pad{padding:7px 10px 9px}
@@ -531,8 +531,8 @@ table.g td.nm,table.g td.lr,table.g td.nr,table.g td.to{font-family:var(--mono)}
         <li class="nav-item"><a class="nav-link nv" data-view="overview" href="#overview"><span class="nav-link-icon">◎</span><span class="nav-link-title">概览</span><span class="badge bg-danger ms-auto" id="bg-overview" hidden>0</span></a></li>
         <li class="nav-item"><a class="nav-link nv" data-view="tasks" href="#tasks"><span class="nav-link-icon">▤</span><span class="nav-link-title">任务</span><span class="badge bg-danger ms-auto" id="bg-tasks" hidden>0</span></a></li>
         <li class="nav-item"><a class="nav-link nv" data-view="repos" href="#repos"><span class="nav-link-icon">⑂</span><span class="nav-link-title">仓库</span><span class="badge bg-danger ms-auto" id="bg-repos" hidden>0</span></a></li>
-        <li class="nav-item"><a class="nav-link nv" data-view="storage" href="#storage"><span class="nav-link-icon">▢</span><span class="nav-link-title">存储与维护</span><span class="badge bg-danger ms-auto" id="bg-storage" hidden>0</span></a></li>
-        <li class="nav-item"><a class="nav-link nv" data-view="convos" href="#convos"><span class="nav-link-icon">☰</span><span class="nav-link-title">对话历史</span><span class="badge bg-danger ms-auto" id="bg-convos" hidden>0</span></a></li>
+        <li class="nav-item"><a class="nav-link nv" data-view="storage" href="#storage"><span class="nav-link-icon">▢</span><span class="nav-link-title">配置</span><span class="badge bg-danger ms-auto" id="bg-storage" hidden>0</span></a></li>
+        <li class="nav-item"><a class="nav-link nv" data-view="convos" href="#convos"><span class="nav-link-icon">☰</span><span class="nav-link-title">会话</span><span class="badge bg-danger ms-auto" id="bg-convos" hidden>0</span></a></li>
       </ul>
       <div class="mt-auto pb-2 px-3">
         <button class="btn btn-sm w-100" id="sidetoggle" title="收起侧栏">&laquo; 收起</button>
@@ -560,15 +560,21 @@ table.g td.nm,table.g td.lr,table.g td.nr,table.g td.to{font-family:var(--mono)}
 <div class="page-body">
 <div class="container-fluid" id="view">
   <section id="overview" data-view="overview" data-label="概览" hidden>
+<!-- 顺序是「这页说的话可不可信」到「有没有事」到「是哪些事」。
+     自检排最前面不是排版偏好:selfcheck.py 的注释和本文件里另外两处都写着
+     「整页的信任前提,所以它排在最前面」,而后来插进来的指标格和待办清单把它挤到第三,
+     两处注释都没跟着改。后果是实在的:某个来源读不到时对应那一类安静显示「未检查」,
+     而在一块大字号板子上「未检查」和「零」的视觉重量一样,人要滚过两块才看到自检在喊。
+     警告并进自检,是因为往 #warns 里塞的内容全是「某某来源不可用」,和自检是同一件事的两半。 -->
+<div id="sck"><span class="lab">自检</span><span class="dots" id="sckdots"></span>
+    <span class="sum" id="scksum">读取中</span><button id="scktog">明细</button></div>
+<div id="sckd"></div>
+<div id="warns"></div>
   <div class="tiles" id="tiles"></div>
   <div class="box" id="todo">
     <h2>要人管的事 <span class="sub" id="todon"></span></h2>
     <div id="todod"></div>
   </div>
-<div id="sck"><span class="lab">自检</span><span class="dots" id="sckdots"></span>
-    <span class="sum" id="scksum">读取中</span><button id="scktog">明细</button></div>
-<div id="sckd"></div>
-<div id="warns"></div>
 <div class="box" id="frbox">
     <h2>产物新鲜度<span class="n" id="frnote"></span></h2>
     <div class="fr-head">
@@ -635,7 +641,7 @@ table.g td.nm,table.g td.lr,table.g td.nr,table.g td.to{font-family:var(--mono)}
     </div>
   </div>
   </section>
-  <section id="storage" data-view="storage" data-label="存储与维护" hidden>
+  <section id="storage" data-view="storage" data-label="配置" hidden>
 <div class="box" id="mtbox">
     <h2>维护<span class="n" id="mtnote">读取中</span>
       <span style="flex:none"><button id="mtreload" title="重新读取">↻</button></span>
@@ -648,9 +654,9 @@ table.g td.nm,table.g td.lr,table.g td.nr,table.g td.to{font-family:var(--mono)}
     </div>
   </div>
   </section>
-  <section id="convos" data-view="convos" data-label="对话历史" hidden>
+  <section id="convos" data-view="convos" data-label="会话" hidden>
 <div class="box" id="cvbox">
-    <h2>对话历史<span class="n" id="cvnote">读取中</span>
+    <h2>会话<span class="n" id="cvnote">读取中</span>
       <span style="flex:none"><button id="cvreload" title="重新扫描">↻</button></span>
     </h2>
     <div class="pad">
@@ -961,8 +967,11 @@ function renderRepos(){
     $("rpgrid").innerHTML=""; return;
   }
   const S=REPOS.summary, c=S.counts||{};
+  // 「要人管 N」这一份删掉了:同一个数字已经在概览的指标格、侧栏徽章和要人管清单上
+  // 各出现一次,连中文词都一样。徽章回答「有没有事」、清单回答「是哪几个」,是不同粒度;
+  // 夹在中间的这一份信息增量为零,而每多一处就多一个会漂的地方。
   $("rphead").innerHTML=`<span>共 <b>${S.total}</b></span>`
-    +`<span>要人管 <b style="color:${S.attention?"var(--bad)":"var(--ok)"}">${S.attention}</b></span>`
+
     +`<span class="rp-chips">`+RP_ORDER.filter(k=>c[k]).map(k=>
         `<span><i class="dot d-${k}" style="width:8px;height:8px;border-radius:2px"></i>${RP_LAB[k]} ${c[k]}</span>`).join("")
     +`</span>`
@@ -997,6 +1006,10 @@ async function loadSys(){
   renderSys();
   updateBadges();
 }
+  // 会话转录的体积和文件数已从这里删掉:会话那一屏在报同一个目录,而两处用的是两套算法
+  // (这里递归数目录下所有文件、有 60000 上限;那边只数解析成功的转录),数字必然对不上,
+  // 而两处都不说自己是哪种口径。**同一个问题有两个都自称权威的答案**,比少显示一次糟。
+  // 留下的是会话那边那份,它数的正是那个面板要谈的东西。
 function renderSys(){
   const el=$("mt-sys"); if(!el) return;
   if(!SYS){ el.innerHTML=""; return; }
@@ -1013,10 +1026,6 @@ function renderSys(){
        ${pc.deletableCount?`<button class="mini danger" data-mt="clean.tempgit" data-name="-"
           title="删除 ${pc.deletableCount} 个废弃克隆暂存目录">🗑${pc.deletableCount}</button>`:""}</div>`
     : `<div class="mt-r"><span class="n">插件缓存</span><span class="c">未检查</span></div>`;
-  h+=se.available
-    ? `<div class="mt-r"><span class="n">会话转录</span><span class="c">${sz(se)}</span></div>
-       <div class="mt-r"><span class="n">转录文件数</span><span class="c">${se.size.files}</span></div>`
-    : `<div class="mt-r"><span class="n">会话转录</span><span class="c">未检查</span></div>`;
   // partial 要说出来:一个数了一半却报确定数字的体积比不报还糟。
   if((pc.size&&pc.size.partial)||(se.size&&se.size.partial))
     h+=`<div class="mt-r"><span class="n" style="color:var(--warn)">体积只数到上限,带 +</span></div>`;
@@ -1089,7 +1098,7 @@ async function retireTask(name){
 }
 
 
-// 对话历史。1026 份转录只读头尾,首扫几秒、之后走缓存零点几秒。
+// 会话。1026 份转录只读头尾,首扫几秒、之后走缓存零点几秒。
 // 「真人」的判据是**打进去的字**(纯字符串)而不是内容块:不区分的话,每个无头运行
 // 都会因为加载的 skill 正文被判成一场多轮对话。
 let CONVOS=null, CV_HUMAN_ONLY=false, CV_OPEN={};
@@ -1243,8 +1252,8 @@ document.addEventListener("click", e=>{
   if(nv){ e.preventDefault(); showView(nv.dataset.view, true); return; }
 });
 // 方向键在侧栏项之间移焦点,但**不切视图**。APG 把 tab 模式拆成 manual 和 automatic
-// 两种,面板要发请求的场景必须选 manual:仓库、存储、对话历史三个分区各自会真扫一遍,
-// 对话历史首扫一千多份转录要好几秒。焦点扫一遍就打四次真实扫描,那不是导航,是压测。
+// 两种,面板要发请求的场景必须选 manual:仓库、配置、会话三个分区各自会真扫一遍,
+// 会话那一屏首扫一千多份转录要好几秒。焦点扫一遍就打四次真实扫描,那不是导航,是压测。
 document.getElementById("side").addEventListener("keydown", e=>{
   const navs = [...document.querySelectorAll("#side .nv")];
   const i = navs.indexOf(document.activeElement);
