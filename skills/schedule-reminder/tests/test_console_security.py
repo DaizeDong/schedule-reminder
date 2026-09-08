@@ -245,3 +245,8 @@ def test_retire_without_a_reason_is_refused(srv):
                     body={"action": "task.retire", "name": "SomeTask", "arg": ""})
     assert st == 400
     assert b"no_reason" in body or b"bad_name" in body or b"no_config" in body
+
+
+def test_convos_read_without_token_is_403(srv):
+    st, _ = call(srv, "GET", "/api/convos")
+    assert st == 403

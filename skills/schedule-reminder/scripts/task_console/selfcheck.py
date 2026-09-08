@@ -41,6 +41,7 @@ SOURCES = (
     ("archiver", "记忆归档器", "TASK_CONSOLE_MEMORY_ARCHIVER", "file", None, False),
     ("plugin_cache", "插件缓存", "TASK_CONSOLE_PLUGIN_CACHE", "dir", None, False),
     ("sessions", "会话转录目录", "TASK_CONSOLE_SESSIONS", "dir", None, False),
+    ("convo_cache", "对话索引缓存", "TASK_CONSOLE_CONVO_CACHE", "file", None, False),
 )
 
 # 随包发布的文件。它们没有环境变量:缺了就是安装坏了,而不是没配。
