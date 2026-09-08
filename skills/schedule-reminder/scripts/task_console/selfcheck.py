@@ -50,6 +50,7 @@ BUNDLED = (
     ("act", "动作脚本", "act.ps1"),
     ("runlog", "运行日志脚本", "runlog.ps1"),
     ("page", "页面", "console.html"),
+    ("icon", "图标", "icon.svg"),
 )
 
 

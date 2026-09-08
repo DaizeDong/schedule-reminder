@@ -86,6 +86,7 @@ COLLECT = HERE / "collect.ps1"
 ACT = HERE / "act.ps1"
 RUNLOG = HERE / "runlog.ps1"
 PAGE = HERE / "console.html"
+ICON = HERE / "icon.svg"
 
 NOT_RUN, RUNNING = 0x41303, 0x41301
 VERBS = ("enable", "disable", "run", "stop")
@@ -737,6 +738,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, repos_mod.scan())
             except Exception as e:
                 return self._json(500, {"error": f"{type(e).__name__}: {e}"})
+        if path in ("/favicon.svg", "/favicon.ico"):
+            # --app= 窗口的任务栏图标取的就是页面 favicon,所以这不只是消掉一个 404:
+            # 没有它,这个「桌面应用」在任务栏上是一张白纸。
+            try:
+                return self._send(200, ICON.read_bytes(), "image/svg+xml")
+            except OSError:
+                return self._json(404, {"error": "no icon"})
         if path == "/api/selfcheck":
             if not self._authed():
                 return self._json(403, {"error": "bad token"})
