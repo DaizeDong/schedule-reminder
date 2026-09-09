@@ -1360,13 +1360,17 @@ function setBadge(key, n, warn){
 
 function updateBadges(){
   renderTiles();
-  renderTodo();
-  // 概览:产物新鲜度里判坏的,加上自检读不到的来源。
-  let ov = 0;
-  if(typeof DATA !== "undefined" && DATA && DATA.freshness && DATA.freshness.summary){
-    const FS = DATA.freshness.summary;
-    ov += (FS.attention != null ? FS.attention : FS.bad) || 0;
-  }
+  const todoN = renderTodo();
+  // 概览徽章 = **这一屏上那张清单的条数** + 自检读不到的来源。
+  //
+  // ⚠ 它以前是自己另算一套(产物新鲜度 attention + 自检 broken),而清单收的是
+  // 任务 bad + 产物 attention + 仓库 attention + 磁盘 + 记忆索引 ——
+  // 两个集合互不包含:徽章含自检而清单不含,清单含任务/仓库/存储而徽章不含。
+  // 于是侧栏写着 3、点进去列着 7,**同一件事的两个数,而没有任何一处对账**。
+  // 现在徽章直接用清单算出来的条数:清单是这一屏唯一在回答「有哪些事」的东西,
+  // 徽章只是它的一个投影。**同一个事实只留一个来源,比让两个来源互相解释便宜得多。**
+  // 自检单独加,是因为它是「这张清单本身可不可信」那一层,不在清单里。
+  let ov = todoN;
   if(SCK && !SCK.ok) ov += (SCK.broken || []).length || 1;
   setBadge("overview", ov, false);
 
@@ -1519,11 +1523,13 @@ function renderTodo(){
       + '<span class="nm">读取失败</span>'
       + '<span class="why">任务数据没读到,这张清单不完整。明细在「任务」分区</span></div>';
     $("todon").textContent = "不完整";
-    return;
+    // 读不到时返回 1:徽章上有个数比没有数好。一个空徽章在「没事」和「没查成」
+    // 之间不作区分,而这两件事恰好需要相反的反应。
+    return 1;
   }
   if(!rows.length){
     box.innerHTML = '<div class="none">没有要人管的事</div>';
-    return;
+    return 0;
   }
   // 任务与产物两类行都指向某个具体任务,所以带上任务名,点了直接过滤到它。
   // 之前它们统一走 data-goto,而产物行的目标就是它自己所在的 overview,
@@ -1535,6 +1541,9 @@ function renderTodo(){
     <span class="src">${esc(r.src)}</span>
     <span class="nm" title="${esc(r.nm)}">${esc(r.nm)}</span>
     <span class="why">${esc(r.why)}</span></div>`).join("");
+  // 条数返回给徽章。清单是这一屏唯一在回答「有哪些事」的东西,徽章只是它的投影 ——
+  // 让徽章自己再数一遍,就是给同一个事实造第二个来源。
+  return rows.length;
 }
 const REPO_WHY = {dirty:"有未提交改动", unpushed:"有未推送提交",
                   detached:"游离 HEAD", error:"读不出来"};
@@ -1700,9 +1709,18 @@ const C=[
    const oth=h.other||0;
    const tip = v==null ? "没有观察记录"
      : `${h.ok}/${h.judged} 条观察判为正常` + (oth ? ` · ${oth} 条判词认不出来,它们只进了分母` : "");
-   const col = v==null?"var(--faint)":oth&&oth>=h.judged*0.5?"var(--faint)"
+   // 小样本降色。紧挨着的两处都做了这件事(实成功% 在 j<5 时降 faint,大类评分表在
+   // healthN<n 时降色),唯独这一列没有:**一个 1 条观察的 100% 和一个 4000 条观察的
+   // 100% 在屏幕上长得完全一样**,而分母只在 hover 的 tooltip 里。
+   // 一个刚被监控器纳入、只轮询到一次的任务因此显示满格绿色。
+   const thin = h.judged != null && h.judged < 5;
+   const col = v==null?"var(--faint)"
+     :thin?"var(--faint)"
+     :oth&&oth>=h.judged*0.5?"var(--faint)"
      :v>=95?"var(--ok)":v>=80?"var(--warn)":"var(--bad)";
-   return `<td class="num" title="${esc(tip)}" style="color:${col}">${v==null?"-":v}${oth?"*":""}</td>`;
+   // 样本太少时把分母印出来。降色只说「别太当真」,印出 n 才说清为什么。
+   const suffix = oth ? "*" : (thin && v != null ? `<span class="m"> n=${h.judged}</span>` : "");
+   return `<td class="num" title="${esc(tip)}" style="color:${col}">${v==null?"-":v}${suffix}</td>`;
  },r=>(r.hist&&r.hist.health!=null)?r.hist.health:-1],
  // 分母要说出来。judged 是动作返回码事件数,不是旁边那列的「实跑」(启动事件数):
  // 多动作任务每次运行写多条 201,分母大于实跑;rc 事件被日志滚动截断的任务分母小于实跑。
