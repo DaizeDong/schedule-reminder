@@ -10,7 +10,9 @@ WHY THIS EXISTS
 REGISTRY (secret, never committed)
     Discovery order: env AGENT_CENTER_CONFIG, else the registry file in the Agent Center config dir.
     Shape: {"streams": {"<name>": {"webhook": "...", "username": "..."}}, "big_brother": {...}}
-    Each stream posts to its webhook; per-message `username` gives the stream its identity in Discord.
+    A stream normally posts to its webhook; a notification-only stream may instead carry only a
+    `channel_id` and use the registry's canonical bot token. Per-message `username` is available on
+    the webhook path; the bot-only path uses the bot's Discord identity.
 
 CONTRACT (frozen surface downstream skills depend on — subprocess, never import internals)
     relay(stream, content, username=None) -> bool          # True = delivered
@@ -29,9 +31,10 @@ TWO TRANSPORTS, ONE EGRESS
     answering in whichever channel a command was typed in, and posting an image. Those go over the
     bot token instead (registry.reader.bot_token, the same one ingest reads with).
 
-    Transport is chosen from what the caller asks for, never configured:
+    Transport is selected without exposing transport details to the caller:
         files given, or channel_id given   -> bot
-        otherwise                          -> the stream's webhook
+        stream has a webhook               -> webhook
+        stream has only channel_id         -> bot
     This exists so a caller never has to know which one it is on. Before it, every job the webhook
     could not do grew its own hand written Discord client (three of them: the backdrop bot, the
     guestbook moderator, the promotion sender), each with its own UA, retry and 403 handling. The
@@ -264,14 +267,25 @@ def _big_brother(text: str) -> bool:
 def relay(stream: str, content: str, username: str | None = None) -> bool:
     """Deliver `content` to the named Agent Center stream. Returns True on success.
 
-    Resolution: registry.streams[stream].webhook (per-stream identity via `username`).
+    Resolution: registry.streams[stream].webhook (per-stream identity via `username`), then a
+    configured `channel_id` through the canonical Agent Center bot. The second form is useful for
+    low-volume notification streams: it avoids creating another long-lived webhook secret while
+    preserving the same stable `relay.py send --stream ...` contract.
     Fallback: if the stream is unknown or no registry exists, deliver to Big Brother DM so the
     message is never lost (prefixed with the stream name for context).
     """
     reg = load_registry()
     s = (reg.get("streams") or {}).get(stream)
-    if not s or not s.get("webhook"):
+    if not s:
         sys.stderr.write("relay: stream %r not configured; using Big Brother fallback\n" % stream)
+        return _big_brother("[%s] %s" % (stream, content))
+    if not s.get("webhook"):
+        chan = s.get("channel_id")
+        token = bot_token(reg)
+        if chan and token:
+            return _post_bot(str(chan), content, None, token)
+        sys.stderr.write("relay: stream %r has no usable webhook or bot channel; "
+                         "using Big Brother fallback\n" % stream)
         return _big_brother("[%s] %s" % (stream, content))
     name = username or s.get("username") or stream
     parts = split_for_discord(content or "")
@@ -292,7 +306,8 @@ def send(content: str, stream: str | None = None, channel_id: str | None = None,
          files: list | None = None, username: str | None = None) -> bool:
     """Deliver to a stream, to an explicit channel, or both, choosing the transport (see module doc).
 
-    `stream` alone behaves exactly like relay() and keeps the per-stream webhook identity.
+    `stream` alone behaves exactly like relay(): it keeps the per-stream webhook identity when a
+    webhook exists, otherwise a bot-backed notification stream uses its configured channel.
     `channel_id` (or any `files`) switches to the bot, because a webhook can do neither.
     Given both, `channel_id` wins for routing and `stream` is used only to resolve a channel when
     the caller passed a name instead of an id.
@@ -301,7 +316,7 @@ def send(content: str, stream: str | None = None, channel_id: str | None = None,
     s = (reg.get("streams") or {}).get(stream) if stream else None
     chan = channel_id or (s or {}).get("channel_id")
     if not files and not channel_id:
-        return relay(stream, content, username)          # the frozen path, unchanged
+        return relay(stream, content, username)          # the frozen caller contract
     if not chan:
         sys.stderr.write("relay: no channel for stream %r; cannot use the bot transport\n" % stream)
         return False
@@ -336,9 +351,12 @@ def _cmd_health() -> int:
     problems = []
     if not reg:
         problems.append("registry missing at %s" % registry_path())
+    token = bot_token(reg)
     for name, s in streams.items():
-        if not s.get("webhook", "").startswith("https://"):
-            problems.append("stream %s: missing/invalid webhook" % name)
+        webhook_ok = s.get("webhook", "").startswith("https://")
+        bot_ok = bool(s.get("channel_id") and token)
+        if not webhook_ok and not bot_ok:
+            problems.append("stream %s: no usable webhook or bot channel" % name)
     ok = not problems
     print(json.dumps({"ok": ok, "registry": registry_path(),
                       "stream_count": len(streams), "problems": problems}, ensure_ascii=False))

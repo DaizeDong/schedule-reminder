@@ -48,8 +48,9 @@ python relay.py list                   # configured streams (NEVER prints webhoo
 python relay.py health                 # registry sane? (no network, no secrets)
 ```
 
-- **Two transports, chosen from what the caller asks for, never configured.** `files` given, or
-  `channel_id` given → the bot (`registry.reader.bot_token`). Otherwise → the stream's webhook.
+- **Two transports behind one caller contract.** `files` given, or `channel_id` given → the bot
+  (`registry.reader.bot_token`). A named stream uses its webhook when present; a notification-only
+  stream with just `channel_id` uses that same canonical bot token.
   A webhook carries the per-stream identity and needs no permissions, but it is bound to one
   channel and cannot carry a file, so answering where a command was typed and posting an image are
   both impossible on it. Callers never have to know which transport they are on.
@@ -69,6 +70,28 @@ python relay.py health                 # registry sane? (no network, no secrets)
 - **Gotcha (encoded in code)**: Discord/Cloudflare 403s the default urllib User-Agent, `relay.py`
   always sends a real `User-Agent`.
 - **Test seam**: `AGENT_CENTER_RELAY_DRYRUN=1` skips the network.
+
+### Dedicated notification channels
+
+Low-volume, machine-specific alerts belong under one Discord category with one text channel per
+notification type. `agent_center_admin.py` reconciles that shape, records a bot-backed stream in the
+private registry, opts the channel out of inbound command processing, and can prove the normal
+`relay.py send --stream` path with a real test post:
+
+```
+python agent_center_admin.py ensure-notification \
+  --stream model-mapping --category specific-notifications --channel model-mapping \
+  --skill cc-model-refresh --description "cc model mapping changes" \
+  --test-text "Agent Center model-mapping route verified"
+
+python agent_center_admin.py check-notification \
+  --stream model-mapping --category specific-notifications --channel model-mapping --probe
+```
+
+The command is idempotent: it creates missing resources, moves one same-named text channel under the
+category when needed, and refuses duplicate names rather than guessing. It never prints the bot
+token or webhook URLs. Notification-only streams use the registry's canonical bot token and need no
+additional webhook secret.
 
 ## digest.py, the one daily 当日总结
 

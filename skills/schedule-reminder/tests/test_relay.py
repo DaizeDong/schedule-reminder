@@ -65,6 +65,13 @@ def test_health_ok_and_bad(monkeypatch, tmp_path, capsys):
     assert relay.main(["health"]) == 1
 
 
+def test_health_accepts_bot_only_stream(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("AGENT_CENTER_CONFIG", _bot_registry(
+        tmp_path, {"model-mapping": {"channel_id": "777", "inbound": False}}))
+    assert relay.main(["health"]) == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
 def test_send_cli_dryrun(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENT_CENTER_CONFIG",
                        _registry(tmp_path, {"mail": {"webhook": "https://h/api/webhooks/1/t", "username": "mail"}}))
@@ -121,6 +128,15 @@ def test_stream_only_still_uses_the_webhook(monkeypatch, tmp_path):
     assert len(sent) == 1
     assert sent[0]["url"].startswith("https://h/api/webhooks/"), "no files, no channel_id -> webhook"
     assert "authorization" not in sent[0]["headers"], "a webhook post must not carry the bot token"
+
+
+def test_stream_with_channel_but_no_webhook_uses_bot(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENT_CENTER_CONFIG", _bot_registry(
+        tmp_path, {"model-mapping": {"channel_id": "777", "username": "model-mapping"}}))
+    sent = _capture(monkeypatch)
+    assert relay.send("map changed", stream="model-mapping") is True
+    assert sent[0]["url"] == "https://discord.com/api/v10/channels/777/messages"
+    assert sent[0]["headers"]["authorization"] == "Bot BOTTOK"
 
 
 def test_channel_id_switches_to_the_bot(monkeypatch, tmp_path):

@@ -1153,8 +1153,18 @@ function renderSys(){
     : `<div class="mt-r"><span class="n">插件缓存</span><span class="c">${
         esc(pc.reason||"未检查")}</span></div>`;
   // partial 要说出来:一个数了一半却报确定数字的体积比不报还糟。
-  if((pc.size&&pc.size.partial)||(se.size&&se.size.partial))
+  // ⚠ 这句提示原来把 partial 一律解释成「数到上限」,而 partial 现在还有第二个来源:
+  // 扫描过程中读不动的子树 / stat 不了的文件。两者的后果不同 ——
+  // 撞上限是「太大了没数完」,读不动是「有一块我根本没看见」,而后者更该让人去查。
+  const errN = (pc.size&&pc.size.errors||0)+(se.size&&se.size.errors||0);
+  if(errN)
+    h+=`<div class="mt-r"><span class="n" style="color:var(--warn)">有 ${errN} 处扫不动(权限/路径过长/中途消失),体积和残留数都是偏小的</span></div>`;
+  else if((pc.size&&pc.size.partial)||(se.size&&se.size.partial))
     h+=`<div class="mt-r"><span class="n" style="color:var(--warn)">体积只数到上限,带 +</span></div>`;
+  // 残留数自己也可能没数成。「这里很干净」和「我根本没数成」不能都渲染成 0。
+  if(pc.leftoverPartial)
+    h+=`<div class="mt-r"><span class="n" style="color:var(--warn)">残留目录没扫完:${
+        esc((pc.leftoverErrors||[]).join(" · ")||"扫描失败")}</span></div>`;
   h+=`</div>`;
   el.innerHTML=h;
 }
