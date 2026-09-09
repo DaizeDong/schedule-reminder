@@ -194,3 +194,39 @@ def test_fetch_refuses_a_non_repo(tmp_path, monkeypatch):
     with pytest.raises(Refused) as e:
         R.fetch("plain")
     assert e.value.code == "missing_src"
+
+
+# ---------- 可见性表解析失败不能被吞成空表 ----------
+# 吞掉之后所有仓的 PUB/PRI 标记一起消失,而那和「表里没登记这几个仓」长得一模一样。
+# 在这套体系里可见性正是判断一个仓能不能装真实数据的依据,
+# 一个静默变空的可见性视图,比没有这个视图更危险。
+# 自检只能证明这个文件存在且非空,证明不了它解析得出来。
+
+def test_a_broken_visibility_table_reports_why(tmp_path, monkeypatch):
+    p = tmp_path / "vis.json"
+    p.write_text("{", encoding="utf-8")          # 非零字节,所以自检会判它 ok
+    monkeypatch.setenv("TASK_CONSOLE_VISIBILITY", str(p))
+    table, why = R._load_visibility()
+    assert table == {}
+    assert why and "解析失败" in why, why
+
+
+def test_an_unreadable_visibility_table_reports_why(tmp_path, monkeypatch):
+    monkeypatch.setenv("TASK_CONSOLE_VISIBILITY", str(tmp_path / "nope.json"))
+    table, why = R._load_visibility()
+    assert table == {} and why and "读不到" in why, why
+
+
+def test_an_absent_setting_is_not_a_failure(monkeypatch):
+    """正对照:没配 = 没启用,不是故障。
+    分不开的话这条提示会在没配置的机器上天天亮,而天天亮的提示等于没有。"""
+    monkeypatch.delenv("TASK_CONSOLE_VISIBILITY", raising=False)
+    assert R._load_visibility() == ({}, None)
+
+
+def test_a_good_table_parses_with_no_reason(tmp_path, monkeypatch):
+    p = tmp_path / "vis.json"
+    p.write_text('{"a": "PUBLIC"}', encoding="utf-8")
+    monkeypatch.setenv("TASK_CONSOLE_VISIBILITY", str(p))
+    table, why = R._load_visibility()
+    assert table == {"a": "PUBLIC"} and why is None
