@@ -112,12 +112,32 @@ def connect_ro():
         return None, DbState("NO_FILE",
                              f"数据库还没建。跑一次 console_ingest.py --backfill 就会从现有日志重建。",
                              str(p))
+    con = None
     try:
         con = sqlite3.connect(f"file:{p.as_posix()}?mode=ro", uri=True, timeout=5)
         con.row_factory = sqlite3.Row
         con.execute("SELECT 1 FROM meta LIMIT 1")
         return con, None
     except sqlite3.DatabaseError as e:
+        # 探针抛异常时连接已经建起来了,而调用方拿到的是 (None, DbState),手上没有它。
+        # 显式关掉。
+        #
+        # ⚠ 这**不是**在修一个泄漏。审计报过「每次请求泄漏一个句柄」,推理是通的,
+        # 对抗性核证也判它成立 —— 而实测不成立:
+        #     对照组(故意开 200 个文件不关):句柄 94 -> 294,差 200(方法有效)
+        #     connect_ro 走坏库 200 次:      句柄 94 -> 94, 差 0
+        # CPython 的引用计数在函数返回时就析构了那个局部变量,连接随之关闭。
+        # 带对照组是必须的:没有它,「两边都是 0」既符合「没漏」也符合「我没测到」——
+        # 第一次用 ctypes 拿句柄数时拿回来的就是 0/0,那不是结论,那是没测到。
+        #
+        # 留着这个 close 的理由是**不依赖引用计数的时机**:那是实现细节,
+        # 而且将来只要有一条路径在异常前把连接存进了别处(重试、缓存、日志),
+        # 显式关就从多余变成必须。
+        if con is not None:
+            try:
+                con.close()
+            except Exception:
+                pass
         return None, DbState("CORRUPT",
                              f"数据库打不开或结构不对({e})。删掉它再跑 --backfill 可以重建,"
                              f"因为这里没有任何一行是唯一副本。", str(p))
