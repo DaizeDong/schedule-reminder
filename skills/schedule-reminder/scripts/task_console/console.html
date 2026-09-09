@@ -109,11 +109,10 @@ label.tg{display:inline-flex;align-items:center;gap:4px;color:var(--dim);cursor:
 label.tg input{accent-color:var(--cyan);margin:0}
 
 main{padding:8px}
-.box{border:1px solid var(--line);background:var(--panel);margin-bottom:8px}
-.box>h2{margin:0;font-size:11px;font-weight:600;color:var(--dim);letter-spacing:.04em;
-  padding:3px 8px;background:var(--panel2);border-bottom:1px solid var(--line);
-  display:flex;gap:10px;align-items:baseline}
-.box>h2 .n{font-weight:400;color:var(--faint);flex:1;overflow:hidden;text-overflow:ellipsis}
+/* .box 与 .box>h2 已删:九个盒子全部换成 Tabler 的 .card / .card-header,
+   这两条再没有任何元素能命中。留着一条永远不生效的规则,会让下一个来改卡片样式的人
+   在这里改半天却看不到变化。 */
+.card-title .n{font-weight:400;color:var(--faint);flex:1;overflow:hidden;text-overflow:ellipsis}
 .pad{padding:6px 8px;overflow-x:auto}
 .warn-line{color:var(--warn);background:var(--warnb);border-left:2px solid var(--warn);
   padding:3px 8px;font-size:11.5px;margin-bottom:6px}
@@ -461,15 +460,20 @@ button.mini{min-width:auto;padding:0 5px;font-size:10.5px;white-space:nowrap}
 #view{padding:0 9px}
 section[data-view]{display:flex;flex-direction:column;gap:6px;scroll-margin-top:32px}
 section[data-view][hidden]{display:none}
-#view .box{margin-bottom:0}
+#view .card{margin-bottom:0}
 #view #tools{margin-bottom:0}
 
-/* 本页原有的 .box 直接当 Tabler 的卡片用,不去改十二处渲染代码的类名:
-   改类名要动的是 JS 里拼字符串的地方,那正是这份文件最容易改出静默错误的部分。 */
-.box{background:var(--tblr-card-bg);border:1px solid var(--line);border-radius:3px}
-.box>h2{background:var(--panel2);border-bottom:1px solid var(--line);
-  margin:0;padding:4px 9px;font-size:11.5px;font-weight:600;color:var(--dim);
-  letter-spacing:.03em}
+/* 现在用的是 Tabler 真正的 .card / .card-header / .card-title / .card-actions。
+   之前这里是一套模仿:.box 加 .box>h2,靠四段互相打补丁的 CSS 去装成卡片,
+   而任何 Tabler 版本升级都不会把这套模仿带上。
+   挡住迁移的那句注释说「要动十二处渲染代码的类名」 : 实际九个卡片全在静态 HTML 里,
+   .box 一次都没出现在 JS 拼串中,那个风险不存在。
+   头部右侧的按钮原来靠 <span style="flex:none"> 硬凑,那正是「没有卡片组件所以拿 flex 顶」;
+   .card-actions 就是 Tabler 给这个位置准备的。 */
+.card-header{min-height:0;padding:4px 9px}
+.card-title{font-size:12.5px;font-weight:600;color:var(--ink);margin:0;
+  display:flex;align-items:center;gap:6px;flex:1;min-width:0}
+.card-actions{display:flex;gap:4px;align-items:center}
 
 /* ---- 概览的关键指标 ----------------------------------------------------------------
    分区之后概览只剩两块盒子,一屏填不满三分之一。空着不是「干净」,是**把已经算出来的
@@ -544,7 +548,7 @@ table.g td[data-col="timeout"]{font-family:var(--mono)}
 .mt-col{border:1px solid var(--line);border-radius:3px}
 /* 卡头层级原来是反的:标题 11.5px/--dim,正文 12px/--ink,
    也就是卡片标题是整张卡里最不显眼的东西。 */
-.box>h2{font-size:12.5px;color:var(--ink)}
+
 
 /* ---- 芯片、顶栏、卡头 ------------------------------------------------------------
    这三处是「套了现代壳子的老页面」里剩下最明显的。共同点是它们都还在用
@@ -564,8 +568,8 @@ table.g td[data-col="timeout"]{font-family:var(--mono)}
 
 /* 卡头原来只是一条灰带。给它一点上下呼吸和一个更实的底线,
    让「这里是一块的开头」不需要靠颜色去猜。 */
-.box>h2{padding:5px 9px;border-bottom:1px solid var(--line)}
-.box{overflow:hidden}   /* 圆角要真的裁到内容,否则表格的第一行会从圆角里探出来 */
+
+
 </style>
 </head>
 <body>
@@ -625,12 +629,12 @@ table.g td[data-col="timeout"]{font-family:var(--mono)}
 <div id="sckd"></div>
 <div id="warns"></div>
   <div class="tiles" id="tiles"></div>
-  <div class="box" id="todo">
-    <h2>要人管的事 <span class="sub" id="todon"></span></h2>
+  <div class="card" id="todo">
+    <div class="card-header"><h3 class="card-title">要人管的事 <span class="sub" id="todon"></span></h3></div>
     <div id="todod"></div>
   </div>
-<div class="box" id="frbox">
-    <h2>产物新鲜度<span class="n" id="frnote"></span></h2>
+<div class="card" id="frbox">
+    <div class="card-header"><h3 class="card-title">产物新鲜度<span class="n" id="frnote"></span></h3></div>
     <div class="fr-head">
       <div class="fr-stack" id="frstack"></div>
       <div class="fr-cov">覆盖 <b id="frcov">-</b></div>
@@ -650,20 +654,16 @@ table.g td[data-col="timeout"]{font-family:var(--mono)}
   <button id="refresh">重新读取</button>
   <span class="faint" id="cnt"></span>
 </div>
-<div class="box" id="dtbox">
-    <h2>明细 <span class="n">j/k 移动 · x 选中 · Enter 展开 · <span class="hot">?</span> 看全部快捷键</span></h2>
+<div class="card" id="dtbox">
+    <div class="card-header"><h3 class="card-title">明细 <span class="n">j/k 移动 · x 选中 · Enter 展开 · <span class="hot">?</span> 看全部快捷键</span></h3></div>
     <div class="pad" style="padding:0"><table class="g" id="tbl"></table></div>
   </div>
-<div class="box" id="tlbox">
-    <h2>今日时间轴
-      <span class="n" id="tlnote"></span>
-      <span style="flex:none;display:flex;gap:4px;align-items:center">
-        <span class="faint" id="tlrange"></span>
+<div class="card" id="tlbox">
+    <div class="card-header"><h3 class="card-title">今日时间轴
+      <span class="n" id="tlnote"></span></h3><div class="card-actions"><span class="faint" id="tlrange"></span>
         <button id="tlout" title="缩小">-</button>
         <button id="tlin" title="放大">+</button>
-        <button id="tlreset" title="回到整天">整天</button>
-      </span>
-    </h2>
+        <button id="tlreset" title="回到整天">整天</button></div></div>
     <div class="pad">
       <div class="tl" id="tl"></div>
       <div class="tlkey">
@@ -676,20 +676,18 @@ table.g td[data-col="timeout"]{font-family:var(--mono)}
       </div>
     </div>
   </div>
-<div class="box" id="hmbox">
-    <h2>健康热力图 <span class="n" id="hmnote"></span></h2>
+<div class="card" id="hmbox">
+    <div class="card-header"><h3 class="card-title">健康热力图 <span class="n" id="hmnote"></span></h3></div>
     <div class="pad"><table class="hm" id="heat"></table></div>
   </div>
-<div class="box" id="scbox">
-    <h2>大类汇总 <span class="n">上面那张明细表按大类聚合而来,点一行只看这一类。四维都是百分比可横向比较,未检查显示 - 而不是 0</span></h2>
+<div class="card" id="scbox">
+    <div class="card-header"><h3 class="card-title">大类汇总 <span class="n">上面那张明细表按大类聚合而来,点一行只看这一类。四维都是百分比可横向比较,未检查显示 - 而不是 0</span></h3></div>
     <div class="pad" style="padding:0"><table class="g" id="scores"></table></div>
   </div>
   </section>
   <section id="repos" data-view="repos" data-label="仓库" hidden>
-<div class="box" id="rpbox">
-    <h2>仓库<span class="n" id="rpnote">读取中</span>
-      <span style="flex:none"><button id="rpreload" title="重新扫描">↻</button></span>
-    </h2>
+<div class="card" id="rpbox">
+    <div class="card-header"><h3 class="card-title">仓库<span class="n" id="rpnote">读取中</span></h3><div class="card-actions"><button id="rpreload" title="重新扫描">↻</button></div></div>
     <div class="pad">
       <div class="rp-head" id="rphead"></div>
       <div class="rp-grid" id="rpgrid"></div>
@@ -697,10 +695,8 @@ table.g td[data-col="timeout"]{font-family:var(--mono)}
   </div>
   </section>
   <section id="storage" data-view="storage" data-label="配置" hidden>
-<div class="box" id="mtbox">
-    <h2>维护<span class="n" id="mtnote">读取中</span>
-      <span style="flex:none"><button id="mtreload" title="重新读取">↻</button></span>
-    </h2>
+<div class="card" id="mtbox">
+    <div class="card-header"><h3 class="card-title">维护<span class="n" id="mtnote">读取中</span></h3><div class="card-actions"><button id="mtreload" title="重新读取">↻</button></div></div>
     <div class="mt-grid">
       <div class="mt-col" id="mt-skills"></div>
       <div class="mt-col" id="mt-memory"></div>
@@ -710,10 +706,8 @@ table.g td[data-col="timeout"]{font-family:var(--mono)}
   </div>
   </section>
   <section id="convos" data-view="convos" data-label="会话" hidden>
-<div class="box" id="cvbox">
-    <h2>会话<span class="n" id="cvnote">读取中</span>
-      <span style="flex:none"><button id="cvreload" title="重新扫描">↻</button></span>
-    </h2>
+<div class="card" id="cvbox">
+    <div class="card-header"><h3 class="card-title">会话<span class="n" id="cvnote">读取中</span></h3><div class="card-actions"><button id="cvreload" title="重新扫描">↻</button></div></div>
     <div class="pad">
       <div class="cv-head" id="cvhead"></div>
       <div id="cvgroups"></div>
