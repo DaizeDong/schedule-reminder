@@ -49,9 +49,15 @@ def worst_of(*states: str) -> str:
 # 清单里这两个键名都出现过,都必须认。**这张表是唯一的一份**:
 # 一个只认其中一个名字的读取器会把另一批任务的声明静默丢掉,然后天天误报,
 # 而在同一屏上另一个认全的读取器会给出相反的结论 —— 两个自称权威的答案。
-# 2026-09-09 实测就是这个形状:`server.py` 只读 ok_codes,而本机清单里
-# AcmeQualityReview 声明的是 `ok_exit_codes: [0,3,5]`,于是它退出 3 时
-# 任务表标红、summary.bad +1、实成功率被拉低,而新鲜度面板判绿。
+# 2026-09-09 在一台真实机器上实测就是这个形状:`server.py` 只读 ok_codes,
+# 而清单里有任务声明的是另一种拼写(形如 `AcmeQualityReview` 的条目写 `ok_exit_codes: [0,3,5]`),
+# 于是它退出 3 时任务表标红、summary.bad +1、实成功率被拉低,而新鲜度面板判绿。
+#
+# ⚠ 这里刻意不写真实任务名。这是公开仓,而本目录 README 的 Data boundary 一节明写
+# 「Real task names are real-run data and belong in the private machine config」。
+# 上一版把一个真实任务名连同它的退出码声明写了进来,和那句断言直接冲突 ——
+# 而三道结构闸门一道都抓不住它:一个任务名既不是邮箱也不是电话,不在任何词表里。
+# **筛子救不了一根指向出口的管子。**
 OK_CODE_KEYS = ("ok_codes", "ok_exit_codes")
 
 
