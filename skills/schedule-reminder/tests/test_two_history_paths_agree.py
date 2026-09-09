@@ -140,3 +140,42 @@ def test_judged_denominator_accounts_for_every_bucket(both_paths):
             assert s == c["judged"], (
                 f"{label}通路 {name}: ok+bad+stale+other={s} 但 judged={c['judged']} —— "
                 f"有观察进了分母却不在任何一栏里")
+
+
+def test_an_empty_run_event_table_says_why(both_paths):
+    """库可用但 run_event 是空表时,必须说出原因。
+
+    旁边 hist 那一半为同一情形写了三种具体原因,而 runs 的 reason 恒为 None ——
+    页面上只剩一句没有原因的「无运行日志」,而那句话在
+    「运行日志通道是关着的」「摄入器从没跑过」「摄入器停了」三种完全不同的处境下逐字相同。
+    这三种要采取的行动互不相同,而屏幕上分不出是哪一种。
+
+    (这条 fixture 只摄入了健康观察,没有摄入运行事件,所以 run_event 天然是空的 ——
+     正是要测的那个状态,不需要额外制造。)
+    """
+    _hist, runs, reason = S.load_from_db()
+    assert not reason
+    assert runs["available"] is False, "run_event 是空的,available 不该为真"
+    assert runs["reason"], "库里没有运行事件,却没有给出任何原因"
+    assert "摄入" in runs["reason"] or "通道" in runs["reason"], runs["reason"]
+
+
+def test_a_populated_run_event_table_gives_no_reason(both_paths, tmp_path):
+    """负对照:有运行事件时不许报原因。见谁都叫的字段会被无视。"""
+    import console_store as CS
+    con, st = CS.connect_ro()
+    assert not st
+    con.close()
+    # 直接往库里塞一条运行事件,再重新读
+    import sqlite3
+    p, _ = CS.resolve_db()
+    w = sqlite3.connect(str(p))
+    w.execute("INSERT OR IGNORE INTO run_event"
+              "(log_epoch,record_id,task,event_id,ts,day,hour,rc_raw,rc_norm) "
+              "VALUES(1,7001,'AcmeSyncJob',201,'2026-09-01 03:00:00','2026-09-01',3,'0',0)")
+    w.commit()
+    w.close()
+    _hist, runs, reason = S.load_from_db()
+    assert not reason
+    assert runs["available"] is True
+    assert runs["reason"] is None, runs["reason"]

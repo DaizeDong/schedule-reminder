@@ -322,3 +322,38 @@ def test_a_skill_with_an_empty_description_is_not_called_unreadable(tmp_path, mo
     got = M.read_skills()
     assert got["descUnreadable"] == 0, got
     assert got["skills"][0]["descUnreadable"] is False
+
+
+def test_the_memory_hard_limits_have_exactly_one_definition():
+    """MEMORY.md 的两条硬上限只能有一份定义。
+
+    ⚠ 它们以前在 maint 和 memops 里**各存了一份**,而两个模块都把它们下发给页面。
+    两份手写的同一个数,没有任何东西对账 —— 改一处而另一处照旧,页面上就会出现
+    两个都自称权威的百分比,而它们的分母不同。
+    这条按**对象同一性**判,不是按值相等:两份恰好写着同一个数字时值也相等,
+    而那正是要防的状态。
+    """
+    import memops as MO
+    assert M.INDEX_HARD_LINES is MO.INDEX_HARD_LINES
+    assert M.INDEX_HARD_BYTES is MO.INDEX_HARD_BYTES
+
+    # 源码里也不许再出现第二处字面量定义。
+    import re
+    src = open(M.__file__, encoding="utf-8").read()
+    assert not re.search(r"^INDEX_HARD_(LINES|BYTES)\s*=\s*\d", src, re.M), \
+        "maint.py 里又出现了硬上限的字面量定义"
+
+
+def test_the_second_memory_reading_says_it_is_not_authoritative(tmp_path, monkeypatch):
+    """/api/maint 里那份记忆池计数必须标明自己不是权威口径。
+
+    记忆池那一屏读的是 /api/mem(memops),而这份算的是同一批数字的另一份,
+    口径还不完全一样。**一个不标注口径的第二份数字,和一个错的数字在读的人那里
+    代价一样:他得先花时间弄明白该信哪个。**
+    """
+    (tmp_path / "a.md").write_text("x", encoding="utf-8")
+    monkeypatch.setenv("TASK_CONSOLE_MEMORY", str(tmp_path))
+    r = M.read_memory()
+    assert r["available"] is True
+    assert r.get("authority") == "/api/mem", "没有标明权威口径在哪"
+    assert r.get("note"), "没有说明两边算法不同"

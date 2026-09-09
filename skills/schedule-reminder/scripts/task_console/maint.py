@@ -37,8 +37,11 @@ ACTIONS = ("skill.archive", "skill.restore", "plugin.enable", "plugin.disable",
            "task.retire")
 
 # MEMORY.md 的硬上限。超了尾部条目会在下次会话静默消失,所以这两个数字是护栏不是建议。
-INDEX_HARD_LINES = 200
-INDEX_HARD_BYTES = 25600
+# ⚠ 这两个数以前在 maint 和 memops 里**各存了一份**,而两个模块都把它们下发给页面。
+# 两份手写的同一个数,没有任何东西对账 —— 改一处而另一处照旧,页面上就会出现
+# 两个都自称权威的百分比,而它们的分母不同。
+# 现在从 memops 借,那边才是回答记忆池问题的那个模块。
+from memops import INDEX_HARD_BYTES, INDEX_HARD_LINES  # noqa: E402,F401
 
 
 class Refused(Exception):
@@ -156,6 +159,15 @@ def read_skills() -> dict:
 
 
 def read_memory() -> dict:
+    """记忆池的粗略计数。
+
+    ⚠ 这个函数产出的东西**页面上没有任何读取点**:记忆池那一屏读的是 `/api/mem`
+    (memops.read),而它算的是同一批数字的另一份 —— 口径还不完全一样
+    (这里数 `*.md` 的总字节,那边按热层/冷层分开数)。
+    两份都在下发,谁也不说自己是哪一份。留着它是因为 `/api/maint` 的形状是对外契约,
+    突然少一个键会让别的消费方安静地拿到 undefined;但**新的消费方一律该用 /api/mem**,
+    而这里的数字只作为那一屏不可用时的粗略兜底。
+    """
     root = _root("TASK_CONSOLE_MEMORY")
     if not root:
         return {"available": False,
@@ -181,7 +193,11 @@ def read_memory() -> dict:
     archived = len(list((root / "archive").glob("*.md"))) if (root / "archive").is_dir() else 0
     return {"available": True, "root": str(root), "files": files, "bytes": total,
             "archived": archived, "indexLines": lines, "indexBytes": ibytes,
-            "hardLines": INDEX_HARD_LINES, "hardBytes": INDEX_HARD_BYTES}
+            "hardLines": INDEX_HARD_LINES, "hardBytes": INDEX_HARD_BYTES,
+            # 说清自己不是权威。一个不标注口径的第二份数字,和一个错的数字
+            # 在读的人那里代价一样:他得先花时间弄明白该信哪个。
+            "authority": "/api/mem",
+            "note": "粗略计数。记忆池的权威口径在 /api/mem(memops),两边算法不同。"}
 
 
 def _claude() -> str | None:
