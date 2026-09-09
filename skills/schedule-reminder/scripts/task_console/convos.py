@@ -251,6 +251,37 @@ def read_one(path: Path, now: float | None = None) -> dict:
     }
 
 
+def _write_cache_atomically(cpath: Path, data: dict) -> None:
+    """写临时文件再原子替换,而不是就地整文件覆盖。
+
+    ⚠ 原来是 `cpath.write_text(...)`,整文件覆盖、无锁、非原子。而服务器是
+    ThreadingHTTPServer,每个 /api/convos 请求一个线程:两个请求并发时两个线程各自
+    把完整字典写进同一个路径,内容互相交叠;写到一半进程被关掉同样留下半个文件。
+    而 `_load_cache` 把 ValueError 和 OSError 都吞成 `{}` —— 于是**坏掉的缓存和
+    「还没有缓存」在行为上完全一致**:之后每次打开会话面板都是全量重读,
+    响应从秒级回到十几秒,而页面上没有任何一处说缓存已经坏了。
+
+    临时文件名带上进程号与线程号:两个并发写者各写各的临时文件,最后谁替换谁都行,
+    因为两份内容都是完整且自洽的。用同一个临时名反而会把交叠从目标文件搬到临时文件。
+    os.replace 在同一个卷上是原子的(Windows 上也是),所以读方永远看到完整的一份。
+    """
+    import os as _os
+    import threading as _th
+    tmp = cpath.with_name(
+        cpath.name + ".tmp-%d-%d" % (_os.getpid(), _th.get_ident()))
+    try:
+        cpath.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        _os.replace(tmp, cpath)
+    except OSError:
+        # 缓存写不进去不该让这次扫描失败:扫描的结果已经在手上了,缓存只是下次快一点。
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
 def _load_cache(p: Path | None) -> dict:
     if not p or not p.is_file():
         return {}
@@ -312,11 +343,7 @@ def scan(root: str | None = None, cache: str | None = None,
             rows.append(rec)
 
     if cpath:
-        try:
-            cpath.parent.mkdir(parents=True, exist_ok=True)
-            cpath.write_text(json.dumps(fresh, ensure_ascii=False), encoding="utf-8")
-        except OSError:
-            pass
+        _write_cache_atomically(cpath, fresh)
 
     groups: dict[str, list] = {}
     for r in rows:

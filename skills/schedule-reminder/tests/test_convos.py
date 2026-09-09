@@ -342,3 +342,98 @@ def test_a_complete_cache_entry_still_hits(tmp_path):
     C.scan(root=str(tmp_path), cache=str(cache), now=NOW)
     again = C.scan(root=str(tmp_path), cache=str(cache), now=NOW)
     assert again["summary"]["cacheHits"] == 1, again["summary"]
+
+
+# ---------- 缓存写入必须是原子的 ----------
+# 服务器是 ThreadingHTTPServer,每个 /api/convos 请求一个线程。缓存原来是
+# `cpath.write_text(...)` 整文件覆盖、无锁、非原子:两个请求并发时两个线程各自把完整字典
+# 写进同一个路径,内容互相交叠;写到一半进程被关掉同样留下半个文件。
+# 而 _load_cache 把 ValueError 和 OSError 都吞成 {} —— **坏掉的缓存和「还没有缓存」
+# 在行为上完全一致**:之后每次打开会话面板都是全量重读,响应从秒级回到十几秒,
+# 而页面上没有任何一处说缓存已经坏了,只有一个没人会盯的 cacheHits 在暗示。
+
+def test_concurrent_cache_writes_never_leave_an_unreadable_file(tmp_path, monkeypatch):
+    """两个写者并发时,目标文件必须始终是**某一个写者的完整内容**。
+
+    ⚠ 判据必须是确定的。第一版就让两个线程各自 `_write_cache_atomically` 几十轮然后看
+    结果 —— 投毒(退回非原子的整文件覆盖)时**三轮全绿**:交叠是概率事件,
+    在 GIL 下小载荷根本没机会发生。把载荷加到 1.5MB 也没用。
+    **一个只在运气好的时候才会失败的并发用例,和没有断言差别不大。**
+
+    所以这里把「写到一半」这件事直接做出来:把底层写入换成「写前半 -> 让出 -> 写后半」。
+    原子实现下两个写者各写各的临时文件,替换是一瞬间的,读方永远看到完整的一份;
+    非原子实现下两个写者写的是同一个目标,交叠必然发生。
+    """
+    import json as _json
+    import threading
+    import time
+
+    cpath = tmp_path / "convo-cache.json"
+    real_write_text = C.Path.write_text
+
+    def slow_write_text(self, data, *a, **k):
+        half = len(data) // 2
+        real_write_text(self, data[:half], *a, **k)
+        time.sleep(0.05)                       # 让另一个写者挤进来
+        with open(self, "a", encoding="utf-8") as fh:
+            fh.write(data[half:])
+
+    monkeypatch.setattr(C.Path, "write_text", slow_write_text)
+
+    payloads = [{"k": chr(97 + i) * 400} for i in range(2)]
+    errs = []
+
+    def w(d):
+        try:
+            C._write_cache_atomically(cpath, d)
+        except Exception as e:                 # noqa: BLE001
+            errs.append(e)
+
+    ts = [threading.Thread(target=w, args=(d,)) for d in payloads]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+
+    assert not errs, errs
+    txt = cpath.read_text(encoding="utf-8")
+    got = _json.loads(txt)                     # 交叠会在这里抛 ValueError
+    assert got in payloads, "文件内容不是任何一个写者写的那份,说明发生了交叠"
+    assert not list(tmp_path.glob("*.tmp-*")), "临时文件没有被清掉"
+
+
+def test_the_cache_is_still_written_at_all(tmp_path):
+    """正对照:上面那条只证明「没写坏」,一个什么都不写的实现同样能通过。"""
+    cpath = tmp_path / "c.json"
+    C._write_cache_atomically(cpath, {"a": 1})
+    assert cpath.is_file()
+    assert C._load_cache(cpath) == {"a": 1}
+
+
+def test_a_write_failure_does_not_raise(tmp_path):
+    """缓存写不进去不该让这次扫描失败:结果已经在手上了,缓存只是下次快一点。"""
+    cpath = tmp_path / "nodir" / "sub" / "c.json"
+    # 把父目录做成一个文件,mkdir 必然失败
+    (tmp_path / "nodir").write_text("x", encoding="utf-8")
+    C._write_cache_atomically(cpath, {"a": 1})     # 不抛
+    assert not cpath.exists()
+
+
+def test_a_failed_replace_leaves_no_temp_file_behind(tmp_path, monkeypatch):
+    """替换那一步失败时,临时文件必须被清掉。
+
+    ⚠ 这条是投毒逼出来的:清理只在 OSError 那条路上跑,而上面那条失败用例
+    在**建临时文件之前**就失败了,于是把清理整个删掉,整套照样全绿 ——
+    一个从来没走到那条分支的负对照,覆盖的是别的东西。
+    这里让替换本身失败,那时临时文件已经躺在磁盘上了。
+    """
+    import os as _os
+    cpath = tmp_path / "c.json"
+
+    def boom(a, b):
+        raise OSError(5, "Access is denied")
+
+    monkeypatch.setattr(_os, "replace", boom)
+    C._write_cache_atomically(cpath, {"a": 1})       # 不抛
+    assert not cpath.exists()
+    assert not list(tmp_path.glob("*.tmp-*")), "替换失败之后临时文件留在了磁盘上"
