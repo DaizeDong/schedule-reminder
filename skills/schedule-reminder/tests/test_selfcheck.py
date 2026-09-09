@@ -196,3 +196,30 @@ def test_an_unlistable_directory_says_so_separately(bundle, tmp_path, monkeypatc
     r = row(run(bundle, TASK_CONSOLE_SKILLS=str(d)), "skills")
     assert r["state"] == "missing"
     assert "列不出来" in (r.get("why") or ""), r
+
+
+def test_a_landing_zone_directory_may_legitimately_be_empty(bundle, tmp_path):
+    """归档区还没归档过东西时就是空的,那不是故障。
+
+    上线当天实测到:「空目录 = 没配好」这条规则对着一个空的 skill 归档区喊「读不到」,
+    而**一道对合法状态开火的闸门会被忽略,连带它真正该抓的那一类一起被忽略**。
+    """
+    empty = tmp_path / "archive"
+    empty.mkdir()
+    r = row(run(bundle, TASK_CONSOLE_SKILL_ARCHIVE=str(empty)), "skill_archive")
+    assert r["state"] == "ok", r
+
+
+def test_the_exemption_does_not_leak_to_sources_that_must_have_content(bundle, tmp_path):
+    """正对照:豁免只给名单里那几个。skill 目录空了仍然要红,
+    否则这次放宽会把它本来该抓的那一类一起放过。"""
+    empty = tmp_path / "skills"
+    empty.mkdir()
+    assert row(run(bundle, TASK_CONSOLE_SKILLS=str(empty)), "skills")["state"] == "missing"
+
+
+def test_the_exemption_list_is_not_everything(bundle):
+    """再一条:名单不能悄悄膨胀成「所有目录都豁免」。"""
+    import selfcheck as SC2
+    dirs = {k for k, _t, _v, kind, _m, _r in SC2.SOURCES if kind == "dir"}
+    assert SC2.MAY_BE_EMPTY < dirs, "豁免名单覆盖了全部目录,等于把这条检查关掉了"

@@ -27,6 +27,12 @@ OK, STALE, MISSING, UNSET = "ok", "stale", "missing", "unset"
 
 # 每个来源:(键, 人话标题, 环境变量或 None, 类型, 保鲜期小时或 None, 是不是必需)
 # 保鲜期为 None 表示这个来源不会过期(比如一个脚本文件),而不是「随便多旧都行」。
+# 这几个目录**合法地可以是空的**:归档区在还没归档过东西时是空的,缓存在还没生成时是空的。
+# 对它们套用「空目录 = 没配好」会让自检对着一个正常状态天天喊,
+# 而一道对合法状态开火的闸门会被忽略,连带它真正该抓的那一类一起被忽略。
+# (上线当天实测:它对着一个空的 skill 归档区报「读不到」。)
+MAY_BE_EMPTY = frozenset(("skill_archive", "plugin_cache"))
+
 SOURCES = (
     ("categories", "任务分类映射", "TASK_CONSOLE_CATEGORIES", "file", None, False),
     ("health", "健康声明清单", "TASK_CONSOLE_HEALTH", "file", None, True),
@@ -62,7 +68,8 @@ BUNDLED = (
 # 而后者正是这个模块存在的理由所反对的那种绿色:自检整块打绿,对应面板显示 0 个条目。
 # 空文件那一半原来已经判 missing,目录这一半却判 ok : 同一个「配了但里面什么都没有」
 # 给了两种结论。
-def _probe(path: Path, kind: str, max_age_h: float | None, now: float) -> tuple[str, dict]:
+def _probe(path: Path, kind: str, max_age_h: float | None, now: float,
+           may_be_empty: bool = False) -> tuple[str, dict]:
     info: dict = {"path": str(path)}
     try:
         st = os.stat(path)
@@ -91,7 +98,7 @@ def _probe(path: Path, kind: str, max_age_h: float | None, now: float) -> tuple[
         if info["entries"] is None:
             info["why"] = "目录列不出来"
             return MISSING, info
-        if info["entries"] == 0:
+        if info["entries"] == 0 and not may_be_empty:
             info["why"] = "目录是空的"
             return MISSING, info
     else:
@@ -120,7 +127,8 @@ def run(now: float | None = None, here: Path | None = None, env: dict | None = N
                          "required": required, "path": None,
                          "why": f"没有设 {var}"})
             continue
-        state, info = _probe(Path(os.path.expanduser(raw)), kind, max_age, now)
+        state, info = _probe(Path(os.path.expanduser(raw)), kind, max_age, now,
+                             may_be_empty=(key in MAY_BE_EMPTY))
         rows.append(dict({"key": key, "title": title, "env": var, "state": state,
                           "required": required}, **info))
 
