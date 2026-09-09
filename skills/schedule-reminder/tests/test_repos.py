@@ -298,3 +298,71 @@ def test_the_empty_root_branch_has_the_same_summary_shape(tmp_path, monkeypatch)
 
     a, b = set(blank["summary"]), set(normal["summary"])
     assert a == b, f"只在空分支里: {sorted(a - b)};只在正常分支里: {sorted(b - a)}"
+
+
+# ---------- 类型与关系:全部从形状观察,零仓名表 ----------
+
+def test_group_counts_sum_to_the_total(tmp_path, monkeypatch):
+    """三个组标题的计数加起来必须等于「共 N」。
+
+    ⚠ 按 kind 直接数的话,伴生仓不属于任何一个显示出来的组,于是三个组标题加起来
+    比总数少一截,而屏幕上**没有任何一处解释那个差**。
+    这块面板同屏出现两个都自称权威的数字,正是这个控制台反复在修的那类缺陷。
+    伴生仓画在宿主那一组里,就该算在那一组里。
+    """
+    host = mkrepo(tmp_path, "acme-thing")
+    (host / "SKILL.md").write_text("x", encoding="utf-8")
+    mkrepo(tmp_path, "acme-thing-config")
+    mkrepo(tmp_path, "acme-plain")
+    S = R.scan(root=str(tmp_path), now=NOW)["summary"]
+    assert sum(S["kinds"].values()) == S["total"], (S["kinds"], S["total"])
+    # 伴生仓算进宿主那一组:一个 skill 宿主 + 它的伴生 = 2
+    assert S["kinds"]["skill"] == 2, S["kinds"]
+    assert S["kinds"]["other"] == 1, S["kinds"]
+
+
+def test_a_config_repo_without_a_host_is_not_a_companion(tmp_path):
+    """名字像伴生仓、但配不上宿主的,不算伴生。
+
+    判据是**配对成功**,不是名字后缀。一个独立的配置备份仓(去掉后缀之后并没有
+    那个仓)会被后缀判据误认成某个不存在的宿主的伴生仓,然后挂到一个空位上。
+    """
+    mkrepo(tmp_path, "acme-orphan-config")
+    rows = {r["name"]: r for r in R.scan(root=str(tmp_path), now=NOW)["repos"]}
+    assert rows["acme-orphan-config"]["kind"] == "other"
+    assert rows["acme-orphan-config"].get("companionOf") is None
+
+
+def test_a_repo_used_as_a_submodule_is_shared(tmp_path):
+    """被别的仓在 .gitmodules 里引用 -> 共享组件。
+
+    读 .gitmodules 而不是跑 `git submodule`:后者要求子模块已经 checkout,
+    而「声明了但没 checkout」正是这套闸门栽过的坑(目录存在且为空,什么都不跑还退 0)。
+    声明本身才是关系的事实。
+    """
+    user = mkrepo(tmp_path, "acme-user")
+    (user / "SKILL.md").write_text("x", encoding="utf-8")
+    (user / ".gitmodules").write_text(
+        '[submodule "g"]\n\tpath = g\n\turl = https://example.com/acme/acme-kit.git\n',
+        encoding="utf-8")
+    mkrepo(tmp_path, "acme-kit")
+    rows = {r["name"]: r for r in R.scan(root=str(tmp_path), now=NOW)["repos"]}
+    assert rows["acme-kit"]["kind"] == "shared", rows["acme-kit"]
+    assert rows["acme-user"]["kind"] == "skill"
+    # 负对照:没被任何人引用的仓不该被判成共享组件。
+    assert "acme-kit" in (rows["acme-user"].get("usesShared") or [])
+
+
+def test_every_repo_gets_exactly_one_kind(tmp_path):
+    """每个仓必须正好有一个 kind,而且在已知集合里。
+
+    少了这一条,一个把 kind 留空的实现会让那些仓从**所有**分组里消失 ——
+    页面上不报错,只是少了几行,而「少了几行」没有人会数。
+    """
+    mkrepo(tmp_path, "acme-a")
+    mkrepo(tmp_path, "acme-b")
+    d = R.scan(root=str(tmp_path), now=NOW)
+    known = {"skill", "shared", "companion", "other"}
+    for r in d["repos"]:
+        assert r.get("kind") in known, r
+    assert len(d["repos"]) == d["summary"]["total"]
