@@ -67,6 +67,27 @@ def test_a_second_export_adds_nothing(db):
     assert len(_lines(out)) == 5
 
 
+def test_a_lock_timeout_is_recorded_not_raised(db, monkeypatch):
+    """锁超时要被记成一次失败的导出,而不是把异常扔给调用方。
+
+    `begin()` 执行的是 BEGIN IMMEDIATE。它原来在各处 try **之外**,于是另一个写者持锁、
+    busy_timeout 用尽时异常直接冒到 main 之外:没有 note_run,**后面几个源也不再摄入**,
+    而模块开头写着「读不到的源会被记成一条失败的 ingest_run 行并非零退出」。
+    挪进 try 之后还不够 —— except 里那句裸的 ROLLBACK 会再抛一次
+    (cannot rollback - no transaction is active),承诺照样不成立,只是异常换了名字。
+    """
+    _feed(db, 2)
+    monkeypatch.setattr(CI, "begin", lambda con: (_ for _ in ()).throw(
+        RuntimeError("database is locked")))
+    ok, n, msg = CI.export_run_events(db)
+    assert ok is False, "锁超时被当成了成功"
+    assert "locked" in msg
+    # 账本里要留下痕迹,否则事后没有任何线索。
+    row = db.execute("SELECT ok, note FROM ingest_run WHERE source='export' "
+                     "ORDER BY rowid DESC LIMIT 1").fetchone()
+    assert row is not None and not row["ok"], "账本里没有记下这次失败"
+
+
 def test_a_failed_watermark_commit_does_not_duplicate_lines(db, monkeypatch):
     """把「文件写了、水位线没提交上」这件事真的制造出来。
 
@@ -80,8 +101,11 @@ def test_a_failed_watermark_commit_does_not_duplicate_lines(db, monkeypatch):
     real_begin = CI.begin
     monkeypatch.setattr(CI, "begin", lambda con: (_ for _ in ()).throw(
         RuntimeError("database is locked")))
-    with pytest.raises(Exception):
-        CI.export_run_events(db)
+    # begin() 现在在 try 里面,所以锁超时不再冒到调用方 —— 它被记成一次失败的导出。
+    # 这正是模块开头承诺的行为(「读不到的源会被记成一条失败的 ingest_run 行」),
+    # 而以前 begin() 在 try 之外,异常直接穿出去、连账都没记。
+    ok, n, msg = CI.export_run_events(db)
+    assert ok is False and "locked" in msg, (ok, n, msg)
     monkeypatch.setattr(CI, "begin", real_begin)
 
     # 文件里已经有这 4 行,而 meta 的水位线没动 —— 这正是那个危险状态。
@@ -109,8 +133,8 @@ def test_duplicate_record_ids_never_appear(db, monkeypatch):
         if round_i == 1:
             monkeypatch.setattr(CI, "begin", lambda con: (_ for _ in ()).throw(
                 RuntimeError("database is locked")))
-            with pytest.raises(Exception):
-                CI.export_run_events(db)
+            ok, _n, _msg = CI.export_run_events(db)
+            assert ok is False
             monkeypatch.setattr(CI, "begin", real_begin)
         else:
             CI.export_run_events(db)

@@ -33,8 +33,16 @@ if ($all.Count -eq 0) {
 $rows = @()
 foreach ($t in $all) {
   if ($t.TaskName -match $VendorPattern) { continue }
+  # Get-ScheduledTaskInfo can fail (access denied, a task registered by an installer that is
+  # mid-uninstall, a corrupt registration). The old `catch { }` swallowed that: every info field
+  # came out null and NOTHING in the payload said the read had failed, so the consumer saw
+  # rc=null, decided it was not RUNNING and not NOT_RUN, and printed "failed ?" --
+  # a read failure rendered as the definite conclusion "this task failed".
+  # Say it instead. "I could not read this" and "this failed" are different answers.
   $i = $null
-  try { $i = $t | Get-ScheduledTaskInfo -ErrorAction Stop } catch { }
+  $infoErr = $null
+  try { $i = $t | Get-ScheduledTaskInfo -ErrorAction Stop }
+  catch { $infoErr = $_.Exception.Message }
   $s = $t.Settings
 
   # Triggers are emitted BOTH as a human string and as structured fields. The string is for the
@@ -78,6 +86,9 @@ foreach ($t in $all) {
     # did not. Nothing else on this machine can answer 'should have run but did not':
     # an exit code only exists for runs that happened.
     missedRuns  = if ($i) { [int]$i.NumberOfMissedRuns } else { $null }
+    # Non-null means the info read failed and every field above is null for THAT reason,
+    # not because the scheduler had nothing to report.
+    infoError   = $infoErr
     triggers    = ($trg -join ', ')
     triggersRaw = $trgRaw
     exec        = $t.Actions[0].Execute

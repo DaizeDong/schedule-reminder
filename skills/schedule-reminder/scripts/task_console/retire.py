@@ -44,8 +44,19 @@ def _env_path(var: str) -> Path | None:
     return Path(os.path.expanduser(v)) if v else None
 
 
+# 钉死的绝对路径。裸名 "powershell.exe" 交给 CreateProcess 时会按
+# 「应用程序目录 -> 当前目录 -> 系统目录 -> PATH」搜索 —— 也就是说当前目录里放一个同名的
+# 可执行文件就能顶替它,而这个模块正是**会改系统状态和改文件**的那一条路。
+# server.py 那边一直是钉路径的;两份实现在同一台机器上可能解析到不同的可执行文件,
+# 而没钉的偏偏是危险的这一份。
+_PS_PINNED = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+
+
 def _powershell() -> str:
-    return os.environ.get("TASK_CONSOLE_POWERSHELL") or "powershell.exe"
+    v = os.environ.get("TASK_CONSOLE_POWERSHELL")
+    if v:
+        return v
+    return _PS_PINNED if os.path.isfile(_PS_PINNED) else "powershell.exe"
 
 
 def _task_state(name: str) -> str | None:
@@ -123,13 +134,22 @@ def plan(name: str, reason: str) -> dict:
         steps.append({"step": "health", "state": "missing-config",
                       "detail": "没有配 TASK_CONSOLE_HEALTH"})
     else:
+        # ⚠ 以前这里 `except (OSError, ValueError): watched = False`,于是
+        # **「我读不出这份清单」被当成了「这个任务本来就不在清单里」这个确定结论**,
+        # 再写成 state='already'(无需改动)。而 blocked 只收集 missing-config,
+        # 所以解析失败连 apply 都拦不住:退役会跳过这一步然后报告自己四步做完了。
+        # 本模块开头那段话说的正是这件事 —— 健康清单一旦解码失败,等于所有任务都没有被监控,
+        # 而界面看起来完全正常。
         try:
             data = json.loads(hp.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as e:
+            steps.append({"step": "health", "state": "missing-config",
+                          "detail": f"{hp}: 读不出来({e.__class__.__name__}),"
+                                    f"拒绝把「读不出来」当成「不在清单里」"})
+        else:
             watched = any(t.get("name") == name for t in data.get("tasks", []))
-        except (OSError, ValueError):
-            watched = False
-        steps.append({"step": "health", "state": "will-change" if watched else "already",
-                      "detail": str(hp)})
+            steps.append({"step": "health", "state": "will-change" if watched else "already",
+                          "detail": str(hp)})
 
     return {"name": name, "reason": reason.strip(), "steps": steps,
             "changes": sum(1 for s in steps if s["state"] == "will-change"),
