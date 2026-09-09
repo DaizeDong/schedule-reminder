@@ -226,8 +226,13 @@ def load_runlog() -> dict:
             "byDay": dict(t["byDay"]),
             "todayRuns": sorted(set(t["todayRuns"])),
         }
+    # count 必须带着它的窗口一起给。同一个界面元素在有数据库时是「run_event 全表行数」、
+    # 在回落时是「最近 N 天的事件条数」,而表里的「实跑」「实成功%」永远只统计另一个窗口:
+    # 三个窗口、一个数字、页面不说是哪一个。想用它判断「日志覆盖了多久」的人会得到一个偏大的数,
+    # 并据此相信历史比实际更完整。
     return {"available": True, "reason": None, "since": raw.get("since"),
             "oldest": raw.get("oldest"), "count": raw.get("count", len(evs)),
+            "windowDays": 30, "countScope": "最近 30 天",
             "tasks": out_tasks,
             "note": ("这一份是真实运行记录(每次启动、完成、动作返回码),和上面那个轮询观察是两回事。"
                      "它只回溯到日志被启用那天,所以空不等于没跑过,而是「还没记到」。")}
@@ -304,6 +309,8 @@ def load_from_db():
         "available": cov["runs"]["rows"] > 0, "reason": None,
         "since": cov["runs"]["from"], "oldest": cov["runs"]["from"],
         "count": cov["runs"]["rows"], "tasks": rtot,
+        # 数据库那条路的 count 是全表行数,不限日期,和上面回落路径那条不是一个量。
+        "windowDays": None, "countScope": "库里全部",
         "note": ("真实运行记录,来自 Windows 任务计划的运行日志,每小时由摄入器写进数据库。"
                  "⚠️ 那个日志是滚动缓冲,实测约 5 天就会覆盖,所以没被摄入的历史是永久丢失的。"),
     }
@@ -443,6 +450,16 @@ def build_freshness(tasks: dict, health: dict, health_reason: str | None = None)
     return freshness.evaluate(list(health.values()), rows, time.time())
 
 
+# 导出给页面的字段,以及**刻意不导出**的那些。两个集合加起来必须覆盖 hist / runs 里
+# 写下的每一个键 : tests/test_console_security.py 直接对着这两个常量和生产者的字面量比对,
+# 所以新增一个字段而忘了归类,会让测试变红,而不是让那个字段安静地到不了页面。
+HISTORY_OUT = ("available", "reason", "days", "caveat", "matched", "source", "lastIngest")
+HISTORY_DROP = ("tasks", "skipped")          # tasks 很大且已并进每一行;skipped 页面用不到
+RUNLOG_OUT = ("available", "reason", "since", "oldest", "count", "note",
+              "partial", "windowDays", "countScope")
+RUNLOG_DROP = ("tasks",)                      # 同上,已并进每一行
+
+
 def build_payload() -> dict:
     rc, out, err = run_ps(COLLECT)
     if rc != 0 or not out:
@@ -525,6 +542,11 @@ def build_payload() -> dict:
             total = sum(rr["rcs"].values())
             good = sum(v for k, v in rr["rcs"].items()
                        if (lambda z: z is not None and z in okset)(norm_rc(k)))
+            # judged 是**动作返回码事件**的条数,不是旁边那一列显示的「实跑」(启动事件数)。
+            # 一个多动作任务每次运行写多条 201,分母大于实跑;一个 rc 事件被日志滚动截断的任务,
+            # 分母小于实跑。于是同一行里两个数看似同源实则不同分母,而页面没有任何地方能让人
+            # 分辨:「实成功 100%」可能只建立在 1 个动作事件上,而旁边写着实跑 40 次。
+            # judged 一起送到前端,让那一格能说出自己是拿几个样本算的。
             rr["judged"] = total
             rr["good"] = good
             rr["successRate"] = round(100.0 * good / total, 1) if total else None
@@ -573,16 +595,16 @@ def build_payload() -> dict:
         "groups": groups,
         "freshness": fresh,
         "warnings": warnings,
-        # ⚠ 这是一层字段白名单。把 available 改成 False 却忘了让 reason 出现在这里,
-        # 页面上就只剩一个没有原因的 False : 实测过一次,空库那条判定生效了而 reason 是空的。
-        # 凡是新增一个「说明为什么」的字段,都要同时加进这里,否则它到不了页面。
-        # lastIngest 同理:它是区分「摄入器挂了」和「本来就没跑过」的唯一信号。
-        "history": {k: hist[k] for k in ("available", "reason", "days", "caveat",
-                                         "matched", "source", "lastIngest")
-                    if k in hist},
-        "runlog": {k: runs[k] for k in ("available", "reason", "since", "oldest",
-                                        "count", "note", "partial")
-                   if k in runs},
+        # ⚠ 这一层是字段白名单,它已经吃掉过三次字段:reason(空库那条判定生效了而页面上
+        # 只有一个没有原因的 False)、lastIngest、countScope。每一次的表现都一样:
+        # 后端算对了,页面上什么都没有,而没有任何东西报错。
+        #
+        # 所以现在是**显式两分**:HISTORY_OUT / RUNLOG_OUT 是导出的,
+        # 对应的 _DROP 是刻意不导出的(体积大、页面用不到)。
+        # 两边加起来必须覆盖生产者写下的每一个键,由 tests 断言 :
+        # 新增字段忘了归类,测试会红,而不是它安静地到不了页面。
+        "history": {k: hist[k] for k in HISTORY_OUT if k in hist},
+        "runlog": {k: runs[k] for k in RUNLOG_OUT if k in runs},
         "scores": scores,
         "timeline": tl,
         "summary": {
