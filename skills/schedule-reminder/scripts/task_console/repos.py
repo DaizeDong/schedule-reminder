@@ -45,6 +45,13 @@ def _git(repo: Path, *args: str, timeout: int = 20) -> tuple[int, str]:
     try:
         r = subprocess.run(("git", "-C", str(repo)) + args, capture_output=True,
                            text=True, encoding="utf-8", errors="replace", timeout=timeout, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+        # 失败时要带上 stderr:git 把成功的输出写 stdout,把**失败的原因**写 stderr。
+        # 原来只取 stdout,于是仓库面板上一个 error 行只会显示「git status 退出 128」、
+        # fetch 失败只会显示「fetch 退出 128:」后面什么都没有 :
+        # 真正的原因(认证失败、dubious ownership、远端不存在)读不到,
+        # 排查只能到命令行重跑一遍,而那正是这块面板想省掉的事。
+        if r.returncode != 0:
+            return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
         return r.returncode, (r.stdout or "")
     except (OSError, subprocess.SubprocessError) as e:
         return 127, f"{e.__class__.__name__}: {e}"

@@ -34,6 +34,10 @@ _SEVERITY = {UP: 0, RUNNING: 0, PAUSED: 1, UNKNOWN: 2, GRACE: 3, NEVER: 4, DOWN:
 
 # 宽限期默认取周期的两成,但至少一小时:一个 30 分钟周期的任务,
 # 六分钟的宽限期只会制造抖动。
+# 允许的时钟误差。小于这个值的负龄当成 0(刚写完的产物 mtime 比 now 略大是正常的,
+# 文件系统时间戳精度和写入顺序都会造成几秒的负数),超过就当作时钟出了问题。
+_FUTURE_SLACK_H = 0.1
+
 _GRACE_RATIO = 0.2
 _GRACE_MIN_H = 1.0
 
@@ -133,8 +137,17 @@ def evaluate(decls, rows, now, mtime_of=None):
                     reasons.append(why or "产物不可读")
                 else:
                     art_age = (now - m) / 3600.0
-                    art_v = _age_verdict(art_age, decl.get("artifact_max_age_hours"),
-                                         decl.get("grace_hours"))
+                    if art_age < -_FUTURE_SLACK_H:
+                        # 产物的时间戳在未来。原因通常是系统时钟被回拨,或者产物从别的机器
+                        # 拷回来带着未来的 mtime。负龄会让 _age_verdict 恒判新鲜,
+                        # 于是相关任务在时钟追上之前一律绿着,**即使它们已经完全停跑** :
+                        # 一个会持续数小时到数天的假绿,而唯一线索是理由里一个负数。
+                        # 查不成就说查不成,别拿一个算不出意义的数去判绿。
+                        reasons.append(f"产物时间戳在未来 {abs(art_age):.1f}h(时钟回拨?)")
+                        art_v = UNKNOWN
+                    else:
+                        art_v = _age_verdict(art_age, decl.get("artifact_max_age_hours"),
+                                             decl.get("grace_hours"))
             else:
                 reasons.append("没有声明产物,只能看退出码")
 

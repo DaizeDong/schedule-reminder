@@ -241,3 +241,31 @@ def test_attention_is_a_superset_of_bad():
     s2 = out["summary"]
     assert s2["attention"] >= s2["bad"]
     assert s2["attention"] == sum(s2["counts"].get(k, 0) for k in s2["attentionStates"])
+
+
+# ---------- 产物时间戳在未来 ----------
+# 系统时钟被回拨,或产物从别的机器拷回来带着未来的 mtime,都会让 (now - mtime) 变成负数,
+# 而负龄在任何「比阈值旧吗」的比较里都判新鲜。于是相关任务在时钟追上之前一律绿着,
+# **即使它们已经完全停跑** : 一个会持续数小时到数天的假绿,
+# 而唯一线索是理由里一个负数。查不成就说查不成,别拿一个算不出意义的数去判绿。
+#
+# (第一版这三条我自己另造了一份不完整的 row,结果连「正常新鲜」那条都返回 unknown :
+#  用文件里现成的 mk/rows/ev,它们已经把 next_run / missed_runs 这些必需字段配齐了。)
+
+def test_a_future_artifact_timestamp_is_unknown_not_fresh():
+    r = ev(mk(artifact="~/a", artifact_max_age_hours=1), mtime=NOW + 6 * H)
+    assert r["state"] == F.UNKNOWN, r
+    assert any("未来" in x for x in r["reasons"]), r["reasons"]
+
+
+def test_a_tiny_negative_age_is_still_fresh():
+    """正对照:刚写完的产物 mtime 比 now 大几秒是正常的(时间戳精度、写入顺序),
+    不能因此判成时钟出问题 : 那样这条提示会在每次刚跑完的任务上亮一次。"""
+    r = ev(mk(artifact="~/a", artifact_max_age_hours=1), mtime=NOW + 2)
+    assert r["state"] == F.UP, r
+
+
+def test_a_normal_fresh_artifact_is_still_up():
+    """再一条正对照:正常的新鲜产物不能被这次改动波及。"""
+    r = ev(mk(artifact="~/a", artifact_max_age_hours=10), mtime=NOW - 1 * H)
+    assert r["state"] == F.UP, r
