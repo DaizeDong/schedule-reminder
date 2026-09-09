@@ -447,6 +447,19 @@ button.mini{min-width:auto;padding:0 5px;font-size:10.5px;white-space:nowrap}
 #side.navbar-folded .nav-link .badge{position:absolute;top:1px;right:3px;font-size:9px;
   padding:0 3px;margin:0!important}
 #side.navbar-folded #sidetoggle{padding:2px 0;font-size:11px}
+/* 低于 navbar-expand-sm 的断点(576px)时,Tabler 把 navbar-vertical 变成页面顶部一条
+   全宽的块,而 .navbar-folded 在这个断点下没有任何规则 : 于是点「收起」会把按钮文字换成
+   »、把状态写进 localStorage,页面却纹丝不动,**一个自称已折叠、实际没折叠的控件**;
+   下次在宽屏打开时启动代码又会照着这个假状态自动折叠一次。
+   这里让折叠在窄屏下也真的生效:收起时只留品牌行,分区项藏起来。 */
+@media (max-width:575.98px){
+  /* 只藏分区列表,不藏它的容器 : 收起按钮就在 #sidenav 里面,
+     把整个 #sidenav display:none 会把按钮一起带走,于是收起之后再也展不开。
+     实测过一次:收起后按钮高度为 0。 */
+  #side.navbar-folded .navbar-nav{display:none}
+  #side.navbar-folded{padding-bottom:2px}
+  #side.navbar-folded #sidetoggle{display:block}
+}
 
 #bar{--tblr-navbar-padding-y:0;min-height:26px;font-size:11.5px}
 #bar .container-fluid{gap:0;padding:0}
@@ -805,7 +818,9 @@ function renderTL(){
   const T=DATA.timeline;
   if(!T||!T.rows||!T.rows.length){ $("tlbox").hidden=true; return; }
   $("tlbox").hidden=false;
-  $("tlnote").textContent=`${T.date} 现在 ${T.now} · ${T.rows.length} 行 · ${T.note}`;
+  const rlDown = !(DATA.runlog && DATA.runlog.available);
+  $("tlnote").textContent=`${T.date} 现在 ${T.now} · ${T.rows.length} 行 · ${T.note}`
+    + (rlDown ? " ⚠ 运行日志不可用,本图只有计划、没有实际:每行都没有实际运行标记不代表它们没跑。" : "");
   const fmt=m=>`${String(Math.floor(m/60)).padStart(2,"0")}:${String(Math.round(m)%60).padStart(2,"0")}`;
   $("tlrange").textContent=`${fmt(tlFrom)}-${fmt(Math.min(tlTo,1439))}`;
   const nowM=mins(T.now);
@@ -1668,6 +1683,27 @@ function render(){
   $("s-off").textContent=S.disabled;
   $("s-src").innerHTML=`<span class="k">数据</span>${esc(S.generated)}`
     +((DATA.history&&DATA.history.available)?` <span class="faint">观察${DATA.history.days.length}d</span>`:` <span class="faint">无观察</span>`)
+    // 摄入器最后一次跑成没跑成,原来查出来了却在 server 里被丢掉:数据库存在但摄入器已经
+    // 连续失败几周时,页面照常显示 available=true、热力图照画、健康% 仍是一个具体数字,
+    // 而**没有任何一处告诉人这些数字最后一次更新是什么时候**。
+    +(()=>{
+       // lastIngest 是 {来源: {at, ok}} 的字典,不是一个时间串。第一版直接 String() 它,
+       // 顶栏印出「最后摄入 [object Object]」 : 一个显示出来却读不懂的字段,
+       // 和没有这个字段差不多。
+       const li = DATA.history && DATA.history.lastIngest;
+       if(!li || typeof li !== "object") return "";
+       const rows = Object.entries(li).filter(([,v])=>v && v.at);
+       if(!rows.length) return "";
+       // 取最旧的那一条:摄入器是几条流水线,任何一条停了这些数字就有一部分停在那一刻。
+       rows.sort((a,b)=>String(a[1].at).localeCompare(String(b[1].at)));
+       const [oldName, oldest] = rows[0];
+       const bad = rows.filter(([,v])=>v.ok === false).map(([k])=>k);
+       const tip = rows.map(([k,v])=>`${k}: ${v.at}${v.ok===false?" (失败)":""}`).join(" · ")
+         + " — 摄入器停了的话,上面这些数字会一直停在那一刻,而页面看起来毫无异常";
+       return ` <span class="${bad.length?"":"faint"}" style="${bad.length?"color:var(--bad)":""}"
+         title="${esc(tip)}">最后摄入 ${esc(String(oldest.at).slice(0,16))}${
+         bad.length?` · ${esc(bad.join("/"))} 失败`:""}</span>`;
+     })()
     +((DATA.runlog&&DATA.runlog.available)?` <span class="faint" title="${esc(DATA.runlog.countScope||"")}">运行日志${DATA.runlog.count}${DATA.runlog.countScope?" · "+esc(DATA.runlog.countScope):""}</span>`:` <span class="faint">无运行日志</span>`);
   // 含「历史」的那条警告不在这里重复:热力图不可用时会把它印在图的标题上(renderHeat),
   // 贴在图上比躺在警告堆里有用 : 人是在图空着的时候才想知道为什么空。
