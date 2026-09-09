@@ -67,9 +67,15 @@ def _is_memory(p: Path) -> bool:
 
 def read() -> dict:
     root, arch = _dirs()
-    if not root or not root.is_dir():
+    # 「没设」和「设了但那条路径不在」必须分开说。合并之后,记忆池目录被移走或改名时,
+    # 页面言之凿凿地说环境变量没设,而它设了 : **这是把「我让它检查了而它坏了」
+    # 报成了「我没让它检查」,方向刚好是最误导的那一种**,人会照着这句去检查一个没问题的地方。
+    if not root:
         return {"available": False,
                 "reason": "没有设 TASK_CONSOLE_MEMORY,记忆池诊断这一栏是「未检查」。"}
+    if not root.is_dir():
+        return {"available": False,
+                "reason": f"记忆池目录不存在或读不了: {root}"}
 
     live = {p.stem: p for p in root.glob("*.md") if _is_memory(p)}
     cold = {p.stem: p for p in arch.glob("*.md") if _is_memory(p)} if arch.is_dir() else {}
