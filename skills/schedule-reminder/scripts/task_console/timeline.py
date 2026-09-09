@@ -194,20 +194,36 @@ def build(tasks: dict, runs_by_task: dict | None = None, now: datetime | None = 
         if runs_by_task:
             r = runs_by_task.get(name) or {}
             actual = [x for x in (r.get("todayRuns") or [])]
-        if e.get("skipped") or (not e["points"] and not e["spans"] and not e["eventDriven"] and not actual):
+        # unknownTriggers 也算「这一行有东西」。
+        # ⚠ 这个过滤条件原来只看 points / spans / eventDriven / actual 四项,拼出来的 row
+        # 里也没有 unknownTriggers 这个键 —— 而 expand() 上面那行注释白纸黑字写着
+        # 「认不出的类型照样出现在行里,像 eventDriven 那样」。注释断言的行为在代码里不存在,
+        # 而它声称修好的正是同一个缺陷。
+        # 后果:一个只配了 Monthly 触发器(或 CimClassName 解析出空 kind)的任务,
+        # points/spans/eventDriven 全空 -> 直接 continue -> **今日时间轴上一行都没有**,
+        # 而页面上没有任何一处说「有 1 个触发器我不认识」。
+        # 屏幕表现与「这个任务今天本来就不该跑」逐像素相同。
+        unknown = e.get("unknownTriggers") or []
+        if e.get("skipped") or (not e["points"] and not e["spans"]
+                                and not e["eventDriven"] and not unknown and not actual):
             continue
         rows.append({
             "name": name, "cat": t.get("cat"),
             "points": e["points"], "spans": e["spans"],
-            "eventDriven": e["eventDriven"], "actual": actual,
+            "eventDriven": e["eventDriven"], "unknownTriggers": unknown,
+            "actual": actual,
             "sk": t.get("sk"),
         })
     rows.sort(key=lambda r: (r["points"][0] if r["points"]
                              else (r["spans"][0]["from"] if r["spans"] else "zz")))
+    n_unknown = sum(len(r["unknownTriggers"]) for r in rows)
     return {
         "date": today,
         "now": now.strftime("%H:%M"),
         "rows": rows,
+        # 认不出的触发器总数。给页面一个能印在标题上的数:
+        # 一个只存在于某一行 tooltip 里的信号,和没有这个信号差别不大。
+        "unknownTriggerCount": n_unknown,
         "note": ("按触发器展开的今日计划。事件驱动的触发器(登录/开机/空闲/事件)没有时钟时间,"
                  "单独标出而不是丢掉。分钟级任务画成条带加次数,288 个点连成一条实线反而什么也没说。"
                  "已停用的任务不画:它有触发器但不会触发,画上去就是对今天做了一个假陈述。"),

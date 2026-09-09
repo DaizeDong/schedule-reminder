@@ -140,6 +140,9 @@ main{padding:8px}
 .tlact{position:absolute;top:1px;width:2px;height:13px;background:var(--amber)}
 .tlnow{position:absolute;top:0;bottom:0;width:1px;background:var(--bad);z-index:2}
 .tlevt{position:absolute;left:4px;top:0;font-size:10px;color:var(--faint);line-height:15px}
+.tlevt.warnish{color:var(--warn)}
+/* 撞上展开上限的条带画成虚线:它的右端不是真的结束时刻,是我数到那里为止。 */
+.tlspan.trunc{background:repeating-linear-gradient(90deg,var(--amber) 0 3px,transparent 3px 6px)}
 .tlkey{font-size:10.5px;color:var(--faint);margin-top:5px;display:flex;gap:12px;flex-wrap:wrap}
 .tlkey i{display:inline-block;vertical-align:middle;margin-right:3px}
 
@@ -861,15 +864,25 @@ function renderTL(){
     const spans=r.spans.map(sp=>{
       const a=Math.max(mins(sp.from),tlFrom), b=Math.min(mins(sp.to),tlTo);
       if(b<=a) return "";
-      return `<i class="tlspan" style="left:${tlPos(a)}%;width:${Math.max(tlPos(b)-tlPos(a),0.4)}%" title="${esc(r.name)} ${sp.from}-${sp.to} 每 ${esc(sp.every)} 共 ${sp.count} 次"></i>`;
+      // truncated 后端算了、传了、也测了,而这里从来没读过 ——
+      // 于是一个十秒级的任务会在 tooltip 里声称「00:00-13:53 共 5000 次」,
+      // 而真实是全天 8640 次。**一个数了一半却报出确定数字的结果,比不报还糟。**
+      const cnt = sp.truncated ? `至少 ${sp.count} 次(展开撞上上限,没数完)` : `共 ${sp.count} 次`;
+      return `<i class="tlspan${sp.truncated?" trunc":""}" style="left:${tlPos(a)}%;width:${Math.max(tlPos(b)-tlPos(a),0.4)}%" title="${esc(r.name)} ${sp.from}-${sp.to} 每 ${esc(sp.every)} ${cnt}"></i>`;
     }).join("");
     const acts=(r.actual||[]).filter(a=>vis(mins(a))).map(a=>
       `<i class="tlact" style="left:${tlPos(mins(a))}%" title="${esc(r.name)} 实际运行 ${a}"></i>`).join("");
     const evt=(r.eventDriven.length&&!r.points.length&&!r.spans.length)
       ? `<span class="tlevt">${esc(r.eventDriven.join("/"))} 触发,无固定时刻</span>`:"";
+    // 认不出的触发器类型。后端一直在收集它,而这一行以前**整个不渲染**,
+    // 连带那些只有认不出的触发器的任务在今日时间轴上一行都没有 ——
+    // 屏幕表现与「这个任务今天本来就不该跑」逐像素相同。
+    // 说「我不认识」比装作没有强:前者能被人去查,后者不能。
+    const unk=(r.unknownTriggers&&r.unknownTriggers.length&&!r.points.length&&!r.spans.length)
+      ? `<span class="tlevt warnish">触发器类型 ${esc(r.unknownTriggers.join("/"))} 认不出,今日时刻算不出来</span>`:"";
     const nowBar=vis(nowM)?`<i class="tlnow" style="left:${tlPos(nowM)}%"></i>`:"";
     return `<div class="tlrow" data-task="${esc(r.name)}"><div class="tlname" title="${esc(r.name)}${r.desc?" : "+esc(r.desc):""}">${esc(r.name)}</div>
-      <div class="tltrack">${spans}${marks}${acts}${evt}${nowBar}</div></div>`;
+      <div class="tltrack">${spans}${marks}${acts}${evt}${unk}${nowBar}</div></div>`;
   }).join("");
   $("tl").innerHTML=`<div class="hours">${tlTicks()}</div>${rows}`;
 }
