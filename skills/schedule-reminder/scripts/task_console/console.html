@@ -1944,12 +1944,31 @@ document.addEventListener("keydown",e=>{
   // 而刷新把 toast 一起带走,屏幕上什么都不剩,只有任务真的跑了一次。
   // Shift 例外:G / A / ? 本来就是 Shift 组合。
   if(e.ctrlKey || e.metaKey || e.altKey) return;
-  // 焦点在可交互元素上时不接管。两个后果:一是 Enter 被下面 preventDefault 吃掉之后,
-  // 整页没有一个按钮或链接能用键盘激活;二是人 Tab 到第 12 行的按钮上按 d,
-  // 被停用的是光标行(初值第 1 行),而确认框里出现的是另一个名字,
-  // 读起来像页面在确认「你选的那个」。
+  // 焦点落在控件上时**部分**不接管。这道守卫要挡的是两件具体的事:
+  //   一是 Enter 被下面 preventDefault 吃掉之后,整页没有一个按钮或链接能用键盘激活;
+  //   二是人 Tab 到第 12 行的按钮上按 d,被停用的却是光标行(初值第 1 行),
+  //     而确认框里出现的是另一个名字,读起来像页面在确认「你选的那个」。
+  //
+  // ⚠ 第一版写成「焦点不在 body 上就整个 return」,选择器里还带着裸 `[tabindex]`,
+  // 而数据行**每一行都有 tabindex="-1"**(focusCur 要把焦点放上去,读屏那边才知道我在第几行)。
+  // 于是按一次 j 之后焦点落到 <tr> 上,整套键盘层当场全死:j/k/g/G/x/a/r/e/s/d、
+  // ?(帮助)、R(重读)、A(摊开)、Escape 一个都不响应,而光标高亮还在、卡头上还印着
+  // 「j/k 移动 · x 选中 · Enter 展开」。鼠标点一次侧栏分区(那是 <a>)也一样,
+  // 想恢复只能去点页面空白处把焦点甩回 body。**一次移动就把整层交互静默关掉,
+  // 而屏幕上没有任何一处显示它关了。**
+  //
+  // tabindex="-1" 的元素是**程序化聚焦**的、Tab 到不了的,它不是控件,不该进这道守卫。
+  // 剩下的按「它自己要吃掉哪些键」分两档,而不是一刀切。
   const ae = document.activeElement;
-  if(ae && ae !== document.body && ae.closest("button,a,[tabindex],summary,label")) return;
+  if(ae && ae !== document.body){
+    // 这一档自己要吃掉所有按键(打字)。
+    if(ae.closest('input,textarea,select,[contenteditable=""],[contenteditable="true"]')) return;
+    const ACTIVATABLE = 'button,summary,label,a[href],[tabindex]:not([tabindex="-1"])';
+    // 这一档只吃激活键。侧栏链接聚焦时按 j 仍然该移动光标。
+    if((e.key === "Enter" || e.key === " ") && ae.closest(ACTIVATABLE)) return;
+    // 会真的动任务的四个键,焦点在任何控件上时都不接管 : 上面第二条讲的就是它。
+    if("resd".indexOf(e.key) >= 0 && ae.closest(ACTIVATABLE)) return;
+  }
   const k=e.key;
   if(k==="?"){ $("help").hidden=false; return; }
   // 表格相关的键只在任务分区里有意义。不拦的话,人在仓库分区按 j,

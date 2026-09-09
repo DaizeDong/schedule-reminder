@@ -656,7 +656,16 @@ class Handler(BaseHTTPRequestHandler):
     # 默认成 "*" 会让「忘了设置」和「明确允许一切」变成同一件事,而那正是这份代码
     # 在别处一直拒绝的形状。
     allowed_hosts: object = frozenset()
-    token = ""
+    # 同样是 fail-closed,而且理由和上面那三行逐字相同。
+    # ⚠ 这里以前是 `token = ""`,做的正好是上面那段注释否定的那件事:
+    # `_authed` 是 `compare_digest(请求头 or "", self.token)`,token 还是 "" 时,
+    # 一个**根本不带这个头**的请求会得到 compare_digest("", "") → True,直接过鉴权。
+    # 今天没被利用,只是因为 Host 闸恰好先开火(空集合拒掉一切)—— 也就是说令牌这道控制
+    # 在「没初始化」状态下靠的是另一道控制兜底,而两道控制的默认值方向相反。
+    # 任何设好 allowed_hosts 却漏设 token 的用法(测试 fixture、复用 Handler、
+    # 将来在 main() 之外多一条启动路径)都会让 /api/ 全线免鉴权,而页面表现完全正常。
+    # None 是一个不可能匹配的哨兵:「忘了设置」和「明确允许」永远不会是同一件事。
+    token: str | None = None
 
     def log_message(self, fmt, *a):  # keep the console quiet; errors still surface in responses
         pass
@@ -745,6 +754,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(500, {"error": f"{type(e).__name__}: {e}"})
 
     def _authed(self) -> bool:
+        # token 是 None 表示这个 Handler 没被初始化过 —— 那不是「令牌是空串」,是「没有令牌」,
+        # 而没有令牌时唯一安全的答案是拒绝。不要试图在这里生成一个:
+        # 一个自己发明令牌的鉴权函数,会让「服务起来了」和「服务起来了但谁都进不去」都消失。
+        if not self.token:
+            return False
         return secrets.compare_digest(self.headers.get("X-Console-Token", ""), self.token)
 
     def _host_ok(self) -> bool:

@@ -163,13 +163,41 @@ def _rewrite_health(path: Path, name: str) -> bool:
 
 
 def _disable(name: str, reason: str) -> tuple[bool, str]:
+    """停用任务并把退役原因写进 Description。两个都要成,一个不成就整步失败。
+
+    ⚠ 这几行以前是**必然失败**的,而且失败了两年也没人知道,因为测试把整个 `_disable`
+    monkeypatch 掉了。两个 bug 叠在一起:
+
+    1. `Set-ScheduledTask -TaskName X -Description Y` : **这个 cmdlet 没有 -Description 参数**
+       (实测 `(Get-Command Set-ScheduledTask).Parameters.Keys` 里没有它)。参数绑定失败本身
+       就是终止错误,不依赖 $ErrorActionPreference,整条 -Command 在那里中止、退出码 1,
+       于是 `Disable-ScheduledTask` 那一句根本轮不到执行。改 Description 的正确形态是
+       **把改过的整个对象推回去**:`Set-ScheduledTask -InputObject $t`(真机实测:写进去了,
+       读回来含标记)。
+    2. `-notlike "*$note*"` 里的 `$note` 是 `[RETIRED] 原因`,而 `-like` 把 `[...]` 当成
+       **通配符字符类**。这个 bug 是我写探针时自己撞上的,PowerShell 直接报
+       「The specified wildcard character pattern is not valid」—— 也就是说就算第 1 条修好,
+       这一句还会在 $reason 含 `[` `]` `*` `?` 时炸掉,含别的字符时则可能**误判成已经写过**
+       而跳过写入。判「包含」要用 `.Contains()`,不要用通配符匹配。
+
+    判据是**读回来**,不是退出码。这个仓自己的规矩:一个只看退出码的写操作,
+    在「命令跑了但什么都没改」时和成功长得一模一样。
+    """
     ps = ("$ErrorActionPreference='Stop';"
           "$t = Get-ScheduledTask -TaskName $env:TC_NAME;"
-          "$d = $t.Description;"
+          "$d = [string]$t.Description;"
           "$note = $env:TC_NOTE;"
-          "if ($d -notlike \"*$note*\") { $t.Description = ($d + \"`n\" + $note).Trim() };"
-          "Set-ScheduledTask -TaskName $env:TC_NAME -Description $t.Description | Out-Null;"
-          "Disable-ScheduledTask -TaskName $env:TC_NAME | Out-Null;")
+          # .Contains 而不是 -like:$note 里有方括号,-like 会把它当字符类。
+          "if (-not $d.Contains($note)) {"
+          "  $t.Description = ($d + \"`n\" + $note).Trim();"
+          "  Set-ScheduledTask -InputObject $t | Out-Null;"
+          "};"
+          "Disable-ScheduledTask -TaskName $env:TC_NAME | Out-Null;"
+          # 读回来自证。两件事都要成立才算这一步做完了。
+          "$v = Get-ScheduledTask -TaskName $env:TC_NAME;"
+          "if (-not ([string]$v.Description).Contains($note)) {"
+          "  throw 'Description 没有写进去(命令没报错,但读回来不含退役标记)' };"
+          "if ($v.State -ne 'Disabled') { throw ('停用没生效,现在是 ' + $v.State) };")
     note = f"[RETIRED] {reason}"
     r = subprocess.run([_powershell(), "-NoProfile", "-Command", ps],
                        capture_output=True, text=True, encoding="utf-8", errors="replace",

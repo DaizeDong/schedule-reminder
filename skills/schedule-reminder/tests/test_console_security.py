@@ -29,6 +29,12 @@ import server as S  # noqa: E402
 
 TOKEN = "test-token-not-a-real-one"
 
+# ⚠ 这一行必须跑在任何 fixture 之前:它拍下 Handler **出厂时**的 token 默认值。
+# 下面那条用例要钉的正是「出厂默认值不能通过鉴权」,而如果用例自己去 setattr 一个哨兵,
+# 它测的就变成了「我刚设的那个值不能通过」—— 把默认值改回 "" 照样绿。
+# (投毒时实测过:第一版就是那个形状,四条投毒里唯独这条没红。)
+DEFAULT_TOKEN = S.Handler.token
+
 
 @pytest.fixture(scope="module")
 def srv():
@@ -224,15 +230,45 @@ def test_sys_read_without_token_is_403(srv):
     assert st == 403
 
 
-def test_clean_action_cannot_be_pointed_at_a_path(srv):
-    # 删除动作不收路径。喂一个路径进去,它要么被名字闸挡,要么被完全忽略,
-    # 绝不能变成「删这个目录」。这里断言它不会因为 name 而去动别的地方。
+def test_clean_action_cannot_be_pointed_at_a_path(srv, tmp_path, monkeypatch):
+    """删除动作不收路径:喂一条路径进去,它只清自己那批,绝不去动别的地方。
+
+    ⚠ 这条用例原来什么都没断言。它写的是 `assert st in (200, 400)`,再在 400 分支里
+    `assert no_config in body or missing_src in body` —— 两条通路全接受,而且这台机器上
+    根本没配 TASK_CONSOLE_PLUGIN_CACHE,于是它每次都走 no_config 那条,
+    **删除逻辑一次都没有被执行过**。把 clean_temp_git 改成 `shutil.rmtree(name)` 它照样绿。
+    一条名字里写着「不能被指到别的路径」的用例,从来没有验证过任何路径。
+
+    现在把环境搭成确定的:缓存目录里放一个够旧、够格被删的暂存目录,**外面**放一个哨兵。
+    正对照是「它真的删掉了自己那一个」(否则「什么都没删」也能让哨兵活下来),
+    负对照是「哨兵还在」。
+    """
+    import os
+    import time
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    victim = cache / "temp_git_123_abc"          # 名字形状与年龄都够格
+    victim.mkdir()
+    (victim / "f.txt").write_text("x", encoding="utf-8")
+    old = time.time() - 10 * 3600
+    os.utime(victim, (old, old))
+
+    sentinel = tmp_path / "DO-NOT-TOUCH"          # 在缓存目录之外
+    sentinel.mkdir()
+    (sentinel / "keep.txt").write_text("keep", encoding="utf-8")
+
+    monkeypatch.setenv("TASK_CONSOLE_PLUGIN_CACHE", str(cache))
     st, body = call(srv, "POST", "/api/maint/act", token=TOKEN,
-                    body={"action": "clean.tempgit", "name": "../../Windows"})
-    # 没配 TASK_CONSOLE_PLUGIN_CACHE 时是 no_config;配了也只清它自己那批。
-    assert st in (200, 400)
-    if st == 400:
-        assert b"no_config" in body or b"missing_src" in body
+                    body={"action": "clean.tempgit", "name": "../DO-NOT-TOUCH"})
+
+    assert st == 200, body[:300]
+    # 正对照:它确实动手了。少了这一条,一个什么都不做的实现也能通过下面那条。
+    assert not victim.exists(), "自己那批没被清掉,这条用例根本没执行到删除逻辑"
+    assert b'"removed": 1' in body.replace(b" ", b"") or b'"removed":1' in body.replace(b" ", b"")
+    # 真正要钉的那条:name 里的路径没有被当成删除目标。
+    assert sentinel.exists() and (sentinel / "keep.txt").exists(), \
+        "name 里的相对路径被当成了删除目标"
 
 
 def test_retire_plan_without_token_is_403(srv):
@@ -241,11 +277,58 @@ def test_retire_plan_without_token_is_403(srv):
 
 
 def test_retire_without_a_reason_is_refused(srv):
-    # 退役必须带原因,空字符串走到 retire 会被它自己的闸挡下。
+    """退役必须带原因。
+
+    ⚠ 原来断言的是 `no_reason 或 bad_name 或 no_config`。三选一意味着这条用例
+    **分不出「因为没写原因被挡」和「因为任务名不合法被挡」** —— 把 no_reason 那道闸
+    整个删掉,它照样绿(名字或配置那两条会接住)。一个能被三种不同原因满足的断言,
+    钉不住其中任何一种。
+    """
     st, body = call(srv, "POST", "/api/maint/act", token=TOKEN,
                     body={"action": "task.retire", "name": "SomeTask", "arg": ""})
     assert st == 400
-    assert b"no_reason" in body or b"bad_name" in body or b"no_config" in body
+    assert b"no_reason" in body, body[:300]
+
+
+def test_retire_with_a_bad_name_is_refused_for_a_different_reason(srv):
+    """负对照:换成不合法的名字,理由必须变成 bad_name。
+
+    有了这一条,上面那条才是在钉「没写原因」而不是在钉「反正会被挡」。
+    两条用例的输入只差一个字段,输出必须是两个不同的拒绝理由。
+    """
+    st, body = call(srv, "POST", "/api/maint/act", token=TOKEN,
+                    body={"action": "task.retire", "name": "../evil", "arg": ""})
+    assert st == 400
+    assert b"bad_name" in body, body[:300]
+
+
+def test_an_uninitialised_handler_refuses_everything(srv):
+    """令牌没被设过时,鉴权必须拒绝,而不是放行。
+
+    ⚠ `Handler.token` 以前的类默认值是 `""`,而 `_authed` 用的是
+    `compare_digest(请求头 or "", self.token)` —— 于是一个**根本不带这个头**的请求
+    会得到 compare_digest("", "") → True,直接过鉴权。它没被利用只是因为 Host 闸
+    恰好先开火;也就是说令牌这道控制在「没初始化」状态下靠的是另一道控制兜底,
+    而紧挨着它的 allowed_hosts 有四行注释专门解释自己为什么 fail-closed。
+    """
+    # ⚠ 这里曾经有一句 `assert not DEFAULT_TOKEN`。它对 "" 恒成立,而 "" 正是当年那个
+    # 出问题的默认值 —— 一句在它要防的那个值上恒真的断言,正是这一轮在清理的那一类。
+    # 真正能失败的判据只有行为:**把 Handler 退回出厂状态,它必须拒绝一切**。
+    # 两层控制哪一层还在都能让它成立(None 哨兵、或 _authed 里的 `if not self.token`),
+    # 而两层同时退回当年那个形态时它会红 —— 投毒验过。
+    saved = S.Handler.token
+    try:
+        # 把 Handler 退回出厂状态,而不是退回一个我自己挑的哨兵。
+        S.Handler.token = DEFAULT_TOKEN
+        st, _ = call(srv, "GET", "/api/tasks")            # 不带令牌
+        assert st == 403, "未初始化的 Handler 放行了一个不带令牌的请求"
+        st, _ = call(srv, "GET", "/api/tasks", token="")   # 带一个空令牌
+        assert st == 403, "未初始化的 Handler 放行了一个空令牌"
+    finally:
+        S.Handler.token = saved
+    # 正对照:恢复之后正常的令牌仍然能用,证明上面拒的不是「服务器本来就坏了」。
+    st, _ = call(srv, "GET", "/api/tasks", token=TOKEN)
+    assert st == 200
 
 
 def test_convos_read_without_token_is_403(srv):
