@@ -156,3 +156,43 @@ def test_every_panel_source_is_in_the_source_table():
                 "TASK_CONSOLE_VISIBILITY", "TASK_CONSOLE_SKILLS",
                 "TASK_CONSOLE_MEMORY", "TASK_CONSOLE_HEALTH"):
         assert var in known, f"{var} 是某块面板的来源,但自检不知道它存在"
+
+
+# ---------- 空目录不是「ok」 ----------
+# 一个空目录,和一个「配了但同步没跑 / 挂载点没挂上 / 路径改过」,在文件系统上长得一模一样,
+# 而后者正是这个模块存在的理由所反对的那种绿色:自检整块打绿,对应面板显示 0 个条目。
+# 空文件那一半原来已经判 missing,目录这一半却判 ok:同一个「配了但里面什么都没有」
+# 给了两种结论。
+
+def test_an_empty_directory_is_missing_not_ok(bundle, tmp_path):
+    empty = tmp_path / "empty-dir"
+    empty.mkdir()
+    res = run(bundle, TASK_CONSOLE_SKILLS=str(empty))
+    r = row(res, "skills")
+    assert r["state"] == "missing", r
+    assert "空" in (r.get("why") or ""), r
+
+
+def test_a_directory_with_something_in_it_is_ok(bundle, tmp_path):
+    """正对照:有东西的目录不能因为这次收紧就一起判红,
+    否则这条检查会天天亮,而天天亮的检查等于没有。"""
+    full = tmp_path / "full-dir"
+    full.mkdir()
+    (full / "a").mkdir()
+    res = run(bundle, TASK_CONSOLE_SKILLS=str(full))
+    assert row(res, "skills")["state"] == "ok", row(res, "skills")
+
+
+def test_an_unlistable_directory_says_so_separately(bundle, tmp_path, monkeypatch):
+    """「列不出来」和「真的是空的」要分开说:前者要有人立刻去看,后者不一定。"""
+    d = tmp_path / "boom"
+    d.mkdir()
+    real = os.listdir
+    def boom(p):
+        if str(p) == str(d):
+            raise OSError("nope")
+        return real(p)
+    monkeypatch.setattr(os, "listdir", boom)
+    r = row(run(bundle, TASK_CONSOLE_SKILLS=str(d)), "skills")
+    assert r["state"] == "missing"
+    assert "列不出来" in (r.get("why") or ""), r

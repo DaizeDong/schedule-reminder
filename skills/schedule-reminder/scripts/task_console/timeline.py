@@ -29,6 +29,9 @@ _DUR = re.compile(r"^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$")
 
 # Above this many occurrences in a day, a row is drawn as a band instead of individual marks.
 DENSE_THRESHOLD = 24
+# 一天最多展开这么多个刻度。撞上限本身不是错误,但**必须说出来**:
+# 见下面 truncated 那一段。
+TICK_CAP = 5000
 
 
 def parse_duration(s: str | None) -> int | None:
@@ -97,6 +100,7 @@ def expand(task: dict, now: datetime | None = None) -> dict:
     points: list[str] = []
     spans: list[dict] = []
     event_driven: list[str] = []
+    unknown_kinds: list[str] = []
 
     if task.get("state") == "Disabled":
         return {"spans": [], "points": [], "eventDriven": [], "skipped": "disabled"}
@@ -107,6 +111,14 @@ def expand(task: dict, now: datetime | None = None) -> dict:
         kind = (t.get("kind") or "").lower()
         if kind in ("logon", "boot", "registration", "idle", "event", "sessionstatechange"):
             event_driven.append(t.get("kind") or "?")
+            continue
+        # 白名单式的分类必须有 else 分支。月度触发器,以及 MSFT_TaskTrigger 基类那种
+        # kind 为空串的,原来两边都不匹配 : occurs_today 的最后一行 return False,
+        # 于是整个任务在今日时间轴上**完全消失**,而且没有任何计数说「有几个我不认识」。
+        # 这跟本模块开头写的规矩正相反:「一个没人能在时间轴上看到的任务,
+        # 就是一个没人记得它存在的任务」。
+        if kind not in ("daily", "weekly", "time"):
+            unknown_kinds.append(t.get("kind") or "(空)")
             continue
         if not occurs_today(t, today):
             continue
@@ -144,23 +156,31 @@ def expand(task: dict, now: datetime | None = None) -> dict:
         n = 0
         cur = first
         marks = []
-        while cur <= end_dt and n < 5000:
+        while cur <= end_dt and n < TICK_CAP:
             marks.append(cur)
             cur += timedelta(seconds=iv)
             n += 1
+        # 撞上限这件事必须说出来。原来撞了之后照样报一个确定的 count 和一个确定的 to:
+        # 一个十秒级的任务会声称「00:00 到 13:53 共 5000 次」,而真实是全天 8640 次。
+        # **一个数了一半却报出确定数字的结果,比不报还糟**(sysinfo 模块开头写着同一句)。
+        truncated = (n >= TICK_CAP and cur <= end_dt)
         if not marks:
             continue
         if len(marks) > DENSE_THRESHOLD:
             spans.append({
                 "from": marks[0].strftime("%H:%M"),
-                "to": marks[-1].strftime("%H:%M"),
+                "to": (day_end if truncated else marks[-1]).strftime("%H:%M"),
                 "count": len(marks),
+                "truncated": truncated,
                 "every": t.get("interval"),
             })
         else:
             points.extend(m.strftime("%H:%M") for m in marks)
 
-    return {"spans": spans, "points": sorted(set(points)), "eventDriven": sorted(set(event_driven))}
+    return {"spans": spans, "points": sorted(set(points)),
+            "eventDriven": sorted(set(event_driven)),
+            # 认不出的类型照样出现在行里,像 eventDriven 那样。
+            "unknownTriggers": sorted(set(unknown_kinds))}
 
 
 def build(tasks: dict, runs_by_task: dict | None = None, now: datetime | None = None) -> dict:

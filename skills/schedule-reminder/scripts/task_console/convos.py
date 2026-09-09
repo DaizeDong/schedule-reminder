@@ -160,6 +160,13 @@ def read_titles(path: Path) -> dict:
     return {"custom": custom, "renameArgs": args, "ai": ai}
 
 
+# 缓存命中时必须具备的键。少一个就当没命中重读 : 一份跨版本的旧缓存(字段改过名、
+# 少一个键)会因为 mtime 和大小都对而逐条命中,然后在下游拼字符串时抛 KeyError,
+# 整个会话面板 500。缓存本来是性能优化,不该变成可用性单点。
+_CACHE_KEYS = frozenset(("id", "file", "cwd", "title", "titleFrom",
+                        "bytes", "mtime", "humanSeen"))
+
+
 def read_one(path: Path, now: float | None = None) -> dict:
     now = time.time() if now is None else now
     st = path.stat()
@@ -283,7 +290,13 @@ def scan(root: str | None = None, cache: str | None = None,
             key = str(f)
             # 缓存只在 mtime 和大小都没变时算命中。只看 mtime 会漏掉同秒内的改写。
             prev = cached.get(key)
-            if prev and prev.get("_m") == st.st_mtime and prev.get("bytes") == st.st_size:
+            # 命中判据除了 mtime 和大小,还要看这条记录的**形状**对不对。
+            # 只比那两样的话,一份跨版本的旧缓存(字段改过名、少一个键)会逐条命中,
+            # 然后在下游拼字符串时抛 KeyError,整个会话面板 500 :
+            # 缓存本来是性能优化,却成了可用性单点。形状不对就当一次 miss 重读,
+            # 那是这个函数本来就会做的事,代价只是慢一点。
+            if prev and prev.get("_m") == st.st_mtime and prev.get("bytes") == st.st_size \
+                    and _CACHE_KEYS <= prev.keys():
                 rec = dict(prev)
                 rec["ageHours"] = round((now - st.st_mtime) / 3600.0, 1)
                 hits += 1

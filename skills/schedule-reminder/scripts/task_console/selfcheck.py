@@ -58,6 +58,10 @@ BUNDLED = (
 )
 
 
+# 一个空目录和一个「配了但同步没跑 / 挂载点没挂上 / 路径改过」在文件系统上长得一样,
+# 而后者正是这个模块存在的理由所反对的那种绿色:自检整块打绿,对应面板显示 0 个条目。
+# 空文件那一半原来已经判 missing,目录这一半却判 ok : 同一个「配了但里面什么都没有」
+# 给了两种结论。
 def _probe(path: Path, kind: str, max_age_h: float | None, now: float) -> tuple[str, dict]:
     info: dict = {"path": str(path)}
     try:
@@ -79,6 +83,17 @@ def _probe(path: Path, kind: str, max_age_h: float | None, now: float) -> tuple[
             info["entries"] = len(os.listdir(path))
         except OSError:
             info["entries"] = None
+        # 一个空目录,和一个「配了但同步没跑 / 挂载点没挂上 / 路径改过」,在文件系统上
+        # 长得一模一样,而后者正是这个模块存在的理由所反对的那种绿色:自检整块打绿,
+        # 对应面板显示 0 个条目。空文件那一半原来已经判 missing,目录这一半却判 ok :
+        # 同一个「配了但里面什么都没有」给了两种结论。
+        # listdir 失败(None)是另一回事,单独说,别和「真的是空的」混成一句。
+        if info["entries"] is None:
+            info["why"] = "目录列不出来"
+            return MISSING, info
+        if info["entries"] == 0:
+            info["why"] = "目录是空的"
+            return MISSING, info
     else:
         info["bytes"] = st.st_size
         # 一个零字节的必需文件读起来跟一个正常文件一样成功,但它什么都给不了。

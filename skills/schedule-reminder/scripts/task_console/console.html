@@ -1027,7 +1027,10 @@ function renderRepos(){
         `<span><i class="dot d-${k}" style="width:8px;height:8px;border-radius:2px"></i>${RP_LAB[k]} ${c[k]}</span>`).join("")
     +`</span>`
     // 没有上游 = 它的「没推」根本看不见,和 0 是两回事,所以单独报。
-    +(S.unknownUpstream?`<span style="color:var(--warn)">无上游 ${S.unknownUpstream}</span>`:"");
+    +(S.unknownUpstream?`<span style="color:var(--warn)">无上游 ${S.unknownUpstream}</span>`:"")
+    // 可见性表读不出来时,所有仓的公开/私有标记会一起消失,而那和「表里没登记这几个仓」
+    // 长得一模一样。后端现在把原因带上来了,这里必须印出来,否则它到不了人眼前。
+    +(S.visibilityReason?`<span style="color:var(--bad)">${esc(S.visibilityReason)}</span>`:"");
 
   $("rpgrid").innerHTML=REPOS.repos.map(r=>{
     const bits=[];

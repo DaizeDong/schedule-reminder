@@ -303,3 +303,42 @@ def test_cache_hits_only_when_mtime_and_size_both_match(tmp_path):
     os.utime(f, (T, T))
     third = C.scan(root=str(tmp_path), cache=str(cache), now=NOW)
     assert third["summary"]["cacheMisses"] == 1, "大小变了却算了缓存命中"
+
+
+# ---------- 缓存命中还要看记录的形状 ----------
+# 只比 mtime 和大小的话,一份跨版本的旧缓存(字段改过名、少一个键)会逐条命中,
+# 然后在下游拼字符串时抛 KeyError,整个会话面板 500:
+# 缓存本来是性能优化,却成了可用性单点。
+# tests 里原来只测了 mtime 与 size 那两半,没有任何一条喂进形状不对的缓存。
+
+def _one(tmp_path):
+    d = tmp_path / "proj"
+    d.mkdir()
+    f = d / "s.jsonl"
+    f.write_text('{"type":"user","cwd":"C:/x","message":{"role":"user","content":"hi"}}'
+                 + chr(10), encoding="utf-8")
+    return f
+
+
+def test_a_cache_entry_missing_a_key_is_treated_as_a_miss(tmp_path):
+    f = _one(tmp_path)
+    st = f.stat()
+    cache = tmp_path / "cache.json"
+    # mtime 和大小都对得上,但少了 cwd 这些键:老写法会命中它,然后在下游炸
+    cache.write_text(json.dumps({str(f): {"_m": st.st_mtime, "bytes": st.st_size,
+                                          "title": "old"}}), encoding="utf-8")
+    got = C.scan(root=str(tmp_path), cache=str(cache), now=NOW)
+    assert got["summary"]["cacheMisses"] == 1, got["summary"]
+    assert got["summary"]["cacheHits"] == 0, got["summary"]
+    rows = [r for g in got["groups"] for r in g["shown"]]
+    assert rows and all("cwd" in r for r in rows), "命中了一条形状不对的缓存"
+
+
+def test_a_complete_cache_entry_still_hits(tmp_path):
+    """正对照:形状完整的缓存必须仍然命中,否则这个缓存等于被关掉了,
+    而首扫一千多份转录要好几秒。"""
+    _one(tmp_path)
+    cache = tmp_path / "cache.json"
+    C.scan(root=str(tmp_path), cache=str(cache), now=NOW)
+    again = C.scan(root=str(tmp_path), cache=str(cache), now=NOW)
+    assert again["summary"]["cacheHits"] == 1, again["summary"]

@@ -111,14 +111,23 @@ def scan_one(repo: Path, vis_table: dict, now: float) -> dict:
                 unpushedKnown=ahead is not None)
 
 
-def _load_visibility() -> dict:
+def _load_visibility() -> tuple[dict, str | None]:
+    """可见性表,外加「为什么没有」。
+
+    原来解析失败被吞成空表,于是所有仓的 PUB/PRI 标记一起消失,而那和「表里没登记这几个仓」
+    长得一模一样。在这套体系里可见性正是判断一个仓能不能装真实数据的依据,
+    **一个静默变空的可见性视图,比没有这个视图更危险**。
+    自检只能证明这个文件存在且非空,证明不了它解析得出来。
+    """
     p = os.environ.get("TASK_CONSOLE_VISIBILITY")
     if not p:
-        return {}
+        return {}, None                      # 没配 = 没启用,不是故障
     try:
-        return json.loads(Path(os.path.expanduser(p)).read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return {}
+        return json.loads(Path(os.path.expanduser(p)).read_text(encoding="utf-8-sig")), None
+    except OSError as e:
+        return {}, f"可见性表读不到({e.__class__.__name__}),所有仓的公开/私有标记都不显示"
+    except ValueError as e:
+        return {}, f"可见性表解析失败({e.__class__.__name__}),所有仓的公开/私有标记都不显示"
 
 
 def scan(root: str | None = None, now: float | None = None, workers: int = 10) -> dict:
@@ -140,7 +149,7 @@ def scan(root: str | None = None, now: float | None = None, workers: int = 10) -
                 "summary": {"total": 0, "counts": {}, "attention": 0},
                 "note": "这个根目录下没有 git 仓"}
 
-    vis = _load_visibility()
+    vis, vis_reason = _load_visibility()
     out = []
     with cf.ThreadPoolExecutor(max_workers=workers) as ex:
         futs = {ex.submit(scan_one, r, vis, now): r for r in repos}
@@ -170,6 +179,9 @@ def scan(root: str | None = None, now: float | None = None, workers: int = 10) -
             # 后端明确决定「detached 不算要人管」,前端把这个决定推翻了一半。
             # 判定只能留一份,而这一份在这里。
             "attentionStates": [UNPUSHED, DIRTY, ERROR],
+            # 可见性表读不出来时要说出来。原来它被吞成空表,于是所有仓的公开/私有标记
+            # 一起消失,而那和「表里没登记这几个仓」长得一模一样。
+            "visibilityReason": vis_reason,
             "unknownUpstream": sum(1 for x in out if x.get("unpushedKnown") is False),
         },
     }
