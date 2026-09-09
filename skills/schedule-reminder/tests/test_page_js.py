@@ -122,3 +122,71 @@ def test_the_fixed_height_rule_can_actually_fire():
     不做这一步的话,一个正则写错的检查和一个真没发现问题的检查打印出的绿色一模一样。"""
     poisoned = _page_style() + "\nbutton{height:22px}\n"
     assert _FIXED_H.search(poisoned), "投毒后仍未命中,这条正则是空拦的"
+
+
+# ---------- 装内容的容器不许写死高度 ----------
+# 上一轮把 `button{height:22px}` 改成 min-height 并配了一道闸,但那道闸只盯**元素选择器**,
+# 而同一个坑在 `#bar{height:26px}` 上原样留着:#bar 继承了 .navbar 的 flex-wrap,
+# 窗口窄到约 760px 时五个全局计数换到第二行,然后被裁进 26px 的盒子里,
+# 既看不见也几乎不可能滚到。整页最顶上的「有没有事」摘要于是在窄屏下静默消失。
+#
+# 想把那道闸按形状扩到 id/class 上,量过一次:对已知正样本召回 2/2,
+# **但在干净文件上误报 18 处** —— 圆点、进度条、时间轴刻度这类本来就该定高的装饰。
+# 一道在干净代码上报 18 次的闸门会被关掉,所以不按形状扩,改成点名。
+# 名单里的每一项都是「装会变多变少的内容」的容器;新增一个容器要显式加进来,那是刻意的。
+_CONTAINERS = ("#bar", "#side", "#view", ".pad", ".box", ".mt-rows", ".rp-grid", ".tiles")
+
+
+def _rules_for(css, sel):
+    """返回**正好是** sel 这个选择器的规则体。
+
+    刻意不含后代:`#bar .seg{height:100%}` 是子元素填满父级的合法写法,
+    第一版把它算了进来,于是这道闸对着干净文件报了一次 : 一道会误报的闸门会被关掉,
+    所以宁可窄一点,名单里再加容器也是显式动作。
+    """
+    out = []
+    for m in _re.finditer(r"([^{}]+)\{([^}]*)\}", css):
+        heads = [h.strip() for h in m.group(1).split(",")]
+        if any(h == sel or h.startswith(sel + ".") or h.startswith(sel + ":")
+               for h in heads):
+            out.append(m.group(2))
+    return out
+
+
+# 只认 px。百分比和 vh 是「跟着别人走」,不会把内容裁掉;写死像素才会。
+_PX_H = _re.compile(r"(?<!-)height\s*:\s*\d+(\.\d+)?px")
+
+
+def test_layout_containers_do_not_pin_a_fixed_height():
+    css = _page_style()
+    bad = []
+    for sel in _CONTAINERS:
+        for body in _rules_for(css, sel):
+            if _PX_H.search(body):
+                bad.append(sel + " {" + " ".join(body.split())[:60] + "}")
+    assert not bad, "容器写死 height 会把溢出的内容裁掉,用 min-height。命中: " + repr(bad)
+
+
+def test_the_container_check_can_actually_fire():
+    """负对照。这条尤其要紧:上面那个 _rules_for 只要选择器匹配写错一点,
+    就会对着任何输入都返回空列表,然后永远打印绿色。"""
+    # 用合成样式表,不拼真文件:拼真文件的话,这条负对照的成立与否会取决于产品此刻干不干净,
+    # 而一条依赖被测对象状态的负对照,在被测对象变脏的那一刻就跟着红,分不清是谁的问题。
+    def hits(css):
+        return [b for sel in _CONTAINERS for b in _rules_for(css, sel) if _PX_H.search(b)]
+
+    assert hits("#bar{height:26px}"), "投毒后仍未命中,这条检查是空拦的"
+    assert hits(".mt-rows{overflow:auto;height:172px}"), "属性不在首位时也要命中"
+    # 反向,四种都不该命中:百分比、视口单位、min-/max- 前缀、以及后代选择器。
+    assert not hits("#view{height:100%}"), "百分比是跟着别人走,不会裁掉内容"
+    assert not hits("#view{height:50vh}"), "视口单位同理"
+    assert not hits("#bar{min-height:26px}"), "min-height 正是我们要的写法"
+    assert not hits("#bar{max-height:26px}"), "max-height 不该被这条规则管"
+    assert not hits("#bar .seg{height:100%}"), "子元素填满父级是合法写法"
+
+
+def test_the_container_check_reads_a_real_stylesheet():
+    """再一条:确认它真的读到了那几个容器的规则,而不是一个都没匹配上。"""
+    css = _page_style()
+    found = [sel for sel in _CONTAINERS if _rules_for(css, sel)]
+    assert len(found) >= 5, f"只匹配到 {found},选择器写法可能和样式表对不上"

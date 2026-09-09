@@ -81,7 +81,13 @@ b{font-weight:600}
 .hot{color:var(--amber)}
 
 #bar{position:sticky;top:0;z-index:30;display:flex;align-items:center;
-  background:var(--panel);border-bottom:1px solid var(--line);height:26px;padding:0 4px;
+  /* height 改成 min-height。#bar 继承了 .navbar 的 flex-wrap:wrap,窗口窄到约 760px 时
+     总数/失败/待处理/停用/数据 这五个全局计数会换到第二行,然后被裁进一个高 26px、
+     overflow 计算值为 auto 的盒子里:既看不见,也几乎不可能滚到(26px 高的纵向滚动条)。
+     整页最顶上的「有没有事」摘要于是在窄屏下静默消失。
+     ⚠ 这正是上一轮「把写死高度改到根上」时漏掉的那一处:那次只改了 button 和 input,
+     容器上的 height 一个没动,而配的那道静态闸也只盯元素选择器。闸门下面一并扩了。 */
+  background:var(--panel);border-bottom:1px solid var(--line);min-height:26px;padding:0 4px;
   white-space:nowrap;overflow-x:auto}
 #bar .seg{padding:0 9px;border-right:1px solid var(--line2);height:100%;display:flex;align-items:center;gap:6px}
 #bar .seg:last-child{border-right:none;margin-left:auto}
@@ -272,7 +278,11 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
    分区改造之后每一屏独占整个视口,这个上限就只剩害处了 : 实测这一屏用掉不到 300px,
    底下 700px 全空,而 22 个 skill 只露出 7 个,人要在一个几乎全空的页面里滚一个小方块。
    现在按视口给上限,滚动只在真的放不下时才出现。 */
-.mt-rows{max-height:calc(100vh - 340px);overflow:auto;display:flex;flex-direction:column;
+/* 下限不能少。calc(100vh - 340px) 在视口高 <=340px 时是 0 或负数,
+   于是 skill / 记忆 / 插件三栏的行列表整块消失,而标题、数字、进度条都还在,
+   也没有滚动条提示「这里还有东西」 : 一个 22 条的列表和一个空列表长得一模一样,
+   正是这个页面最在意的那一类。340 这个数还是照着 1040px 高的窗口手配的魔数。 */
+.mt-rows{max-height:max(180px, calc(100vh - 340px));overflow:auto;display:flex;flex-direction:column;
   gap:1px;border-top:1px solid var(--line2);padding-top:4px}
 .mt-r{display:flex;align-items:center;gap:6px;font-size:12px;padding:1px 0}
 .mt-r .n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -318,7 +328,7 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
    列也放宽到 260px:228px 会把 acme-widget-config 这类正常长度的仓名截断,
    而截断的仓名读起来跟另一个仓一模一样。 */
 .rp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:1px;
-  background:var(--line2);max-height:calc(100vh - 190px);overflow:auto}
+  background:var(--line2);max-height:max(200px, calc(100vh - 190px));overflow:auto}
 .rp-r{background:var(--panel);display:grid;grid-template-columns:8px 1fr auto auto;gap:7px;
   align-items:center;padding:3px 7px;font-size:12px}
 .rp-r .dot{width:8px;height:8px;border-radius:2px}
@@ -417,6 +427,12 @@ body{font-size:12px}
    默认 16rem 对五个分区太宽,收到 10.5rem。
    折叠用 Tabler 自带的 .navbar-folded,不用我自己那套:它已经把宽度、标题隐藏、
    悬停展开都处理好了,自己再写一份等于多一份要跟着版本走的东西。 */
+/* 这两个变量必须声明在 :root 上,不能只挂在 #side 上。
+   .page-wrapper 的左外边距读的是同名变量,它在 :root 作用域里解析 :
+   只改 #side 的话侧栏是 168px 而内容区从 Tabler 默认的 240px 开始,
+   中间一条 72px 的空档,底色是 body 背景,看起来像刻意的留白而不是错位。
+   折叠态同理:按「收起」换来的宽度和眼睛看到的对不上。 */
+:root{--tblr-sidebar-width:10.5rem;--tblr-sidebar-folded-width:3rem}
 #side{--tblr-sidebar-width:10.5rem;--tblr-sidebar-folded-width:3rem}
 #side .navbar-brand{font-size:13px;padding:6px 4px 4px;font-weight:600;margin-inline:0}
 #side .nav-link{padding:4px 8px 4px 10px;font-size:12.5px;border-radius:3px}
@@ -630,7 +646,7 @@ table.g td[data-col="timeout"]{font-family:var(--mono)}
   <select id="cat"><option value="">全部大类</option></select>
   <label class="tg"><input type="checkbox" id="only"> 只看有问题</label>
   <label class="tg"><input type="checkbox" id="hideoff"> 隐藏停用</label>
-  <button id="hygtog" title="调度卫生:补跑 / 重试 / 超时 / 产物 / 备份 / 监控"></button>
+  <button id="hygtog" title="补跑 / 重试 / 超时 / 产物 / 备份 / 监控 六列"></button>
   <button id="refresh">重新读取</button>
   <span class="faint" id="cnt"></span>
 </div>
@@ -1251,7 +1267,8 @@ function showView(key, push){
   $("view").classList.remove("all");
   // 切分区时把滚动位置归零。不归零的话从一屏很长的分区切到一屏很短的,
   // 看到的是一片空白,而那看起来像「这一类什么都没有」。
-  const v = $("view"); if(v) v.scrollTop = 0;
+  // (原来这里还有一行 $("view").scrollTop = 0。#view 从来不是滚动容器,那一行永远无效,
+  //  而它会让下一个人以为 #view 有独立滚动,任何基于这个假设的改动都会踩空。)
   window.scrollTo(0, 0);
 }
 
@@ -1477,8 +1494,14 @@ function renderTiles(){
     // 取大的那个:两条上限哪条先撞都是撞。副标题要说出取的是哪一条,
     // 否则这个百分比对不上配置屏那两条独立的条,看起来像两处在打架。
     const pWhich = (MEM.linePct||0) >= (MEM.bytePct||0) ? "行数" : "字节";
+    // 副标题必须跟着 pWhich 走。取字节口径时却印「150/200 行」,读的人按 150/200 心算
+    // 是 75%,而大字写着 96.9% : 两个数字算不出彼此,而它们之间没有任何东西说明
+    // 自己分属两条上限。
+    const pFrac = (pWhich === "字节" && MEM.indexBytes != null)
+      ? `${kb(MEM.indexBytes)}/${kb(MEM.hardBytes)}`
+      : `${MEM.indexLines}/${MEM.hardLines} 行`;
     out.push(tile("storage","记忆索引",p+"%",
-      `${pWhich}占比 · ${MEM.indexLines}/${MEM.hardLines} 行 · 冷层 ${MEM.cold}`,
+      `${pWhich}占比 · ${pFrac} · 冷层 ${MEM.cold}`,
       p>=100?"bad":p>=90?"warn":"ok"));
   } else out.push(tile("storage","记忆索引","-","未检查","idle"));
 
@@ -1522,7 +1545,9 @@ function pc(v){ if(v==null) return `<td class="num u">-</td>`;
   return `<td class="num" style="color:${c}">${v.toFixed(1)}</td>`; }
 function renderScores(){
   $("scores").innerHTML=`<thead><tr><th>大类</th><th class="num">数</th><th class="num">健康%</th>
-    <th class="num">备份%</th><th class="num">监控%</th><th class="num">调度卫生%</th></tr></thead><tbody>`
+    <th class="num">备份%</th><th class="num">监控%</th><th class="num" title="本类里「没有任何 warn 项」的任务占比。注意它和上面那个按钮说的
+「卫生六列」不是一回事:那六列包含备份与监控,而这个百分比不看这两项,却多算了两条电池规则。
+一个大类可能六列全是 N 而这里是 100.0">无警告项%</th></tr></thead><tbody>`
     // 每一行挂上它自己的大类。之前这张表的格子有 cursor:pointer 却没有任何处理器,
     // 那是最糟的一种:它主动告诉你可以点,然后什么也不做。
     // 健康% 那一格单独出:它的分母和同一行的「数」不是一回事,而四列长得一模一样。
@@ -1788,7 +1813,14 @@ document.addEventListener("keydown",e=>{
     }
     return;   // 动作类的键(r/s/e/d/x/a)直接不受理:静默执行一个破坏性动作是最坏的结果
   }
-  if(k==="/"){ e.preventDefault(); $("q").focus(); $("q").select(); return; }
+  if(k==="/"){
+    // 过滤框在任务分区里。在别的分区按 / 时,preventDefault 顺手掐掉了浏览器的快速查找,
+    // 而承诺的过滤框既没出现也没获得焦点,零反馈 :
+    // 又一处「点这边、改那边,发生在看不见的地方」。先把人带过去,和 focusTask 一致。
+    e.preventDefault();
+    if(CURVIEW !== "tasks" && !$("view").classList.contains("all")) showView("tasks", true);
+    $("q").focus(); $("q").select(); return;
+  }
   if(k==="R"){ load(); return; }
   // Shift+A:摊开或收回全部分区,只为让 Ctrl+F 能搜到全部内容。
   // 摊开时刻意不动 hash : hash 的含义是「我在看哪一类」,摊开是「我暂时全都要看」,
