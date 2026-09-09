@@ -76,3 +76,66 @@ def test_an_unparseable_log_says_so_instead_of_reporting_zero_tasks(tmp_path):
     got = H.load(p)
     assert got["available"] is False, got
     assert got.get("reason"), got
+
+
+# ---------- 每任务每小时只算一次观察 ----------
+# 这条不变量用**整段文件头**声明:「某些任务每轮被写进日志两三次(多层作业按层汇报),
+# 不去重会让它们的分母比别人大两三倍,健康百分比因此不可比」。
+# 而这个文件里**一条用例都没有**。一个用整段文字声明、却零覆盖的不变量,
+# 和一个没有被声明的不变量,在回归发生时是同一个结果 —— 只是前者读起来像已经做过了。
+
+def _log(lines):
+    return "\n".join(lines) + "\n"
+
+
+def test_repeated_lines_in_the_same_hour_count_once(tmp_path):
+    p = tmp_path / "monitor.log"
+    p.write_text(_log([
+        # 同一小时里同一个任务写了三次(多层作业按层汇报就是这个形状)
+        "[2026-09-01 03:00:00]  AcmeMultiLayer : OK last 9/1/2026 3:00:00 AM",
+        "[2026-09-01 03:20:00]  AcmeMultiLayer : OK last 9/1/2026 3:00:00 AM",
+        "[2026-09-01 03:59:59]  AcmeMultiLayer : OK last 9/1/2026 3:00:00 AM",
+        # 对照:另一个任务同一小时只写一次
+        "[2026-09-01 03:00:00]  AcmeSingle : OK last 9/1/2026 3:00:00 AM",
+    ]), encoding="utf-8")
+    t = H.load(str(p))["tasks"]
+    assert t["AcmeMultiLayer"]["obs"] == 1, (
+        f"同一小时的三条被算成了 {t['AcmeMultiLayer']['obs']} 条观察 —— "
+        f"这个任务的分母会比别人大三倍,健康百分比不可比")
+    assert t["AcmeSingle"]["obs"] == 1
+    # 正对照:两个任务的分母一样大,这正是去重要保证的那件事。
+    assert t["AcmeMultiLayer"]["judged"] == t["AcmeSingle"]["judged"]
+
+
+def test_different_hours_count_separately(tmp_path):
+    """负对照:跨小时必须分开算。
+
+    少了这一条,一个「每任务每天只算一次」甚至「每任务只算一次」的实现也能让上面那条通过 ——
+    而那会把整条观察序列压成一个点。
+    """
+    p = tmp_path / "monitor.log"
+    p.write_text(_log([
+        "[2026-09-01 03:00:00]  AcmeMultiLayer : OK last 9/1/2026 3:00:00 AM",
+        "[2026-09-01 04:00:00]  AcmeMultiLayer : OK last 9/1/2026 4:00:00 AM",
+        "[2026-09-01 05:00:00]  AcmeMultiLayer : FAILED 0x1 last 9/1/2026 5:00:00 AM",
+    ]), encoding="utf-8")
+    t = H.load(str(p))["tasks"]["AcmeMultiLayer"]
+    assert t["obs"] == 3, f"三个不同小时被压成了 {t['obs']} 条"
+    assert t["ok"] == 2 and t["bad"] == 1
+
+
+def test_the_first_line_is_not_lost_to_a_bom(tmp_path):
+    """带 BOM 的日志,第一条观察不能丢。
+
+    监控器写这个日志是带 BOM 的(实测)。用普通 utf-8 读会让第一行以 U+FEFF 开头,
+    于是**整条序列的第一条观察静默不匹配** —— 而它同时会让 skipped +1,
+    所以这条用例连带钉住「跳过的行数要被报出来」。
+    """
+    p = tmp_path / "monitor.log"
+    p.write_bytes(b"\xef\xbb\xbf" + _log([
+        "[2026-09-01 03:00:00]  AcmeFirst : OK last 9/1/2026 3:00:00 AM",
+        "[2026-09-01 04:00:00]  AcmeFirst : OK last 9/1/2026 4:00:00 AM",
+    ]).encode("utf-8"))
+    d = H.load(str(p))
+    assert d["tasks"]["AcmeFirst"]["obs"] == 2, "带 BOM 时第一条观察丢了"
+    assert d["skipped"] == 0, f"有 {d['skipped']} 行没匹配上,而这份日志每一行都该匹配"

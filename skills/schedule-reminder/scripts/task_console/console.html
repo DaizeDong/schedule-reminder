@@ -887,7 +887,12 @@ function renderTL(){
     const unk=(r.unknownTriggers&&r.unknownTriggers.length&&!r.points.length&&!r.spans.length)
       ? `<span class="tlevt warnish">触发器类型 ${esc(r.unknownTriggers.join("/"))} 认不出,今日时刻算不出来</span>`:"";
     const nowBar=vis(nowM)?`<i class="tlnow" style="left:${tlPos(nowM)}%"></i>`:"";
-    return `<div class="tlrow" data-task="${esc(r.name)}"><div class="tlname" title="${esc(r.name)}${r.desc?" : "+esc(r.desc):""}">${esc(r.name)}</div>
+    // ⚠ 这里原来还拼了 `r.desc`,而 timeline.build 从不产出这个字段(它拼的 row 只有
+    // name/cat/points/spans/eventDriven/unknownTriggers/actual/sk)。于是这个三元
+    // 永远走 false 分支 —— 一段看起来在显示说明、实际什么都不显示的代码。
+    // 说明确实存在,但它在任务表那条通路上(DATA.groups 的行里),不在这里。
+    // 要么去取过来,要么别装作有:现在是后者,并写明它在哪。
+    return `<div class="tlrow" data-task="${esc(r.name)}"><div class="tlname" title="${esc(r.name)}">${esc(r.name)}</div>
       <div class="tltrack">${spans}${marks}${acts}${evt}${unk}${nowBar}</div></div>`;
   }).join("");
   $("tl").innerHTML=`<div class="hours">${tlTicks()}</div>${rows}`;
@@ -1031,7 +1036,13 @@ async function maintAct(action,name){
   try{
     const r=await api("/api/maint/act",{method:"POST",body:JSON.stringify({action,name})});
     if(r.error){ toast(`${name}: ${r.error}`,"bad"); return; }
-    toast(`${name} 已${label==="archive"?"归档":label==="restore"?"还原":label==="disable"?"禁用":"启用"}`);
+    // ⚠ 这句原来的兜底是「启用」:凡是不认识的动作后半段一律说「已启用」,
+    // 于是 repo.fetch 报「已启用」、clean.tempgit 也报「已启用」——
+    // **一个报告了它没做的事的成功提示,比不报告更糟**:人会据此以为某个东西被打开了。
+    // 现在只对认识的动作说具体做了什么,不认识的就说动作名本身。
+    const DONE = {archive: "归档", restore: "还原", disable: "禁用", enable: "启用"};
+    const what = DONE[label];
+    toast(what ? `${name} 已${what}` : `${name}: ${action} 完成`);
     // 插件与 skill 的改动都要下个会话才生效,所以这里只重读自己那一栏,不碰任务表。
     if(action.startsWith("repo.")) await loadRepos();
     else if(action.startsWith("clean.")) await loadSys();
@@ -1429,7 +1440,11 @@ document.getElementById("side").addEventListener("keydown", e=>{
   // 在任务分区则是表格光标跟着悄悄往下走一行,而人没在看表,
   // 之后按 d 作用在自己没选过的行上。
   e.stopPropagation();
-  navs[j].tabIndex = 0; navs[j].focus();
+  // 旧项要收回 -1。只设新项的话,方向键走过几次之后侧栏在 Tab 序列里就占了好几格 ——
+  // 而 roving tabindex 的全部意义就是「整条侧栏只占一格」。
+  // 这类退化不会报错,只会让 Tab 键越按越啰嗦,而没有人会把那件事和方向键联系起来。
+  navs.forEach((n, k) => { n.tabIndex = (k === j) ? 0 : -1; });
+  navs[j].focus();
 });
 // 表头用 Enter / 空格排序。它们是 th 不是 button,所以要自己接;
 // 不接的话这张表的排序对纯键盘用户完全不存在。
