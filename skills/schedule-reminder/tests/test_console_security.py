@@ -622,3 +622,51 @@ def test_act_still_reports_a_real_message_when_the_script_speaks(srv, monkeypatc
     payload = _json.loads(body.decode("utf-8"))
     assert payload["message"] == "AcmeScriptSaidThis"
     assert payload["before"] == "Ready" and payload["after"] == "Disabled"
+
+
+def test_an_unexpected_exception_becomes_a_500_not_a_dropped_connection(srv, monkeypatch):
+    """处理器里逃出来的异常必须变成一个 500 JSON,而不是一个断掉的连接。
+
+    ⚠ do_POST 的动作分支原来没有任何兜底,而这几种都真的会发生:
+    run_ps 的 subprocess.TimeoutExpired(枚举 90s / 动作 60s)、
+    `json.loads(out)["tasks"]` 的 ValueError / KeyError。
+    异常会逃到 socketserver 的 handle_error,它打印一段 traceback 然后**直接关连接** ——
+    而 log_message 被置空,本地窗口里几乎什么都看不到。
+    **一个报错方式是「连接消失」的接口,和一个挂掉的服务器长得一样。**
+    """
+    import json as _json
+
+    def boom(*a, **k):
+        raise TimeoutError("AcmeSimulatedTimeout")
+
+    monkeypatch.setattr(S, "run_ps", boom)
+    st, body = call(srv, "POST", "/api/act", token=TOKEN,
+                    body={"name": "AcmeSyntheticTask", "verb": "disable"})
+    assert st == 500, (st, body[:200])
+    payload = _json.loads(body.decode("utf-8"))
+    assert "AcmeSimulatedTimeout" in payload.get("error", ""), payload
+
+
+def test_a_get_endpoint_exception_also_becomes_a_500(srv, monkeypatch):
+    """GET 一侧同样。少了这一条,只给 POST 加兜底也能让上面那条过。"""
+    import json as _json
+
+    def boom(*a, **k):
+        raise RuntimeError("AcmeSimulatedGetFailure")
+
+    monkeypatch.setattr(S, "build_payload", boom)
+    st, body = call(srv, "GET", "/api/tasks", token=TOKEN)
+    assert st == 500, (st, body[:200])
+    assert b"AcmeSimulatedGetFailure" in body
+
+
+def test_the_server_still_answers_after_an_exception(srv, monkeypatch):
+    """兜底之后连接要还能用 —— 否则「返回了 500」和「连接断了」的差别只是措辞。"""
+    def boom(*a, **k):
+        raise RuntimeError("AcmeTransient")
+
+    monkeypatch.setattr(S, "build_payload", boom)
+    call(srv, "GET", "/api/tasks", token=TOKEN)
+    monkeypatch.undo()
+    st, _ = call(srv, "GET", "/api/tasks", token=TOKEN)
+    assert st == 200, "出过一次异常之后服务器不再正常回话"

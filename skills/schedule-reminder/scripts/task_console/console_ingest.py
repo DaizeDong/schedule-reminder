@@ -84,6 +84,23 @@ def begin(con):
     con.execute("BEGIN IMMEDIATE")
 
 
+def rollback(con):
+    """回滚,并且允许「本来就没有事务」。
+
+    ⚠ `begin()` 现在挪进了各处的 try 里。它是 BEGIN IMMEDIATE,在另一个写者持锁、
+    busy_timeout 用尽时抛 OperationalError,而它原来在 try **之外** —— 异常直接冒出去,
+    没有 note_run,后面几个源也不再摄入,而模块开头写着「读不到的源会被记成一条失败的
+    ingest_run 行并非零退出」。
+    但光挪进去还不够:except 里那句裸的 `con.execute("ROLLBACK")` 会**再抛一次**
+    (cannot rollback - no transaction is active),于是那条承诺照样不成立,
+    只是异常换了个名字。**一个把失败处理本身也炸掉的失败处理,等于没有失败处理。**
+    """
+    try:
+        con.execute("ROLLBACK")
+    except Exception:
+        pass
+
+
 def note_run(con, source, started, ok, added, msg=""):
     con.execute("INSERT INTO ingest_run(started_at,finished_at,ok,source,added,note) VALUES(?,?,?,?,?,?)",
                 (started, now(), 1 if ok else 0, source, added, msg[:500]))
@@ -113,8 +130,8 @@ def ingest_health(con, path: str, full: bool) -> tuple[bool, int, str]:
         return False, 0, h.get("reason", "")
 
     added = 0
-    begin(con)
     try:
+        begin(con)
         if full:
             con.execute("DELETE FROM health_obs")
         # history.load gives per-day class counts; re-parse for the hour, which it drops.
@@ -137,7 +154,7 @@ def ingest_health(con, path: str, full: bool) -> tuple[bool, int, str]:
                  "full rebuild (rotation detected)" if rotated else ("full" if full else "incremental"))
         con.execute("COMMIT")
     except Exception as e:
-        con.execute("ROLLBACK")
+        rollback(con)
         note_run(con, "health", started, False, 0, str(e)[:400])
         return False, 0, str(e)
     return True, added, ""
@@ -237,8 +254,8 @@ def ingest_runlog(con, days: int) -> tuple[bool, int, str]:
         epoch = epoch + 1
 
     added = 0
-    begin(con)
     try:
+        begin(con)
         for e in raw.get("events") or []:
             rid = e.get("rid")
             if rid is None:
@@ -267,7 +284,7 @@ def ingest_runlog(con, days: int) -> tuple[bool, int, str]:
                  + ("" if oldest is not None else " ⚠oldestRecordId 读不到,日志清空探测器这一轮是关的"))
         con.execute("COMMIT")
     except Exception as ex:
-        con.execute("ROLLBACK")
+        rollback(con)
         note_run(con, "runlog", started, False, 0, str(ex)[:400])
         return False, 0, str(ex)
     # 部分读取不写成功戳。那个文件的全部意义就是「只有成功才写」,
@@ -407,15 +424,26 @@ def export_run_events(con) -> tuple[bool, int, str]:
         return False, 0, str(e)
 
     last = rows[-1]
-    begin(con)
     try:
+        begin(con)
         con.execute("INSERT INTO meta(key,value) VALUES('export_watermark',?) "
                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                     (f"{last['log_epoch']}:{last['record_id']}",))
         note_run(con, "export", started, True, len(rows), str(out))
         con.execute("COMMIT")
     except Exception as e:
-        con.execute("ROLLBACK")
+        rollback(con)
+        # ⚠ 这条失败路径以前**根本不记账**,而 health / runlog / tasks 三条都记。
+        # 模块开头写着「读不到的源会被记成一条失败的 ingest_run 行并非零退出」,
+        # 而导出这一条不在其中:导出失败之后,账本里既没有成功也没有失败,
+        # 那一轮在事后看来就像**从来没跑过导出**。
+        # note_run 自己也可能因为同一把锁失败,所以它也要能安静收场 ——
+        # 一个把失败处理本身也炸掉的失败处理,等于没有失败处理。
+        try:
+            note_run(con, "export", started, False, 0, str(e)[:400])
+            con.commit()
+        except Exception:
+            pass
         return False, 0, str(e)
     return True, len(rows), ""
 
@@ -434,8 +462,8 @@ def ingest_tasks(con) -> tuple[bool, int, str]:
         return False, 0, str(e)
 
     added = 0
-    begin(con)
     try:
+        begin(con)
         for t in raw.get("tasks", []):
             settings = {k: t.get(k) for k in ("catchup", "retries", "timeout", "multi",
                                               "refuseOnBattery", "stopOnBattery", "runLevel", "userId")}
@@ -455,7 +483,7 @@ def ingest_tasks(con) -> tuple[bool, int, str]:
         note_run(con, "tasks", started, True, added, f"{len(raw.get('tasks', []))} tasks")
         con.execute("COMMIT")
     except Exception as e:
-        con.execute("ROLLBACK")
+        rollback(con)
         note_run(con, "tasks", started, False, 0, str(e)[:400])
         return False, 0, str(e)
     return True, added, ""

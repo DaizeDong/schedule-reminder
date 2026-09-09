@@ -497,6 +497,12 @@ def load_allowlist() -> tuple[set[str] | None, str | None]:
 def status_of(t: dict) -> tuple[str, str]:
     if t["state"] == "Disabled":
         return "disabled", "已停用"
+    # ⚠ 读不到任务信息**不是**「失败」。collect.ps1 以前把 Get-ScheduledTaskInfo 的异常
+    # 整个吞掉,于是 rcRaw 是 None,而下面那行 `rc in ok` 为假,直接返回
+    # ('bad', '失败 ' + (rcHex or '?')) —— **把「我没读到」编码成了一个确定的坏结论**。
+    # 屏幕上是一个红色的「失败 ?」,人会去查一个其实没失败的任务。
+    if t.get("infoError"):
+        return "unknown", "信息读不到"
     rc = t.get("rcRaw")
     if rc == RUNNING or t["state"] == "Running":
         return "running", "常驻中"
@@ -890,7 +896,31 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return host.lower() in allowed
 
+    # 两个入口都套一层兜底。没有它时,任何一个逃出去的异常由 socketserver 的
+    # handle_error 打印 traceback 然后**直接关连接** —— 而 log_message 被置空,
+    # 本地窗口里几乎什么都看不到,客户端拿到的是一个断掉的连接而不是一个错误。
+    # 这几种都真的会发生:run_ps 的 subprocess.TimeoutExpired(枚举 90s / 动作 60s)、
+    # json.loads(out)["tasks"] 的 ValueError / KeyError。
+    # **一个报错方式是「连接消失」的接口,和一个挂掉的服务器长得一样。**
+    def _guard(self, fn, label):
+        try:
+            return fn()
+        except Exception as e:                        # noqa: BLE001
+            try:
+                return self._json(500, {"error": f"{label} 内部错误: "
+                                                 f"{e.__class__.__name__}: {e}"[:400]})
+            except Exception:
+                # 连回话都失败时(连接已经断了)就算了,但不要再让异常继续往上跑,
+                # 否则又回到「traceback 打在一个没人看的地方」那个形态。
+                return None
+
     def do_GET(self):
+        return self._guard(self._do_GET, "GET " + self.path.split("?", 1)[0])
+
+    def do_POST(self):
+        return self._guard(self._do_POST, "POST " + self.path.split("?", 1)[0])
+
+    def _do_GET(self):
         if not self._host_ok():
             return self._json(400, {"error": "bad host"})
         path = self.path.split("?", 1)[0]
@@ -1003,7 +1033,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(500, {"error": f"{type(e).__name__}: {e}"})
         return self._json(404, {"error": "not found"})
 
-    def do_POST(self):
+    def _do_POST(self):
         if not self._host_ok():
             self._drain()
             return self._json(400, {"error": "bad host"})

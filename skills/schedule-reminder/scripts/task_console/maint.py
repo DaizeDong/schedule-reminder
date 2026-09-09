@@ -113,9 +113,17 @@ def _desc_len(skill_dir: Path) -> int | None:
 
 def read_skills() -> dict:
     root, arch = _root("TASK_CONSOLE_SKILLS"), _root("TASK_CONSOLE_SKILL_ARCHIVE")
-    if not root or not root.is_dir():
+    # 「没设」和「设了但那条路径不在」是两件事,合并之后方向刚好是最误导的那一种:
+    # 目录被移走或改名时,页面言之凿凿地说环境变量没设,而它设了 ——
+    # **这是把「我让它检查了而它坏了」报成了「我没让它检查」**,人会照着这句去检查一个
+    # 没有问题的地方。memops.py 已经为同一件事拆开过两个分支并写下这段理由,
+    # 而这里一直是被推翻的那个旧形态。
+    if not root:
         return {"available": False,
                 "reason": "没有设 TASK_CONSOLE_SKILLS,skill 这一栏是「未检查」。"}
+    if not root.is_dir():
+        return {"available": False,
+                "reason": f"skill 目录不存在或读不了: {root}"}
     live, budget, unreadable = [], 0, 0
     for name in sorted(os.listdir(root)):
         d = root / name
@@ -149,9 +157,12 @@ def read_skills() -> dict:
 
 def read_memory() -> dict:
     root = _root("TASK_CONSOLE_MEMORY")
-    if not root or not root.is_dir():
+    if not root:
         return {"available": False,
                 "reason": "没有设 TASK_CONSOLE_MEMORY,记忆池这一栏是「未检查」。"}
+    if not root.is_dir():
+        return {"available": False,
+                "reason": f"记忆池目录不存在或读不了: {root}"}
     files, total = 0, 0
     for f in root.glob("*.md"):
         try:
@@ -207,9 +218,17 @@ def read_plugins(timeout: int = 40) -> dict:
     #      于是每一个都被画成「已禁用」并挂上一个「启用」按钮 : 一个看起来完全正常、
     #      可以点的界面,描述的却是一台并不存在的机器,而且它邀请人去启用一个已经启用的插件。
     # 两种都要说出来,而不是让「解析不出来」和「本来就是这样」长得一样。
-    if lines and not out:
+    # ⚠ 这个条件以前写的是 `if lines and not out` —— 它只在「有输出但一条都没认出来」时
+    # 开火,而 **stdout 整个为空时 `lines == []` 让它直接短路失效**,函数落到下面
+    # `return {"available": True, "plugins": []}`,也就是上面注释点名要防的那件事:
+    # 「插件 0 共 0」,和一台真的没装插件的机器逐字相同。
+    # 一个 TUI 程序在非 TTY / 重定向下把渲染写去 stderr,或者输出被吞,就是这个形状,
+    # 而它的退出码是 0。**判据要问的是「我认出了几条」,不是「有没有行」。**
+    if not out:
         return {"available": False,
-                "reason": "插件清单解析不出来(claude plugin list 的输出格式可能变了)"}
+                "reason": ("插件清单一条都没解析出来"
+                           + ("(claude plugin list 有输出但格式对不上)" if lines
+                              else "(claude plugin list 没有任何 stdout)"))}
     unknown = [p["name"] for p in out if p["enabled"] is None]
     if unknown:
         return {"available": False, "plugins": out,
