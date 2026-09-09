@@ -190,3 +190,36 @@ def test_the_container_check_reads_a_real_stylesheet():
     css = _page_style()
     found = [sel for sel in _CONTAINERS if _rules_for(css, sel)]
     assert len(found) >= 5, f"只匹配到 {found},选择器写法可能和样式表对不上"
+
+
+def test_the_enter_space_handler_only_lists_selectors_that_can_be_focused():
+    """Enter/空格处理器里列的每一类,都必须真的有渲染点给它 tabindex。
+
+    ⚠ 它原来列了五类,而**只有一类**在渲染时给了 tabindex="0" ——
+    另外四类既没有 tabindex 也不是原生可聚焦元素,那四条分支永远走不到。
+    一段覆盖了五类、其中四类是死的处理器,读起来像「键盘可达性已经做过了」,
+    而真相是只做了五分之一。**死分支不会以任何方式报出来,它只是让人不再去补那件事。**
+
+    判据是「处理器里的选择器」与「渲染时带 tabindex 的选择器」对得上,
+    不是「处理器里有没有某个名字」—— 后者只能证明我写了那个名字。
+    """
+    src = open(PAGE, encoding="utf-8").read()
+    m = _re.search(r'closest\(\s*"([^"]*data-fr[^"]*)"\s*\)', src)
+    assert m, "找不到 Enter/空格处理器里的那个 closest 选择器"
+    listed = [x.strip() for x in m.group(1).split(",") if x.strip()]
+
+    # 渲染时真的给了 tabindex(且不是 -1)的那些属性/类名
+    focusable_attrs = set()
+    for hit in _re.findall(r'tabindex="(-?\d)"', src):
+        pass
+    # 逐个检查:选择器里出现的 data-* 属性,必须在某个带 tabindex="0" 的渲染串里出现
+    bad = []
+    for sel in listed:
+        key = _re.sub(r'^\[|\]$', "", sel).split("=")[0].lstrip(".")
+        # 找到同时包含这个 key 和 tabindex="0" 的那一行
+        ok = any(key in line and 'tabindex="0"' in line for line in src.splitlines())
+        if not ok:
+            bad.append(f'{sel}  (没有任何渲染点给它 tabindex="0")')
+    assert not bad, ("Enter/空格处理器列了聚焦不到的选择器:\n  " + "\n  ".join(bad))
+    assert listed, "选择器列表是空的,这条检查什么都没在查"
+    _ = focusable_attrs

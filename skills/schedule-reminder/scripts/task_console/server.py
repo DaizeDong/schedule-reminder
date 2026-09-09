@@ -269,7 +269,12 @@ def load_runlog() -> dict:
             "oldest": raw.get("oldest"), "count": raw.get("count", len(evs)),
             "windowDays": (None if truncated else RUNLOG_DAYS), "countScope": scope,
             "truncated": truncated,
-            # 读到一半失败、以及解析不了的条数,两个都要带出去。读取器一直在数它们,
+            # 读到一半失败、以及解析不了的条数,两个都要带出去。
+            # ⚠ 这句以前写的是「读取器一直在数它们」—— **只有快路(evtlog)在数**。
+            # 慢路 runlog.ps1 从来不产出 dropped / partial / truncated 三个键,
+            # 于是 `raw.get("dropped") or 0` 把「这个读取器根本不数」变成了一个确定的 0:
+            # 同一个页面字段在一条通路上是量出来的,在另一条通路上是缺失被当成了值。
+            # 2026-09-09 已给慢路补上这三个计数,所以现在这句话对两条通路都成立。
             # 而这里原来把两个数都扔了:事件格式一变、大批事件被丢掉时,页面上只会看到
             # 运行次数变少、成功率漂移,没有任何一处说明有多少条读不懂 ——
             # 一个看起来精确、实则不完整的数字,而它旁边正好还有个 count 给它背书。

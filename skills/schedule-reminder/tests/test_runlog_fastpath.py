@@ -172,3 +172,101 @@ def test_max_record_id_is_a_number_not_a_missing_key():
     r = E.read(days=0, max_events=1)
     if r.get("enabled"):
         assert isinstance(r["maxRecordId"], int)
+
+
+# ---------------------------------------------- 两个读取器要产出同一套「我数得全不全」的键
+# server.py 里那段注释写着「读取器一直在数它们」,而**只有快路在数**:
+# runlog.ps1 从来不产出 dropped / partial / truncated,于是消费方的
+# `raw.get("dropped") or 0` 把「这个读取器根本不数」变成了一个确定的 0 ——
+# 同一个页面字段在一条通路上是量出来的,在另一条通路上是缺失被当成了值。
+# 而前端只看这两个字段决定要不要把顶栏染成警告色。
+
+COMPLETENESS = ("dropped", "partial", "truncated")
+
+
+def test_the_fast_reader_reports_completeness():
+    ok, why = E.available()
+    if not ok:
+        pytest.skip(f"这台机器读不了事件日志: {why}")
+    r = E.read(days=1, max_events=5)
+    if not r.get("enabled"):
+        pytest.skip(f"通道不可读: {r.get('reason')}")
+    missing = [k for k in COMPLETENESS if k not in r]
+    assert not missing, f"快路少了完整性字段: {missing}"
+
+
+def test_the_slow_reader_reports_the_same_completeness_keys():
+    """慢路必须产出同一套键。
+
+    这条会真的调一次 PowerShell(窗口开到最小),所以慢。但**不能用合成载荷代替**:
+    缺陷本来就是「这个脚本不产出这些键」,拿一份我自己写的载荷去测,测的是我自己那份。
+    """
+    import json
+    import subprocess
+    import sys as _sys
+    script = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "scripts", "task_console", "runlog.ps1")
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", script, "-Days", "1", "-MaxEvents", "5"],
+        capture_output=True, timeout=600, stdin=subprocess.DEVNULL)
+    out = r.stdout.decode("utf-8", "replace").strip()
+    if r.returncode != 0 or not out:
+        pytest.skip(f"这台机器上跑不了 runlog.ps1: {r.stderr[:200]!r}")
+    d = json.loads(out)
+    if not d.get("enabled"):
+        pytest.skip(f"通道不可读: {d.get('reason')}")
+    missing = [k for k in COMPLETENESS if k not in d]
+    assert not missing, f"慢路少了完整性字段: {missing}"
+    # 撞上限时 truncated 必须为真 —— 否则这个键存在但永远是假,等于没有。
+    assert d["truncated"] is True, (
+        f"上限设成 5 而 count={d.get('count')},truncated 却是 {d.get('truncated')}")
+    _ = _sys
+
+
+def test_both_readers_agree_on_the_key_set():
+    """两个读取器交出的键集合要一致(至少在消费方读的那些上)。
+
+    这条不看值看**键**:值不同是正常的(两次读的窗口不同),
+    而键少一个就是「缺失被当成值」的入口。
+    """
+    ok, _why = E.available()
+    if not ok:
+        pytest.skip("这台机器读不了事件日志")
+    r = E.read(days=1, max_events=5)
+    if not r.get("enabled"):
+        pytest.skip("通道不可读")
+    for k in CONSUMED + COMPLETENESS:
+        assert k in r, f"快路少了 {k}"
+
+
+def test_the_slow_reader_counts_every_event_it_skips():
+    """慢路每一处「跳过一个事件」都必须先记一笔。
+
+    ⚠ 这是一条**形状检查**,不是行为检查,而且必须说清为什么:
+    这台机器上的事件全都带 TaskName,所以 dropped 永远是 0 ——
+    把那个 `$dropped++` 删掉,任何行为断言都量不出差别。
+    **一条量不出差别的行为断言写出来就是恒真的**(投毒验过:删掉计数,13 条全过)。
+
+    所以判据换成源码形状:凡是在事件循环里 `continue` 掉一个事件的地方,
+    同一行必须带上一个计数器自增。它能失败(删掉自增就红),而它证明的是
+    「跳过这件事被记了账」,不是「否则页面会错」。
+    """
+    import re as _re
+    p = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "scripts", "task_console", "runlog.ps1")
+    src = open(p, encoding="utf-8").read()
+
+    skips = [ln.strip() for ln in src.splitlines()
+             if _re.search(r"\bcontinue\b", ln) and not ln.strip().startswith("#")]
+    assert skips, "一处 continue 都没扫到,这条检查什么都没在查"
+    bad = [ln for ln in skips if "++" not in ln]
+    assert not bad, ("这些地方跳过了一个事件却没有记数:\n  " + "\n  ".join(bad)
+                     + "\n(不记数的话 dropped 永远是 0,而「我跳过了一些」和"
+                       "「本来就没有」在页面上会渲染成同一个数。)")
+
+    # 计数器要真的进入输出,否则记了也没人看得到。
+    assert _re.search(r"dropped\s*=\s*\$dropped", src), \
+        "dropped 计数器没有被写进输出对象"

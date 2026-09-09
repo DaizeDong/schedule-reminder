@@ -143,19 +143,77 @@ def test_every_source_key_is_unique():
     assert len(keys) == len(set(keys))
 
 
-def test_every_panel_source_is_in_the_source_table():
-    """页面上每一块面板的来源都必须出现在自检表里。
+def _env_vars_production_actually_reads():
+    """扫生产代码,列出它真的读的每一个 TASK_CONSOLE_* 环境变量。
 
-    这条是补一个实测漏洞:自检报「读到 12/12」的同时,页面上有三块面板显示「未检查」。
-    一个漏掉了三个来源的自检打印满分,和一个真的全绿的自检长得一模一样,
-    而它恰恰是整页里唯一负责回答「我到底看了多少东西」的那一块。
+    **期望值必须从测试之外独立观察出来。** 这条用例原来断言的是
+    「一张手写的 8 项名单 ⊆ SC.SOURCES」——单向包含,只能证明「这 8 个还在」,
+    永远证明不了「没有第九个被漏掉」;而且对 SOURCES 被删条目完全无感。
+    实测:把 SOURCES 里 categories 和 convo_cache 两条真实来源整条删掉,
+    这个文件 18 条用例照样全过(其余用例用 len(SC.SOURCES) 算期望值,跟着缩水)。
+    而漏登记此刻就有三个。
     """
-    known = {v for _k, _t, v, _kind, _age, _req in SC.SOURCES if v}
-    for var in ("TASK_CONSOLE_REPOS", "TASK_CONSOLE_PLUGIN_CACHE",
-                "TASK_CONSOLE_SESSIONS", "TASK_CONSOLE_MEMORY_ARCHIVER",
-                "TASK_CONSOLE_VISIBILITY", "TASK_CONSOLE_SKILLS",
-                "TASK_CONSOLE_MEMORY", "TASK_CONSOLE_HEALTH"):
-        assert var in known, f"{var} 是某块面板的来源,但自检不知道它存在"
+    import glob
+    import re
+    scr = os.path.dirname(SC.__file__)
+    pat = re.compile(r"TASK_CONSOLE_[A-Z_]+")
+    found = {}
+    for f in sorted(glob.glob(os.path.join(scr, "*.py"))):
+        with open(f, encoding="utf-8") as fh:
+            for i, line in enumerate(fh, 1):
+                if line.lstrip().startswith("#"):
+                    continue            # 讲这条规则的注释不算「读」
+                for m in pat.findall(line):
+                    found.setdefault(m, []).append(f"{os.path.basename(f)}:{i}")
+    return found
+
+
+def test_every_env_var_production_reads_is_accounted_for():
+    """每一个被读的环境变量,要么是面板来源,要么是**写明了理由的**覆盖项。
+
+    双向对账:多一个少一个都会红。
+    """
+    found = _env_vars_production_actually_reads()
+    assert len(found) >= 10, f"只扫到 {len(found)} 个,扫描器大概没扫到东西"
+
+    sources = {v for _k, _t, v, _kind, _age, _req in SC.SOURCES if v}
+    overrides = {v for v, _why in SC.OVERRIDES}
+    accounted = sources | overrides
+
+    unaccounted = sorted(set(found) - accounted)
+    assert not unaccounted, (
+        "这些环境变量生产代码在读,而自检既没把它当来源、也没声明成覆盖项:\n  "
+        + "\n  ".join(f"{v}  (首次出现 {found[v][0]})" for v in unaccounted))
+
+    stale = sorted(accounted - set(found))
+    assert not stale, (
+        "这些登记着、而生产代码里已经没人读了:\n  " + "\n  ".join(stale)
+        + "\n(登记一个没人读的来源,会让自检的分母虚高。)")
+
+
+def test_every_override_states_why_it_is_not_a_panel_source():
+    """覆盖项必须写明为什么不算面板来源。
+
+    没有理由的豁免和没有豁免的区别,只是前者看起来像有人想过。
+    """
+    assert SC.OVERRIDES, "OVERRIDES 是空的,那上面那条对账就没在放行任何东西"
+    for var, why in SC.OVERRIDES:
+        assert var.startswith("TASK_CONSOLE_"), var
+        assert why and len(why) > 20, f"{var} 的豁免理由太短,写不清就不该豁免: {why!r}"
+
+
+def test_deleting_a_real_source_is_caught():
+    """负对照:从 SOURCES 里删掉一条真实来源,对账必须红。
+
+    这正是原来那条用例做不到的事 —— 它只查一张手写名单里的名字在不在,
+    删掉名单之外的任何一条它都无感。
+    """
+    found = _env_vars_production_actually_reads()
+    overrides = {v for v, _why in SC.OVERRIDES}
+    trimmed = tuple(r for r in SC.SOURCES if r[2] != "TASK_CONSOLE_CATEGORIES")
+    assert len(trimmed) == len(SC.SOURCES) - 1, "没删掉,这条负对照没成立"
+    accounted = {v for _k, _t, v, _kind, _age, _req in trimmed if v} | overrides
+    assert set(found) - accounted, "删掉一条真实来源之后对账居然还是干净的"
 
 
 # ---------- 空目录不是「ok」 ----------
