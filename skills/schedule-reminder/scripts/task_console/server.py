@@ -362,8 +362,20 @@ def load_from_db():
         "caveat": ("健康率来自每小时轮询的观察序列,不是每次运行的成功率:一个坏了一整天的任务贡献约 24 条"
                    "不健康观察而不是 1 条。「实成功率」那一列才是每次运行的,来自 Windows 运行日志。"),
     }
+    # 运行数据这一半也要说原因。旁边 hist 那一半为同一情形写了三种具体原因,
+    # 而这里 reason 恒为 None —— 于是库可用但 run_event 是空表时,页面上只剩一句
+    # 没有原因的「无运行日志」,而那句话在「日志通道关着」「摄入器从没跑过」
+    # 「摄入器停了」三种完全不同的处境下逐字相同。
+    # 更糟的是 warnings 只在**回落路径**上才收 runs["reason"],所以这条路上
+    # 连那句没有原因的话都不会进警告区。
+    _rruns = cov["runs"]["rows"]
+    _rwhy = None
+    if not _rruns:
+        _rwhy = ("数据库里还没有运行事件。要么运行日志通道是关的,要么摄入器还没跑过 —— "
+                 "跑一次 console_ingest.py 就知道是哪一种。"
+                 "⚠ 那个通道是滚动缓冲,实测约 5-8 天就会覆盖,拖着不摄入等于永久丢失。")
     runs = {
-        "available": cov["runs"]["rows"] > 0, "reason": None,
+        "available": _rruns > 0, "reason": _rwhy,
         "since": cov["runs"]["from"], "oldest": cov["runs"]["from"],
         "count": cov["runs"]["rows"], "tasks": rtot,
         # 数据库那条路的 count 是全表行数,不限日期,和上面回落路径那条不是一个量。
@@ -668,6 +680,10 @@ def build_payload() -> dict:
     # machine that has not run the ingester yet must still get a working console; but when it is
     # used, the page says so, so "fast path broken" never looks like "everything is fine".
     hist, runs, db_reason = load_from_db()
+    # runs 的原因在**两条路上都要收**。原来只有回落路径收,于是数据库可用但表为空时,
+    # 那句原因算出来了却没有任何地方显示它。
+    if runs and runs.get("reason") and not runs.get("available"):
+        warnings.append(runs["reason"])
     if db_reason:
         warnings.append(f"数据库不可用,回落到直接解析日志(会慢很多):{db_reason}")
         hist = history.load(os.environ.get("TASK_CONSOLE_HISTORY"))
