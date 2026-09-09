@@ -265,10 +265,13 @@ tr.det>td{background:var(--panel2);white-space:normal;padding:6px 10px 8px;borde
 .fr-c.s-unknown{background:transparent;border:1px dashed var(--faint)}
 .fr-c[data-fr]:hover{outline:2px solid var(--cyan);outline-offset:1px}
 .fr-list{padding:0 10px 9px;display:flex;flex-direction:column;gap:1px}
-/* .fr-r 及其三个子选择器已删。新鲜度明细行那个组件不存在了(现在 frlist 里是单个 div,
-   不是四列网格),而这五条规则还描述着它,连一个只有它用的类名 .ag 都留着。
-   下一个想恢复明细行的人会以为样式还能用 : 它已经和现在的内容结构对不上。
-   更麻烦的是页面上确实有一行长得很像的东西(#todo .rw),所以在这里改样式会「看起来生效了」。 */
+/* .fr-r 及其三个子选择器已删,只有它用的那个类名 .ag 也一并删了。
+   新鲜度明细行那个组件不存在了(现在 frlist 里是单个 div,不是四列网格)。
+   留这段话是为了说明**它们去哪了**:下一个想恢复明细行的人不会在这里找到可用的样式。
+   ⚠ 上一版这段注释先说「已删」,又说「这五条规则还描述着它,连 .ag 都留着」——
+   自相矛盾,而事实是那五条规则和 .ag 一条都不在文件里了。
+   **一段同时断言两件相反的事的注释,读的人只能靠去查代码来决定信哪半句;
+   那时它已经不是文档了。** */
 .fr-none{padding:8px 10px 10px;font-size:12px;color:var(--ok)}
 .fr-off{padding:8px 10px 10px;font-size:12px;color:var(--warn)}
 

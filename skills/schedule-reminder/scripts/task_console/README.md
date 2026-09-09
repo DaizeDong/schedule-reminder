@@ -95,7 +95,11 @@ nobody was looking.
 
 ## Why it is locked down
 
-It can change system state, so three controls, none of them decorative:
+It can change system state, so it has several controls, none of them decorative.
+
+(This line used to say "three controls" while the list below had five. A count in prose next to
+a list that anyone can append to is a fact with two homes and no reconciliation -- the list grew,
+the number did not. So the number is gone: the list is the only place that says how many.)
 
 1. **Binds 127.0.0.1 only.** Nothing off this machine can reach it.
 2. **Every `/api/` call needs a token** minted fresh at startup and never written to disk. Without
