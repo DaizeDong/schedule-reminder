@@ -242,11 +242,10 @@ tr.det>td{background:var(--panel2);white-space:normal;padding:6px 10px 8px;borde
 .fr-c.s-unknown{background:transparent;border:1px dashed var(--faint)}
 .fr-c[data-fr]:hover{outline:2px solid var(--cyan);outline-offset:1px}
 .fr-list{padding:0 10px 9px;display:flex;flex-direction:column;gap:1px}
-.fr-r{display:grid;grid-template-columns:14px minmax(120px,190px) 1fr auto;gap:9px;
-  align-items:center;font-size:12px;padding:3px 0;border-top:1px solid var(--line2)}
-.fr-r .nm{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.fr-r .why{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.fr-r .ag{font-variant-numeric:tabular-nums;color:var(--faint);white-space:nowrap;font-size:11px}
+/* .fr-r 及其三个子选择器已删。新鲜度明细行那个组件不存在了(现在 frlist 里是单个 div,
+   不是四列网格),而这五条规则还描述着它,连一个只有它用的类名 .ag 都留着。
+   下一个想恢复明细行的人会以为样式还能用 : 它已经和现在的内容结构对不上。
+   更麻烦的是页面上确实有一行长得很像的东西(#todo .rw),所以在这里改样式会「看起来生效了」。 */
 .fr-none{padding:8px 10px 10px;font-size:12px;color:var(--ok)}
 .fr-off{padding:8px 10px 10px;font-size:12px;color:var(--warn)}
 
@@ -269,7 +268,8 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
   display:flex;align-items:baseline;gap:7px}
 .mt-t b{font-family:var(--mono,inherit);font-variant-numeric:tabular-nums;color:var(--ink);
   font-size:13px}
-.mt-t .sub{color:var(--faint);font-weight:400;margin-left:auto;font-variant-numeric:tabular-nums}
+.sub{color:var(--faint);font-weight:400;font-variant-numeric:tabular-nums}
+.mt-t .sub{margin-left:auto}
 .mt-meter{height:7px;background:var(--line2);border-radius:2px;overflow:hidden;position:relative}
 .mt-meter i{display:block;height:100%}
 /* 这里原来是 max-height:172px + 内部滚动。那是九块盒子堆在同一页时代的写法:
@@ -287,7 +287,12 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
 .mt-r .n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mt-r .c{font-variant-numeric:tabular-nums;color:var(--faint);font-size:11px}
 .mt-r.off .n{color:var(--faint);text-decoration:line-through}
-.mt-r .lk{color:var(--cyan);font-size:10px}
+/* .lk 和 .sub 原来分别写死在 .mt-r 和 .mt-t 作用域下,而它们在别处也被用:
+   .lk 用在仓库网格里标嵌套仓,.sub 用在「要人管的事」的卡头计数上。
+   结果是同一个类名在第二个容器里完全没有样式,按周围的正文渲染 :
+   「这个仓是嵌套的」这个信号的视觉重量和仓名一样,扫一眼读起来像仓名的一部分。
+   **把一份样式按容器写死,然后在第二个容器里复用同一个类名,就会漏成这样。** */
+.lk{color:var(--cyan);font-size:10px}
 .mt-note{font-size:12px;color:var(--warn)}
 
 /* ---- 自检条 ------------------------------------------------------------------------
@@ -353,6 +358,7 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
   padding:4px 0;cursor:pointer;font-size:12px}
 .cv-gh:hover{background:var(--cur)}
 .cv-gh .caret{color:var(--faint);font-size:9px;transition:none}
+.cv-hm{font-variant-numeric:tabular-nums;color:var(--faint);white-space:nowrap}
 .cv-gh .dir{font-family:var(--mono,inherit);overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;direction:rtl;text-align:left}
 .cv-gh .n{font-variant-numeric:tabular-nums;color:var(--faint);font-size:11px;white-space:nowrap}
@@ -440,7 +446,7 @@ body{font-size:12px}
 /* 这些小按钮原来是单字符图标,同一个 ⏸ 在三处分别表示归档移出、禁用、归档进冷层,
    而它长得像暂停,三个含义一个都不是。改成文字之后要给够宽度,
    否则两个汉字会被压成一个半。 */
-button.mini{min-width:auto;padding:0 5px;font-size:10.5px;white-space:nowrap}
+button.mini{padding:0 5px;font-size:10.5px;white-space:nowrap}
 /* 徽章是「合并」这件事的安全带:分区把东西收了起来,徽章负责让要人管的东西不用点进去
    也看得见。所以折叠时它不能跟着藏,而是贴到图标角上 : 折叠恰恰是最需要它的时候。 */
 #side.navbar-folded .nav-link{position:relative}
@@ -647,7 +653,7 @@ table.g td[data-col="timeout"]{font-family:var(--mono)}
     <div id="todod"></div>
   </div>
 <div class="card" id="frbox">
-    <div class="card-header"><h3 class="card-title">产物新鲜度<span class="n" id="frnote"></span></h3></div>
+    <div class="card-header"><h3 class="card-title">产物新鲜度</h3></div>
     <div class="fr-head">
       <div class="fr-stack" id="frstack"></div>
       <div class="fr-cov">覆盖 <b id="frcov">-</b></div>
@@ -880,7 +886,6 @@ function renderFresh(){
   const S=F.summary||{}, ts=F.tasks||[];
   // 没有清单就说没有清单。画一块空的绿板等于用「没检查」冒充「没问题」。
   if(F.reason){
-    $("frnote").textContent="";
     $("frstack").innerHTML="";
     // 这里原来写 "0%"。控制台是轮询刷新的,而这个分支只设 textContent 不碰颜色和 tooltip,
     // 所以上一轮覆盖率 >=80% 染成绿色之后清单被删,这一轮会渲染出一个**绿色的 0%**
@@ -892,7 +897,6 @@ function renderFresh(){
     return;
   }
   const counts=S.counts||{}, total=S.total||0;
-  $("frnote").textContent="";
   $("frstack").innerHTML=FR_ORDER.filter(k=>counts[k]).map(k=>
     `<i style="width:${(counts[k]/total*100).toFixed(2)}%;background:${FR_COLOR[k]}" `
     +`title="${FR_LABEL[k]} ${counts[k]}"></i>`).join("");
@@ -1226,7 +1230,7 @@ function renderConvos(){
       <div class="cv-gh">
         <span class="caret">${open?"▼":"▶"}</span>
         <span class="dir" title="${esc(g.cwd)}">${esc(g.cwd)}</span>
-        <span class="hm">${g.humanish?"👤"+g.humanish:""}</span>
+        <span class="cv-hm">${g.humanish?"👤"+g.humanish:""}</span>
         <span class="n">${g.count} 场 · ${kb(g.bytes)}</span>
       </div>
       <div class="cv-list">${rows.map(r=>`
