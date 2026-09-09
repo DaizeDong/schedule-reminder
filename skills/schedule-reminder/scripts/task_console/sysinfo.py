@@ -30,8 +30,24 @@ MIN_AGE_H = 2.0
 
 
 def dir_size(path: Path, cap: int = WALK_CAP) -> dict:
+    """目录体积。**任何一处没数进去都要让 partial 为真。**
+
+    ⚠ 原来只有撞上 WALK_CAP 才置 partial,而这里有两处 `except OSError: continue`
+    把整棵子树的扫描失败、和单个文件的 stat 失败,都无声丢掉,然后照样返回一个
+    `partial: False` 的确定体积。本模块开头那句话说的就是这件事:
+    **一个数了一半却报出一个确定数字的体积,比不报还糟。**
+
+    真实触发路径不止「权限」这一种设想:Windows 上超过 MAX_PATH 的深路径
+    (插件缓存里的 node_modules 之类)会让不带长路径前缀的 scandir 抛 OSError;
+    而这个面板要谈的 temp_git_* 本身就是克隆暂存目录,并发刷新时目录中途被删,
+    scandir 抛 FileNotFoundError —— 也就是说最容易在扫描中途消失的正是它要数的东西。
+
+    界面已经准备好了:`sz()` 在 partial 时加一个 "+",旁边还有一行提示。
+    缺的一直只是这一半的实现 —— 不变量写下了、字段建好了、UI 也画了,唯独没人置那个标志。
+    """
     total = files = 0
     partial = False
+    errors = 0
     stack = [path]
     while stack:
         d = stack.pop()
@@ -49,10 +65,13 @@ def dir_size(path: Path, cap: int = WALK_CAP) -> dict:
                             total += e.stat(follow_symlinks=False).st_size
                             files += 1
                     except OSError:
+                        errors += 1
                         continue
         except OSError:
+            errors += 1
             continue
-    return {"bytes": total, "files": files, "partial": partial}
+    return {"bytes": total, "files": files,
+            "partial": partial or errors > 0, "errors": errors}
 
 
 def disk(path: str = ".") -> dict:
@@ -64,18 +83,27 @@ def disk(path: str = ".") -> dict:
             "usedPct": round(u.used / u.total * 100, 1) if u.total else None}
 
 
-def temp_git_leftovers(root: Path, now: float) -> list[dict]:
+def temp_git_leftovers(root: Path, now: float, errors: list | None = None) -> list[dict]:
+    """残留的克隆暂存目录。
+
+    ⚠ 同一个形状:扫描失败时原来直接 `return out`(空列表),单个目录 stat 失败时 continue,
+    于是「这里很干净」和「我根本没数成」都渲染成一个确定的 0 个残留。
+    调用方传一个 errors 列表进来收账,收到东西就说自己数得不全。
+    """
     out = []
+    err = errors if errors is not None else []
     try:
         entries = list(os.scandir(root))
-    except OSError:
+    except OSError as e:
+        err.append(f"{e.__class__.__name__}: {root}")
         return out
     for e in entries:
         if not e.is_dir(follow_symlinks=False) or not TEMP_GIT.match(e.name):
             continue
         try:
             age = (now - e.stat().st_mtime) / 3600.0
-        except OSError:
+        except OSError as ex:
+            err.append(f"{ex.__class__.__name__}: {e.name}")
             continue
         out.append({"name": e.name, "ageHours": round(age, 1),
                     "deletable": age >= MIN_AGE_H})
@@ -96,10 +124,15 @@ def read(now: float | None = None) -> dict:
         if not p.is_dir():
             res["pluginCache"] = {"available": False, "reason": f"目录不存在: {p}"}
         else:
-            left = temp_git_leftovers(p, now)
+            # 残留数也要能说「我数得不全」。原来扫描失败直接返回空列表,
+            # 于是「这里很干净」和「我根本没数成」都渲染成一个确定的 0 个残留。
+            lerr: list[str] = []
+            left = temp_git_leftovers(p, now, lerr)
             res["pluginCache"] = dict(
                 {"available": True, "path": str(p), "leftovers": left,
                  "leftoverCount": len(left),
+                 "leftoverPartial": bool(lerr),
+                 "leftoverErrors": lerr[:5],
                  "deletableCount": sum(1 for x in left if x["deletable"])},
                 **{"size": dir_size(p)})
 

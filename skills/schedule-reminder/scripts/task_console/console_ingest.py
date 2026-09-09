@@ -206,6 +206,27 @@ def ingest_runlog(con, days: int) -> tuple[bool, int, str]:
         note_run(con, "runlog", started, False, 0, f"[{via}] {why}"[:400])
         return False, 0, why
 
+    # ⚠ enabled=True **不等于**这次读成功了。两条通路都会在「读到一半失败」时
+    # 交出 enabled=True + 一个 reason(+ evtlog 那边还有 partial=True 和一批被截断的事件):
+    #   - runlog.ps1 在 Get-WinEvent 非「没有事件」的异常里输出 enabled=$true /
+    #     reason='read failed: ...' / events=@() 然后 exit 0;
+    #   - evtlog.read 在 EvtNext 中途失败时返回 enabled=True / partial=True / 半批事件。
+    # 原来这里只判 enabled,于是这两种情况都会走完下面整段:added=0、
+    # ingest_run 落一行 ok=1、**runlog-ingest-ok.txt 的 mtime 被刷新**,
+    # 而那个戳文件的 docstring 承诺的是「只有成功的 runlog 摄入才写」。
+    # 于是健康面板对摄入判绿、顶栏写「最后摄入 刚才」,而这个通道约五天覆盖一次 ——
+    # 这段没被摄入的运行历史是永久丢失的。
+    # 同一份载荷 server.py 那边判的是 available=False:两个读者对同一个事实给出相反答案。
+    #
+    # 部分失败不当作整轮失败(半批事件仍然值得入库),但**它不许写成功戳**,
+    # 也不许在 note 里装作正常。
+    read_failed = bool(raw.get("reason")) and not (raw.get("events") or [])
+    if read_failed:
+        why = raw.get("reason")
+        note_run(con, "runlog", started, False, 0, f"[{via}] 读取失败: {why}"[:400])
+        return False, 0, why
+    partial = bool(raw.get("partial")) or bool(raw.get("reason"))
+
     oldest = raw.get("oldestRecordId")
     prev = con.execute("SELECT * FROM runlog_ingest WHERE id=1").fetchone()
     epoch = prev["log_epoch"] if prev else 1
@@ -239,8 +260,9 @@ def ingest_runlog(con, days: int) -> tuple[bool, int, str]:
             (epoch, raw.get("maxRecordId") or 0, oldest, raw.get("recordCount"), now()))
         # 走了哪条路要写进去。两条路的读取上限、耗时、能不能读满 60 天都不一样,
         # 事后看一行「摄入成功 0 条」时,不知道它是哪条路读的就没法判断该查哪边。
-        note_run(con, "runlog", started, True, added,
-                 f"[{via}] epoch={epoch} oldest={oldest} "
+        note_run(con, "runlog", started, not partial, added,
+                 f"[{via}]{' ⚠部分读取: ' + str(raw.get('reason')) if partial else ''}"
+                 f" epoch={epoch} oldest={oldest} "
                  f"events={len(raw.get('events') or [])}"
                  + ("" if oldest is not None else " ⚠oldestRecordId 读不到,日志清空探测器这一轮是关的"))
         con.execute("COMMIT")
@@ -248,8 +270,12 @@ def ingest_runlog(con, days: int) -> tuple[bool, int, str]:
         con.execute("ROLLBACK")
         note_run(con, "runlog", started, False, 0, str(ex)[:400])
         return False, 0, str(ex)
-    _stamp_runlog_success(added)
-    return True, added, ""
+    # 部分读取不写成功戳。那个文件的全部意义就是「只有成功才写」,
+    # 一个在半成功时也刷新的戳,和一个每次运行都刷新的日志文件是同一种东西:
+    # 监控盯着它等于什么都没盯。
+    if not partial:
+        _stamp_runlog_success(added)
+    return (not partial), added, (str(raw.get("reason")) if partial else "")
 
 
 def _stamp_runlog_success(added: int) -> None:
