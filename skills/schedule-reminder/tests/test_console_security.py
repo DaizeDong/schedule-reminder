@@ -563,3 +563,62 @@ def test_the_producer_reader_can_actually_fail():
     读一个不存在的变量必须炸,而不是返回空集合让断言恰好通过。"""
     with pytest.raises(AssertionError):
         _producer_keys("nosuchvariable")
+
+
+def test_act_never_answers_with_an_undefined_message(srv, monkeypatch):
+    """act.ps1 什么都没输出时,响应里必须有可读的原因,而不是缺一个 message。
+
+    ⚠ 原来 `res = json.loads(out) if out else {}` —— 一个字节都没输出时 res 是空字典,
+    而 **err 完全不进响应**(只有 JSON 解析失败那一支才用 out or err)。
+    前端无条件读 `r.message`,于是右下角只弹出「<任务名>:undefined」四秒后消失,
+    真正的错误文本(解释器找不到、被 ExecutionPolicy 挡下、脚本解析失败 ——
+    这几种都是 rc!=0 且 stdout 为空、stderr 有正文)停在 server 进程里从不外传。
+    **一个报错却不说错在哪的界面,和不报错差不多。**
+
+    这条用例**一次都不碰真机**:枚举和动作两次 run_ps 都换成替身,任务名是编的。
+    第一版让枚举走真机、再拿本机第一个任务名去 POST disable —— 那是在一台活机器上
+    按下一个破坏性动作,只靠「替身会拦住它」这一个假设兜底。
+    禁令不是控制,给合成输入才是。
+    """
+    import json as _json
+
+    FAKE_TASKS = _json.dumps({"tasks": [{"name": "AcmeSyntheticTask", "state": "Ready"}]})
+
+    def fake_run_ps(script, env_extra=None, timeout=90, args=None):
+        if script == S.COLLECT:
+            return 0, FAKE_TASKS, ""
+        # act.ps1: rc 非零、没有 stdout、只有 stderr —— 正是那几种真实故障的形状
+        return 1, "", "AcmeUnreadableStderrText"
+
+    monkeypatch.setattr(S, "run_ps", fake_run_ps)
+
+    st, body = call(srv, "POST", "/api/act", token=TOKEN,
+                    body={"name": "AcmeSyntheticTask", "verb": "disable"})
+    assert st == 500, body[:200]
+    payload = _json.loads(body.decode("utf-8"))
+    assert payload.get("message"), "响应里没有 message,前端会印出 undefined"
+    assert "AcmeUnreadableStderrText" in payload["message"], payload["message"]
+    assert payload.get("ok") is False
+    assert payload.get("name") == "AcmeSyntheticTask"
+
+
+def test_act_still_reports_a_real_message_when_the_script_speaks(srv, monkeypatch):
+    """正对照:脚本正常回话时,message 用它自己的,不被兜底文案顶掉。
+
+    少了这一条,一个「永远把 message 设成固定字符串」的实现也能让上面那条通过。
+    """
+    import json as _json
+
+    def fake_run_ps(script, env_extra=None, timeout=90, args=None):
+        if script == S.COLLECT:
+            return 0, _json.dumps({"tasks": [{"name": "AcmeSyntheticTask"}]}), ""
+        return 0, _json.dumps({"ok": True, "message": "AcmeScriptSaidThis",
+                               "before": "Ready", "after": "Disabled"}), ""
+
+    monkeypatch.setattr(S, "run_ps", fake_run_ps)
+    st, body = call(srv, "POST", "/api/act", token=TOKEN,
+                    body={"name": "AcmeSyntheticTask", "verb": "disable"})
+    assert st == 200
+    payload = _json.loads(body.decode("utf-8"))
+    assert payload["message"] == "AcmeScriptSaidThis"
+    assert payload["before"] == "Ready" and payload["after"] == "Disabled"

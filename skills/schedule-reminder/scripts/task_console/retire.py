@@ -34,7 +34,9 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 # allow-list 在一个 PowerShell 脚本里,形如 $TaskNames = @( 'A', 'B' )
-TASKNAMES_BLOCK = re.compile(r"(\$TaskNames\s*=\s*@\()(.*?)(\n\s*\))", re.S)
+# 块正则只有一份,在 allowlist.py 里。这里曾经有自己的一份,和 server.py 那份对收尾括号
+# 缩进的处理不一致 —— 同一个文件,一边读得到一边读不到,而两边都自称权威。
+from allowlist import BLOCK as TASKNAMES_BLOCK  # noqa: E402
 
 
 def _env_path(var: str) -> Path | None:

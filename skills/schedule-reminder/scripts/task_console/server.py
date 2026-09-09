@@ -58,6 +58,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse, unquote
 
+import allowlist
 import console_store
 import convos
 import evtlog
@@ -403,7 +404,73 @@ def load_health() -> tuple[dict, str | None]:
         d = json.loads(p.read_text(encoding="utf-8-sig"))
     except Exception as e:
         return {}, f"健康监控清单解析失败({p}): {e}"
-    return {t["name"]: t for t in d.get("tasks", []) if t.get("name")}, None
+    # ⚠ 这一行以前会**静默吃掉**两种条目:漏写 name 的直接丢,重名的后者覆盖前者,
+    # 两种都不计数、不产生任何 warning。而「产物新鲜度覆盖率」这个数
+    # (freshness.py 里 coverage = judged/total)算的是**过滤之后**那份列表,
+    # 被吃掉的那部分同时从分子和分母里消失 —— 于是覆盖率对「清单条目被吃掉」
+    # 这件事完全免疫,永远掉不下来。
+    # 屏幕上:清单里写了 12 个、有一条把 "name" 打成了 "task",页面显示
+    # 「0 · 覆盖 100% · 共 11」,绿色;那个任务的产物一个月不更新也永远不会出现在
+    # 「要人管的事」里,而 100% 恰恰是本该喊出「我没查全」的那个数字。
+    raw_tasks = d.get("tasks", [])
+    groups: dict[str, list] = {}
+    unnamed = 0
+    for t in raw_tasks:
+        if not isinstance(t, dict) or not t.get("name"):
+            unnamed += 1
+            continue
+        groups.setdefault(t["name"], []).append(t)
+
+    out = {n: (g[0] if len(g) == 1 else _merge_decls(g)) for n, g in groups.items()}
+
+    warn = None
+    multi = {n: len(g) for n, g in groups.items() if len(g) > 1}
+    if unnamed or multi:
+        bits = []
+        if unnamed:
+            bits.append(f"{unnamed} 条没有 name,被丢掉了")
+        if multi:
+            bits.append("同名多条(已按最严的那条合并): "
+                        + ", ".join(f"{n}x{k}" for n, k in sorted(multi.items())[:5]))
+        warn = (f"健康监控清单声明了 {len(raw_tasks)} 条,归到 {len(out)} 个任务名 —— "
+                + ";".join(bits) + "。")
+    return out, warn
+
+
+# 同一个任务名在清单里可以有多条声明:一个任务把几件事折叠进来之后,
+# 每件事各写一条,而监控器是 `foreach ($entry in $cfg.tasks)` **逐条**评估的。
+# ⚠ 控制台这边原来是 `{t["name"]: t for ...}`,**只留下最后一条** ——
+# 于是它对同一个任务显示的阈值和产物,可能比监控器实际执行的那套**更松**:
+# 实测本机有一个任务写了三条(26h/26h/48h),控制台留下的正是 48h 那条,
+# 盯的还是另一个产物。屏幕上没有任何一处显示「这里还有两条声明」。
+# 合并规则一律取**更严**的那一侧:年龄上限取最小、豁免类的布尔取或
+# (它们都是「更不容易被判绿」的方向)、产物列全部。宁可界面比监控器严,
+# 不可比它松 —— 松的那一侧会让人以为已经查过了。
+_STRICTER_MIN = ("max_age_hours", "artifact_max_age_hours", "grace_hours")
+_STRICTER_OR = ("artifact_cannot_prove_success", "exit_code_is_authoritative")
+
+
+def _merge_decls(decls: list[dict]) -> dict:
+    out = dict(decls[0])
+    for d in decls[1:]:
+        for k, v in d.items():
+            if k in _STRICTER_MIN:
+                have = out.get(k)
+                out[k] = v if have is None else min(have, v)
+            elif k in _STRICTER_OR:
+                out[k] = bool(out.get(k)) or bool(v)
+            elif k not in out or out[k] in (None, ""):
+                out[k] = v
+    out["declCount"] = len(decls)
+    # 产物全列出来:合并之后只显示一个,会让另外那些「监控器确实在盯」的文件
+    # 从界面上整个消失。
+    arts = [d.get("artifact") for d in decls if d.get("artifact")]
+    if len(set(arts)) > 1:
+        out["artifacts"] = arts
+    labels = [d.get("label") for d in decls if d.get("label")]
+    if labels:
+        out["label"] = " / ".join(dict.fromkeys(labels))
+    return out
 
 
 def load_allowlist() -> tuple[set[str] | None, str | None]:
@@ -419,12 +486,11 @@ def load_allowlist() -> tuple[set[str] | None, str | None]:
         txt = p.read_text(encoding="utf-8-sig", errors="replace")
     except Exception as e:
         return None, f"读不了备份 allow-list: {e}"
-    m = re.search(r"\$TaskNames\s*=\s*@\((.*?)\n\)", txt, re.S)
-    if not m:
-        return None, f"在 {p} 里找不到 $TaskNames"
-    names = set(re.findall(r"^\s*'([^']+)'", m.group(1), re.M))
-    if not names:
-        return None, f"{p} 的 $TaskNames 解析出 0 个名字,判为未检查而不是全部缺失"
+    # 解析器只有一份(allowlist.py)。这里以前有自己的一份正则,**要求收尾括号顶格**,
+    # 而 retire.py 那份允许它缩进 —— 同一个文件,一边说读不到,一边照常改写它。
+    names, why = allowlist.parse_names(txt)
+    if names is None:
+        return None, f"{p}: {why}"
     return names, None
 
 
@@ -979,6 +1045,16 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             res = {"ok": rc == 0, "message": out or err}
         res.setdefault("ok", rc == 0)
+        # ⚠ act.ps1 一个字节都没输出时 res 是空字典,而 **err 完全不进响应**
+        # (只有 JSON 解析失败那一支才用 out or err)。前端无条件读 r.message,
+        # 于是右下角只弹出「<任务名>:undefined」四秒后消失,真正的错误文本
+        # (解释器找不到、被 ExecutionPolicy 挡下、脚本解析失败 —— 这几种都是
+        # rc!=0 且 stdout 为空、stderr 有正文)停在 server 进程里从不外传。
+        # 一个报错却不说错在哪的界面,和不报错差不多。
+        if not res.get("message"):
+            res["message"] = (err or out or
+                              (f"act.ps1 退出 {rc},而且什么都没输出"
+                               if rc else "动作完成,但脚本没有回报任何信息"))
         res["name"], res["verb"] = name, verb
         return self._json(200 if res.get("ok") else 500, res)
 

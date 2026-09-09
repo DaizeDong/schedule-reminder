@@ -306,6 +306,41 @@ def _stamp_runlog_success(added: int) -> None:
         pass
 
 
+def _watermark_from_file(out: Path) -> tuple[int, int]:
+    """从 JSONL 末尾读回最后一条的 (log_epoch, record_id)。读不出来就是 (0, 0)。
+
+    只读文件尾部,不整读:这个文件按设计会长到几十 MB,而每轮摄入都要问它一次。
+    (0, 0) 表示「问不出来」,那会让这一轮从 meta 的水位线开始 ——
+    对一个空文件是正确的,对一个读不动的文件是保守的(宁可重导也不漏导:
+    重复行可以事后按 (epoch, record_id) 去重,丢掉的事件找不回来)。
+    """
+    try:
+        size = out.stat().st_size
+    except OSError:
+        return 0, 0
+    if not size:
+        return 0, 0
+    try:
+        with out.open("rb") as fh:
+            # 一行 JSON 约 120 字节,8KB 足够兜住最后一行;文件更短就整读。
+            fh.seek(max(0, size - 8192))
+            tail = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return 0, 0
+    for line in reversed(tail.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+            return int(d["e"]), int(d["r"])   # 键名是缩写的,见 export 那段的 json.dumps
+        except Exception:
+            # 最后一行可能是上一次写到一半的残行。往前再找一条,
+            # 而不是把整个文件判成读不出来。
+            continue
+    return 0, 0
+
+
 # --------------------------------------------------------------------------- durable export
 def export_run_events(con) -> tuple[bool, int, str]:
     """Append new run events to a JSONL beside the database.
@@ -321,7 +356,16 @@ def export_run_events(con) -> tuple[bool, int, str]:
     unreadable binary objects a day. A JSONL is append-only, diffs line by line, and git stores the
     increment.
 
-    Idempotent: the watermark is the (log_epoch, record_id) of the last exported row, kept in meta.
+    幂等靠的是水位线 = 最后一条已导出记录的 (log_epoch, record_id)。
+
+    ⚠ 水位线的**权威是这个文件本身,不是 meta 表**。这一点必须这样定,因为
+    「追加文件」和「提交水位线」不可能原子完成:
+      - 先写文件后提交:提交失败(锁超时、崩溃)时文件里已经有那批行,而 meta 还停在旧值,
+        下一轮把同一批**再导一遍** —— 而这是运行事件唯一的持久副本,
+        按它重建历史的人会得到翻倍的启动次数,文件里也没有任何去重键校验。
+      - 先提交后写文件:崩在中间就是 meta 说导过了而文件里没有,那批事件**永久丢失**。
+    两种顺序各自会坏,所以不靠顺序:每次从文件末尾读回真实水位线,
+    与 meta 里那份取较大者。meta 从此只是一个缓存,坏了不影响正确性。
     """
     started = now()
     p, st = console_store.resolve_db()
@@ -335,6 +379,12 @@ def export_run_events(con) -> tuple[bool, int, str]:
         m_epoch, m_rid = (int(x) for x in mark.split(":"))
     except Exception:
         m_epoch, m_rid = 0, 0
+
+    # 文件说了算。上一轮如果写进去了但没来得及提交水位线,meta 会落后,
+    # 而这里读回来的那一条会把它顶上去,于是同一批不会被导第二遍。
+    f_epoch, f_rid = _watermark_from_file(out)
+    if (f_epoch, f_rid) > (m_epoch, m_rid):
+        m_epoch, m_rid = f_epoch, f_rid
 
     rows = con.execute(
         "SELECT log_epoch,record_id,task,event_id,ts,rc_raw,rc_norm FROM run_event "
