@@ -725,8 +725,11 @@ table.g td[data-col="timeout"]{font-family:var(--mono)}
 </div>
 </div>
 
-<div id="bulk" hidden></div>
-<div id="toast"></div>
+<div id="bulk" hidden role="status" aria-live="polite"></div>
+<!-- role=status + aria-live:这台机器上唯一的破坏性操作路径,成功与失败原来只出现在
+     一条 4.2 秒(失败 9 秒)后自我删除的提示条里,**永不播报**。
+     按下 d 之后读屏用户什么都不知道。 -->
+<div id="toast" role="status" aria-live="polite" aria-atomic="false"></div>
 <div id="help" hidden><div>
   <b>键盘</b>
   <table>
@@ -898,7 +901,8 @@ function renderFresh(){
 
   $("frboard").innerHTML=ts.map(t=>{
     const why=(t.reasons||[]).join(" · ");
-    return `<i class="fr-c s-${t.state}" data-fr="${esc(t.name)}" `
+    // 加 tabindex 和 role:这一格是概览屏两个核心导航之一,原来只能用鼠标。
+    return `<i class="fr-c s-${t.state}" data-fr="${esc(t.name)}" tabindex="0" role="button" `
       +`title="${esc(t.name)} : ${FR_LABEL[t.state]}${why?" : "+esc(why):""}"></i>`;
   }).join("");
 
@@ -1350,6 +1354,20 @@ document.getElementById("side").addEventListener("keydown", e=>{
   e.stopPropagation();
   navs[j].tabIndex = 0; navs[j].focus();
 });
+// 表头用 Enter / 空格排序。它们是 th 不是 button,所以要自己接;
+// 不接的话这张表的排序对纯键盘用户完全不存在。
+document.addEventListener("keydown", e=>{
+  if(e.key !== "Enter" && e.key !== " ") return;
+  // 概览那几类格子是 div/i,不是 button:给了 tabindex 就必须自己接 Enter 和空格,
+  // 否则它们「看起来能聚焦」却按不动,比不可聚焦更让人困惑。
+  const act = e.target.closest &&
+    e.target.closest("[data-fr],[data-scat],[data-cvfile],.cv-gh,.tlrow[data-task]");
+  if(act){ e.preventDefault(); e.stopPropagation(); act.click(); return; }
+  const th = e.target.closest && e.target.closest("#tbl th[data-k]");
+  if(!th) return;
+  e.preventDefault(); e.stopPropagation();
+  th.click();
+});
 window.addEventListener("hashchange", ()=>showView(location.hash.slice(1), false));
 
 
@@ -1567,7 +1585,12 @@ function renderScores(){
 }
 
 const C=[
- ["selc","",r=>`<td style="width:14px;color:var(--cyan)">${sel.has(r.name)?"*":""}</td>`,()=>0],
+ // 原来这里是一个 14px 宽、显示 * 的格子:它让人以为点它能选中,点下去展开的却是明细,
+ // 而 x / a 这两个选择键没有任何鼠标等价物 : 只用鼠标的人永远看不到那条批量操作条,
+ // 也就用不到「全部运行 / 全部启用 / 全部停用」。这是本页唯一一处两种输入方式能力不对等的功能。
+ ["selc","",r=>`<td style="width:20px"><input type="checkbox" class="selbox"
+   data-selname="${esc(r.name)}"${sel.has(r.name)?" checked":""}
+   aria-label="选中 ${esc(r.name)}"></td>`,()=>0],
  ["sl","状态",r=>`<td><span class="st ${r.sk}">${esc(r.sl)}</span></td>`,r=>r.sl],
  ["ops","操作",r=>{
    // 动作长在每一行上,而不是藏在展开态和键盘快捷键里。一个要先发现才能用的动作,
@@ -1651,9 +1674,40 @@ function render(){
     return asc?c:-c;});
   if(cur>=VIEW.length) cur=Math.max(0,VIEW.length-1);
   $("cnt").textContent=`${VIEW.length}/${ROWS.length} 行`+(sel.size?` · 已选 ${sel.size}`:"");
+  // 记下焦点落在哪一行的哪个控件上,重建之后放回去。
+  const ae = document.activeElement;
+  const aeRow = ae && ae.closest ? ae.closest("#tbl tbody tr[data-name]") : null;
+  const keep = aeRow ? {name: aeRow.dataset.name,
+                        act: ae.dataset ? ae.dataset.act : null,
+                        box: ae.classList && ae.classList.contains("selbox")} : null;
   const CC=shownCols();
-  $("tbl").innerHTML=`<thead><tr>${CC.map(c=>`<th data-k="${c[0]}" class="${sortKey===c[0]?"s"+(asc?" a":""):""}">${c[1]}</th>`).join("")}</tr></thead>`
-    +`<tbody>${VIEW.map((r,i)=>`<tr data-i="${i}" data-name="${esc(r.name)}" class="${i===cur?"cur":""}${sel.has(r.name)?" sel":""}">${CC.map(c=>c[2](r)).join("")}</tr>`).join("")}</tbody>`;
+  // 排序是这张表最主要的整理手段,原来只有 click:纯键盘用户完全用不了,
+  // 读屏用户既按不动也听不出当前按哪一列排(方向只存在于 ::after,没有 aria-sort 兜底)。
+  // selc 那一列的排序键是常量,点它会重排一次却看不出任何变化 :
+  // 一个会响应但没有效果的可点区域,比不可点更让人怀疑自己看错了,所以它不给 data-k。
+  $("tbl").innerHTML=`<thead><tr>${CC.map(c=>{
+      const sortable = c[0] !== "selc";
+      const cur = sortKey===c[0];
+      const aria = !sortable ? "" : ` aria-sort="${cur ? (asc?"ascending":"descending") : "none"}"`;
+      const tab = sortable ? ' tabindex="0" role="columnheader"' : "";
+      return `<th${sortable?` data-k="${c[0]}"`:""}${tab}${aria} class="${cur?"s"+(asc?" a":""):""}">${c[1]}</th>`;
+    }).join("")}</tr></thead>`
+    // 光标行和选中行原来只有 CSS 类:读屏用户按 j/k 时焦点始终在 body,
+    // 屏幕上那条光标在无障碍树里不存在,他不知道自己停在哪一行。
+    // tabindex=-1 让 focusCur() 能真的把焦点放上去,aria-selected 让选中态可播报。
+    +`<tbody>${VIEW.map((r,i)=>`<tr data-i="${i}" data-name="${esc(r.name)}" tabindex="-1" aria-selected="${sel.has(r.name)}" class="${i===cur?"cur":""}${sel.has(r.name)?" sel":""}">${CC.map(c=>c[2](r)).join("")}</tr>`).join("")}</tbody>`;
+  // render() 用 innerHTML 整表重建,焦点持有者被移出文档,activeElement 掉回 body,
+  // 下一次 Tab 从页面开头重来。x 选中和 j/k 也都调 render(),
+  // 所以任何一次选择都会打断 Tab 序列,而同一操作用鼠标毫无代价。
+  if(keep && keep.name){
+    const row = document.querySelector(`#tbl tbody tr[data-name="${CSS.escape(keep.name)}"]`);
+    if(row){
+      const target = keep.act
+        ? row.querySelector(`[data-act="${keep.act}"]`) || row
+        : (keep.box ? row.querySelector("input.selbox") : row);
+      try{ (target||row).focus({preventScroll:true}); }catch(e){}
+    }
+  }
   renderBulk();
 }
 
@@ -1719,6 +1773,15 @@ document.addEventListener("click",e=>{
   if(fc){ focusTask(fc.dataset.fr); return; }
   const sc=e.target.closest("[data-scat]");
   if(sc){ focusCategory(sc.dataset.scat); return; }
+  const sb=e.target.closest("input.selbox");
+  if(sb){
+    // stopPropagation 必须有:不然这一下会冒泡到行,把明细展开一起触发。
+    e.stopPropagation();
+    const n=sb.dataset.selname;
+    sb.checked ? sel.add(n) : sel.delete(n);
+    renderBulk(); $("cnt") && render();
+    return;
+  }
   const cvr=e.target.closest(".cv-r[data-cvfile]");
   if(cvr && cvr.dataset.cvfile){
     // 复制而不是「打开」:浏览器里没有安全的方式去开一个本地文件,
@@ -1760,7 +1823,14 @@ function toggleDetail(){
   const d=tr.nextElementSibling;
   if(d&&d.classList.contains("det")) d.remove(); else openDetail(tr);
 }
-function focusCur(){ const tr=document.querySelector(`#tbl tbody tr[data-i="${cur}"]`); if(tr) tr.scrollIntoView({block:"nearest"}); }
+function focusCur(){
+  const tr=document.querySelector(`#tbl tbody tr[data-i="${cur}"]`);
+  if(!tr) return;
+  tr.scrollIntoView({block:"nearest"});
+  // 真的把焦点放上去,不只是滚过去。否则读屏那边始终停在 body,
+  // 「我在第几行」这件事只存在于一条视觉上的高亮里。
+  try{ tr.focus({preventScroll:true}); }catch(e){ tr.focus(); }
+}
 
 document.addEventListener("keydown",e=>{
   if(!$("help").hidden){ if(e.key==="Escape"||e.key==="?"){ $("help").hidden=true; } return; }
