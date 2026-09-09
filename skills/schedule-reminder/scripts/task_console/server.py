@@ -233,6 +233,12 @@ def load_runlog() -> dict:
     return {"available": True, "reason": None, "since": raw.get("since"),
             "oldest": raw.get("oldest"), "count": raw.get("count", len(evs)),
             "windowDays": 30, "countScope": "最近 30 天",
+            # 读到一半失败、以及解析不了的条数,两个都要带出去。读取器一直在数它们,
+            # 而这里原来把两个数都扔了:事件格式一变、大批事件被丢掉时,页面上只会看到
+            # 运行次数变少、成功率漂移,没有任何一处说明有多少条读不懂 ——
+            # 一个看起来精确、实则不完整的数字,而它旁边正好还有个 count 给它背书。
+            "partial": bool(raw.get("partial")),
+            "dropped": int(raw.get("dropped") or 0),
             "tasks": out_tasks,
             "note": ("这一份是真实运行记录(每次启动、完成、动作返回码),和上面那个轮询观察是两回事。"
                      "它只回溯到日志被启用那天,所以空不等于没跑过,而是「还没记到」。")}
@@ -243,8 +249,13 @@ def load_from_db():
     """Read history and run data from the console database.
 
     This is the whole performance story. Reading the Windows Operational event log costs 109 seconds
-    end to end and used to sit on the request path, so every page load paid it. The ingester pays it
-    once an hour instead, and this reads the result in single-digit milliseconds.
+    end to end and used to sit on the request path, so every page load paid it. The ingester pays
+    it out of band instead, and this reads the result in single-digit milliseconds.
+
+    ⚠ 这句以前写的是「摄入器每小时付一次」。2026-09-08 核实:**没有任何计划任务在跑
+    console_ingest.py** —— 任务计划、健康清单、备份白名单三处都查过,一处都没有。
+    数据库里有东西,只是因为有人手动跑过。一句断言了不存在的排班的注释,会让下一个人
+    把「数据停在三天前」读成「摄入器坏了」,而真相是它从来没被排过班。
 
     Returns (hist, runs, note) shaped EXACTLY like the file-parsing versions, because console.html
     reads seventeen keys off them and a reshape here is a silently blank page there.
@@ -269,14 +280,18 @@ def load_from_db():
     all_days = sorted({d for t in by_day.values() for d in t})
     htasks = {}
     for task, c in totals.items():
-        # visibleRuns keeps its old meaning: distinct LastRunTime values observed by the poll. It is
-        # NOT the run count, and the page's caveat still says so. The real count now lives in runs.
+        # ⚠ 同名不同义。这条通路上的 visibleRuns 是**运行日志里的真实启动数**(runs_by_day 求和),
+        # 而慢路上的同名字段是「轮询看得见的 LastRunTime 去重数」,严重低估 ——
+        # history.py 记过 967 对 13800,差一个数量级。两个量共用一个名字,而随数据下发的
+        # caveat 文案只描述其中一种,所以 /api 的消费方按哪一种读都可能是错的。
+        # 这里显式声明本条通路的口径,让读的人不必去猜自己拿到的是哪一个。
         htasks[task] = {
             "obs": c.get("obs", 0), "judged": c.get("judged", 0),
             "ok": c.get("ok", 0), "bad": c.get("bad", 0),
             "stale": c.get("stale", 0), "neutral": c.get("neutral", 0),
             "health": c.get("health"),
             "visibleRuns": sum((runs_by_day.get(task) or {}).values()),
+            "visibleRunsScope": "runlog",  # 慢路给的是 "poll"
             "byDay": by_day.get(task, {}),
         }
     # available 原来硬编码成 True,和库里有没有行无关。文本那条路的同一个判断是相反的
@@ -456,7 +471,7 @@ def build_freshness(tasks: dict, health: dict, health_reason: str | None = None)
 HISTORY_OUT = ("available", "reason", "days", "caveat", "matched", "source", "lastIngest")
 HISTORY_DROP = ("tasks", "skipped")          # tasks 很大且已并进每一行;skipped 页面用不到
 RUNLOG_OUT = ("available", "reason", "since", "oldest", "count", "note",
-              "partial", "windowDays", "countScope")
+              "partial", "dropped", "windowDays", "countScope")
 RUNLOG_DROP = ("tasks",)                      # 同上,已并进每一行
 
 
@@ -472,9 +487,19 @@ def build_payload() -> dict:
     warnings = [w for w in (warn_cat, warn_health, warn_allow) if w]
 
     assigned: dict[str, str] = {}
+    dup_cat: dict[str, list[str]] = {}
     descs: dict[str, str] = {}
     for c in cats:
         for n in c.get("tasks", []):
+            # 分类配置是仓外的手写 JSON,复制粘贴一行就能让一个任务落在两个大类里。
+            # 原来这里直接覆盖,于是同一个任务在表里出现两行、在两个大类的评分里各贡献一次分母,
+            # 而顶部的「总数」按去重后的任务数算 : 同一屏上「总数 40」和「41/41 行」并存,
+            # 所有数字都还在正常渲染,看不出哪一份是对的。
+            # 现在只认第一次归属(让所有计数对齐),并把重复归属**说出来** ——
+            # 悄悄挑一个和悄悄算两遍一样坏,区别只是坏得安静。
+            if n in assigned:
+                dup_cat.setdefault(n, [assigned[n]]).append(c["name"])
+                continue
             assigned[n] = c["name"]
         # Optional per-task Chinese descriptions. The category map is machine config living outside
         # this repo, which is where a description of the operator's real automation belongs.
@@ -505,9 +530,15 @@ def build_payload() -> dict:
 
     groups = []
     for c in cats:
-        rows = [tasks[n] for n in c.get("tasks", []) if n in tasks]
+        rows = [tasks[n] for n in c.get("tasks", [])
+                if n in tasks and assigned.get(n) == c["name"]]
         if rows:
             groups.append({"cat": c["name"], "desc": c.get("desc", ""), "rows": rows})
+    if dup_cat:
+        warnings.append(
+            "分类配置里有任务被写进了多个大类,只认第一个:"
+            + ";".join(f"{n} -> {'/'.join(cs)}" for n, cs in sorted(dup_cat.items())))
+
     orphan = [t for n, t in tasks.items() if n not in assigned]
     if orphan:
         # Surfaced as its own group rather than dropped. A task the category map forgot is exactly

@@ -36,6 +36,10 @@
   --ui:system-ui,"Segoe UI","Microsoft YaHei",sans-serif;
   --mono:"Cascadia Mono",Consolas,NSimSun,"Courier New",monospace;
   --bg:#EEF1F2;
+  /* 同一个颜色的第二份手写副本。Tabler 的组件按 rgb 三元组算半透明底色,拿不到十六进制,
+     所以这四个必须和下面的 --bad / --ok / --warn / --cyan 逐位一致。
+     两份都不说自己是权威,所以对账交给 tests/test_palette_reconcile.py:
+     改了这里或改了下面而只改一处,那个测试会红。**改颜色时两处一起改。** */
   --tblr-danger-rgb:171,49,35; --tblr-success-rgb:44,122,85;
   --tblr-warning-rgb:140,98,16; --tblr-primary-rgb:14,107,117;
  --panel:#FFFFFF; --panel2:#F6F8F9; --line:#D3DBDF; --line2:#E4EAED;
@@ -141,7 +145,13 @@ main{padding:8px}
 
 /* table-layout:fixed + width:100% is what makes the day cells stretch to fill the row. Without
    it the cells keep their intrinsic 9px and 45 columns leave most of a 1700px window empty. */
-.hm{border-collapse:separate;border-spacing:1px;width:100%;table-layout:fixed}
+/* min-width 是这块面板的可读下限。格子宽 = (容器宽 - 186 首列 - 46 个间隙) / 45,
+   所以视口窄到约 700px 时格子只剩 2px 级别,约 300px 以下彻底归零 —— 而整块依然画得
+   好好的,也没有横向滚动条提示「这里被压缩了」。这块面板的全部信息量都在格子的颜色和
+   面积上,压到 2px 时它显示的是一个看似正常、实际读不出任何东西的色带。
+   给一个下限之后,放不下就横向滚(.pad 本来就有 overflow-x:auto):
+   要滚才能看全是明确的信号,悄悄压扁不是。 */
+.hm{border-collapse:separate;border-spacing:1px;width:100%;table-layout:fixed;min-width:560px}
 .hm th.tn{text-align:left;font-weight:400;color:var(--dim);padding-right:8px;font-size:11px;
   white-space:nowrap;position:sticky;left:0;background:var(--panel);z-index:1;
   width:186px;overflow:hidden;text-overflow:ellipsis}
@@ -171,8 +181,6 @@ table.g tbody tr:hover{background:var(--cur)}
 table.g tbody tr.cur{background:var(--cur);box-shadow:inset 2px 0 0 var(--cyan)}
 table.g tbody tr.sel{background:var(--sel)}
 table.g td.nm{max-width:230px;overflow:hidden;text-overflow:ellipsis;font-weight:500}
-/* 说明是唯一允许伸缩的列。其余列都是 nowrap 的固定内容,让它吃掉剩余宽度,
-   窗口变宽时补上的空白就落在这里而不是摊给每一列。 */
 /* 说明列。原来写的是 max-width:0 + width:100%,那是「吸收剩余宽度」的写法,
    但这张表 19 列的自然宽度合计已经超过容器,**没有剩余宽度可吸收**,于是 max-width:0
    赢,这一列被压成 34px、只显示一个字加省略号。一列只显示一个字比没有这一列更差:
@@ -183,6 +191,15 @@ table.g tr[data-scat]:hover{background:var(--cur)}
 /* 展开出来的明细行也是 table.g tbody tr,继承了行的 pointer 和 hover,
    但展开处理器要求 [data-name],它没有。 */
 #tbl tr.det{cursor:default}
+/* 明细里的 dd 有 overflow-wrap:anywhere,是全页唯一按容器宽度换行的长文本。可它的容器是
+   跨满整张表的 td:表宽 1050px 时每行就是 1050px 长,而 .pad 的可视宽度可能只有 550px,
+   于是读一条产物路径要来回横向滚 —— **换行了却仍然要横滚**,两头不讨好。
+   position:sticky + left:0 把这块内容钉在可视区左沿,宽度取自 --padw(由 .pad 的
+   ResizeObserver 写入)。--padw 没设时回落到 100%,也就是今天的行为:
+   观察器没跑起来时是原样,不是塌掉。 */
+#tbl tr.det>td{padding:0}
+#tbl tr.det>td>.det{position:sticky;left:0;width:var(--padw,100%);max-width:100%;
+  box-sizing:border-box;padding:6px 10px 8px}
 #tbl tr.det:hover{background:transparent}
 table.g td.ds{min-width:170px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .st{display:inline-block;min-width:50px;text-align:center;padding:0 4px;font-size:10.5px}
@@ -426,8 +443,6 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
 }
 body{font-size:12px}
 
-/* 侧栏。Tabler 的 navbar-vertical 默认 15rem 宽,对五个分区来说太宽了,
-   收到 10.5rem;top 避开 sticky 的顶栏(两者都 sticky 到 0 时第一项会被盖掉)。 */
 /* 侧栏。宽度变量是 --tblr-sidebar-width(不是 navbar-width,写错了不报错、只是不生效),
    默认 16rem 对五个分区太宽,收到 10.5rem。
    折叠用 Tabler 自带的 .navbar-folded,不用我自己那套:它已经把宽度、标题隐藏、
@@ -524,7 +539,12 @@ section[data-view][hidden]{display:none}
    仓库要人管」,却不告诉你是哪 11 个,于是还得点进去。这张清单把四个分区里判为要人管的
    行合到一处,每行点一下跳到它所属的分区。
    六格回答「有没有事」,这张清单回答「是哪些事」。 */
-#todo .rw{display:grid;grid-template-columns:6px 62px 1fr auto;gap:8px;align-items:baseline;
+/* 轨道的最小尺寸决定了谁先被挤没。原来是 `1fr auto`:.nm 有 overflow:hidden 所以最小
+   尺寸是 0,.why 没有所以最小尺寸是 max-content —— 宽度不够时先被压到 0 的是任务名,
+   留下的是「未推送」「产物过期」这种**没有主语的原因**,而这张清单存在的理由就是回答
+   「是哪一个」。现在反过来:名字有下限,原因先收。 */
+#todo .rw{display:grid;grid-template-columns:6px 62px minmax(130px,1fr) minmax(0,auto);
+  gap:8px;align-items:baseline;
   padding:2px 0;border-bottom:1px solid var(--line2);cursor:pointer}
 #todo .rw:last-child{border-bottom:0}
 #todo .rw:hover{background:var(--cur)}
@@ -532,7 +552,8 @@ section[data-view][hidden]{display:none}
 #todo .src{font-size:10.5px;color:var(--faint);white-space:nowrap}
 #todo .nm{font-family:var(--mono);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap}
-#todo .why{font-size:11px;color:var(--dim);white-space:nowrap}
+#todo .why{font-size:11px;color:var(--dim);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;min-width:0}
 #todo .none{color:var(--ok);font-size:11.5px;padding:3px 0}
 
 /* ---- 一页模式 -------------------------------------------------------------------
@@ -691,7 +712,7 @@ table.g td[data-col="timeout"]{font-family:var(--mono)}
         <span><i class="tlspan" style="position:static;width:14px;height:3px"></i>分钟级条带</span>
         <span><i class="tlact" style="position:static;width:2px;height:11px"></i>实际运行</span>
         <span><i class="tlnow" style="position:static;width:1px;height:11px"></i>现在</span>
-        <span class="faint">滚轮缩放(以指针为中心) · 按住拖动平移 · 双击回到整天</span>
+        <span class="faint">Ctrl/Shift+滚轮缩放(以指针为中心) · 按住拖动平移 · 双击回到整天</span>
       </div>
     </div>
   </div>
@@ -1225,13 +1246,19 @@ function renderConvos(){
   const groups=CONVOS.groups.filter(g=>!CV_HUMAN_ONLY||g.humanish);
   $("cvgroups").innerHTML=groups.map(g=>{
     const rows=g.shown.filter(r=>!CV_HUMAN_ONLY||r.humanSeen>=2);
+    // 这一屏唯一告诉人「你没看全」的地方,以前在最需要它准确的那个模式下报旧口径的数。
+    // 现在把三个来源分开数:被筛掉的、后端就没送来的、以及**送来的那批没经过筛**这件事。
+    // 最后一句不是啰嗦:后端截断在筛选之前发生,所以没列出的那些里有几场是真人对话,
+    // 前端根本不知道 —— 编一个筛过的数出来会比报旧口径更糟。
+    const cut=g.shown.length-rows.length;
+    const unlisted=g.count-g.shown.length;
     const open=CV_OPEN[g.cwd]?" open":"";
     return `<div class="cv-g${open}" data-cv="${esc(g.cwd)}">
       <div class="cv-gh">
         <span class="caret">${open?"▼":"▶"}</span>
         <span class="dir" title="${esc(g.cwd)}">${esc(g.cwd)}</span>
         <span class="cv-hm">${g.humanish?"👤"+g.humanish:""}</span>
-        <span class="n">${g.count} 场 · ${kb(g.bytes)}</span>
+        <span class="n">${CV_HUMAN_ONLY?rows.length+"/"+g.count:g.count} 场 · ${kb(g.bytes)}</span>
       </div>
       <div class="cv-list">${rows.map(r=>`
         <div class="cv-r${r.humanSeen>=2?" human":""}" data-cvfile="${esc(r.file||"")}"
@@ -1243,7 +1270,9 @@ function renderConvos(){
           <span class="m">${cvAge(r.ageHours)} · ${kb(r.bytes)}</span>
           ${(r.preview&&r.preview!==r.title)?`<span class="pv" title="${esc(r.preview)}">${esc(r.preview)}</span>`:""}
         </div>`).join("")}
-        ${g.truncated?`<div class="cv-more">这个目录还有 ${g.count-g.shown.length} 场没列出</div>`:""}
+        ${cut?`<div class="cv-more">另有 ${cut} 场被「只看真人」筛掉</div>`:""}
+        ${g.truncated?`<div class="cv-more">这个目录还有 ${unlisted} 场没列出${
+          CV_HUMAN_ONLY?"(这批没经过「只看真人」筛,其中几场是真人对话不知道)":""}</div>`:""}
       </div></div>`;
   }).join("");
 }
@@ -1708,7 +1737,21 @@ function render(){
          title="${esc(tip)}">最后摄入 ${esc(String(oldest.at).slice(0,16))}${
          bad.length?` · ${esc(bad.join("/"))} 失败`:""}</span>`;
      })()
-    +((DATA.runlog&&DATA.runlog.available)?` <span class="faint" title="${esc(DATA.runlog.countScope||"")}">运行日志${DATA.runlog.count}${DATA.runlog.countScope?" · "+esc(DATA.runlog.countScope):""}</span>`:` <span class="faint">无运行日志</span>`);
+    +(()=>{
+       const R=DATA.runlog;
+       if(!R||!R.available) return ` <span class="faint">无运行日志</span>`;
+       // 读不懂的条数要跟着 count 一起显示。它们一直在被数,但以前只留在后端:
+       // 事件格式一变、大批事件被丢掉时,页面上只看得到运行次数变少、成功率漂移,
+       // 没有任何一处说明有多少条读不懂 —— 一个看起来精确、实则不完整的数字,
+       // 而它旁边那个 count 还在替它背书。
+       const bad = R.partial || (R.dropped>0);
+       const tip = (R.countScope||"")
+         + (R.dropped>0?` · 有 ${R.dropped} 条事件解析不了,没有计入`:"")
+         + (R.partial?" · 日志读到一半失败,下面的条数是不完整的":"");
+       return ` <span class="${bad?"":"faint"}" style="${bad?"color:var(--warn)":""}"
+         title="${esc(tip)}">运行日志${R.count}${R.countScope?" · "+esc(R.countScope):""}${
+         R.dropped>0?` · 读不懂 ${R.dropped}`:""}${R.partial?" · 不完整":""}</span>`;
+     })();
   // 含「历史」的那条警告不在这里重复:热力图不可用时会把它印在图的标题上(renderHeat),
   // 贴在图上比躺在警告堆里有用 : 人是在图空着的时候才想知道为什么空。
   $("warns").innerHTML=(DATA.warnings||[])
@@ -1975,10 +2018,17 @@ document.addEventListener("keydown",e=>{
   tl.addEventListener("wheel",e=>{
     const track=e.target.closest(".tltrack")||tl.querySelector(".tltrack");
     if(!track) return;
+    // 无条件接管滚轮会造出一条**整页宽的滚轮死区**:.tl 有 820px 最小宽度,窄窗口里它
+    // 横向铺满整屏、高约 400px,鼠标落进去就滚不动页面,只会把时间轴越缩越小 ——
+    // 而人在那一刻想做的多半只是往下看后面的内容。
+    // 所以只有明确表达了缩放意图(Ctrl / Shift / 横向滚轮)才接管,平滚一律交回页面。
+    // 图例里写了这句提示:一个只有作者知道的手势等于没有。
+    if(!(e.ctrlKey||e.metaKey||e.shiftKey||Math.abs(e.deltaX)>Math.abs(e.deltaY))) return;
     e.preventDefault();
     const rect=track.getBoundingClientRect();
     const pct=Math.min(1,Math.max(0,(e.clientX-rect.left)/rect.width));
-    tlZoom(e.deltaY>0?1.25:0.8, pct);   // tlZoom 内部走 scheduleTL,一帧只渲染一次
+    const d = e.deltaY || e.deltaX;
+    tlZoom(d>0?1.25:0.8, pct);   // tlZoom 内部走 scheduleTL,一帧只渲染一次
   },{passive:false});
   // 这里是拖动真正的 bug:原来在 .tltrack 上 setPointerCapture,而 renderTL() 第一次平移
   // 就把那个元素连同整个 innerHTML 换掉了。捕获目标一消失,后续 pointermove 就不再送到
@@ -2049,6 +2099,23 @@ $("hygtog").addEventListener("click",()=>{
   syncHygBtn(); if(DATA) render();
 });
 syncHygBtn();
+// 明细行要贴着可视区左沿,所以它需要知道 .pad 现在多宽。CSS 算不出这个数(td 跨满整张表,
+// 而表可以比容器宽),只能量。用 ResizeObserver 而不是 window.resize:侧栏折叠、
+// 纵向滚动条出现/消失都会改变可视宽度,而这两件事都不触发 window.resize ——
+// 一个只听 resize 的版本在最常见的那两种情况下会安静地用一个过期的数。
+(function(){
+  const pad = document.querySelector("#dtbox .pad");
+  if(!pad) return;
+  // 宽度为 0 只有一个含义:这一屏当前是隐藏的(section[hidden] 走 display:none)。
+  // 把 0 写进去会让明细行的 width:var(--padw) 变成零宽 —— 一个「量不到」被当成一个值用。
+  // 隐藏时什么都不写,保留上一次的好值;分区一显示,观察器立刻带着真实宽度再触发一次。
+  const set = () => { const w = pad.clientWidth; if(w > 0) pad.style.setProperty("--padw", w + "px"); };
+  set();
+  // 没有 ResizeObserver 就退回 window.resize。少量场景会用到过期的宽度,
+  // 但 --padw 缺席时 CSS 回落到 100%,也就是改动前的行为,不会塌。
+  if(window.ResizeObserver) new ResizeObserver(set).observe(pad);
+  else window.addEventListener("resize", set);
+})();
 $("q").addEventListener("input",()=>{ if(DATA) render(); });
 ["cat","only","hideoff"].forEach(id=>$(id).addEventListener("change",()=>{ if(DATA) render(); }));
 load();

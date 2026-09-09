@@ -135,7 +135,11 @@ def load(path: str | os.PathLike | None, days: int = 45) -> dict:
             # 判据里凡有兜底桶,兜底桶就必须能被看见。
             "other": tot.get("other", 0),
             "health": round(100.0 * tot["ok"] / judged, 1) if judged else None,
+            # 口径要跟着数字一起走。同一个键在数据库那条通路上是运行日志里的**真实启动数**,
+            # 在这里是**轮询看得见的 LastRunTime 去重数**(见文件开头:967 对 13800)。
+            # 两个量差一个数量级、共用一个名字,而消费方拿到的是哪一个,以前只能靠猜。
             "visibleRuns": len(runs[task]),
+            "visibleRunsScope": "poll",
             "byDay": {d: {"ok": c["ok"], "bad": c["bad"], "stale": c["stale"],
                           "neutral": c["neutral"], "n": sum(c.values())}
                       for d, c in days_map.items()},
