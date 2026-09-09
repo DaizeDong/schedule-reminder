@@ -420,43 +420,63 @@ def test_norm_rc_still_unwraps_the_hresult_form():
     assert S.norm_rc("") is None
 
 
-# ---------- 「说明为什么」的字段必须能穿过导出白名单 ----------
-# server.py 导出 history / runlog 时用的是一层字段白名单。把 available 改成 False 却忘了
-# 让 reason 出现在名单里,页面上就只剩一个没有原因的 False。
-# 实测栽过一次:空库那条判定生效了,而 reason 是空的,热力图只印「无历史」三个字,
-# 于是「库里还没有观察数据(跑一次 backfill)」「摄入器停了两周」「本来就没配」
-# 在屏幕上是同一句话,而它们要做的事完全不同。
+# ---------- 导出字段必须显式两分 ----------
+# 这层白名单已经吃掉过三次字段:reason(空库那条判定生效了,而页面上只有一个没有原因的
+# available=False)、lastIngest(区分「摄入器挂了」和「本来就没跑过」的唯一信号)、
+# countScope(那个数字属于哪个时间窗)。每一次的表现都一样:
+# **后端算对了,页面上什么都没有,而没有任何东西报错。**
+#
+# 所以现在要求显式两分:导出的(*_OUT)加上刻意不导出的(*_DROP),
+# 两边必须覆盖生产者写下的每一个键。忘了归类会让这条测试变红,
+# 而不是让那个字段安静地到不了页面。
 
-def _payload_keys(section):
-    """从源码里把那层白名单读出来。不去调 build_payload:它要真跑 PowerShell。
-    读源码的坏处是形状一变这条就失效,所以下面配了一条断言,确保真的读到了东西。"""
-    import inspect
-    import re as _re
+import inspect  # noqa: E402
+import re as _re  # noqa: E402
+
+
+def _producer_keys(varname):
+    """从 server.py 源码里读出 `varname = {...}` 这个字面量写下的键。
+
+    读源码而不是调 build_payload:后者要真跑 PowerShell。
+    读源码的坏处是形状一变就失效,所以下面立刻断言读到的数量下限。
+    """
     src = inspect.getsource(S)
-    m = _re.search(r'"' + section + r'": \{k: \w+\[k\] for k in \(([^)]*)\)', src, _re.S)
-    assert m, f"读不出 {section} 的导出白名单,这条检查会因为没东西可查而打印绿色"
-    keys = _re.findall(r'"([a-zA-Z]+)"', m.group(1))
-    assert len(keys) >= 3, f"{section} 的白名单只读到 {keys},形状可能变了"
+    keys = set()
+    for m in _re.finditer(r"^\s*" + varname + r"\s*=\s*\{", src, _re.M):
+        i = src.index("{", m.start())
+        depth, j = 0, i
+        while j < len(src):
+            if src[j] == "{":
+                depth += 1
+            elif src[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        keys |= set(_re.findall(r'"([a-zA-Z][a-zA-Z0-9_]*)"\s*:', src[i:j]))
+    assert len(keys) >= 5, f"只从 {varname} 读到 {keys},源码形状可能变了"
     return keys
 
 
-def test_history_export_carries_the_reason():
-    assert "reason" in _payload_keys("history"), (
-        "history 的导出白名单漏了 reason:页面会拿到一个没有原因的 available=False")
+@pytest.mark.parametrize("var,out,drop", [
+    ("hist", "HISTORY_OUT", "HISTORY_DROP"),
+    ("runs", "RUNLOG_OUT", "RUNLOG_DROP"),
+])
+def test_every_produced_field_is_either_exported_or_deliberately_dropped(var, out, drop):
+    produced = _producer_keys(var)
+    classified = set(getattr(S, out)) | set(getattr(S, drop))
+    missing = produced - classified
+    assert not missing, (
+        f"{var} 里这些键既没导出也没写进 {drop},它们会安静地到不了页面: {sorted(missing)}")
 
 
-def test_history_export_carries_last_ingest():
-    """lastIngest 是区分「摄入器挂了」和「本来就没跑过」的唯一信号,
-    它原来算完就被丢掉。"""
-    assert "lastIngest" in _payload_keys("history")
+def test_the_reason_field_is_exported():
+    """单独钉住 reason:它是三次事故里的第一次,也是最贵的一次。"""
+    assert "reason" in S.HISTORY_OUT and "reason" in S.RUNLOG_OUT
 
 
-def test_runlog_export_carries_the_reason_too():
-    assert "reason" in _payload_keys("runlog")
-
-
-def test_the_whitelist_reader_can_actually_fail():
-    """负对照:上面三条全靠 _payload_keys 真的读到了东西。
-    读一个不存在的段落必须炸,而不是返回空列表让断言恰好通过。"""
+def test_the_producer_reader_can_actually_fail():
+    """负对照:上面几条全靠 _producer_keys 真的读到了东西。
+    读一个不存在的变量必须炸,而不是返回空集合让断言恰好通过。"""
     with pytest.raises(AssertionError):
-        _payload_keys("nosuchsection")
+        _producer_keys("nosuchvariable")

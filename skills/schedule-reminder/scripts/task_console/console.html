@@ -1620,7 +1620,17 @@ const C=[
      :v>=95?"var(--ok)":v>=80?"var(--warn)":"var(--bad)";
    return `<td class="num" title="${esc(tip)}" style="color:${col}">${v==null?"-":v}${oth?"*":""}</td>`;
  },r=>(r.hist&&r.hist.health!=null)?r.hist.health:-1],
- ["realOk","实成功%",r=>{const v=r.runs&&r.runs.successRate;return `<td class="num" style="color:${v==null?"var(--faint)":v>=95?"var(--ok)":"var(--bad)"}" title="来自 Windows 运行日志">${v==null?"-":v}</td>`},r=>(r.runs&&r.runs.successRate!=null)?r.runs.successRate:-1],
+ // 分母要说出来。judged 是动作返回码事件数,不是旁边那列的「实跑」(启动事件数):
+ // 多动作任务每次运行写多条 201,分母大于实跑;rc 事件被日志滚动截断的任务分母小于实跑。
+ // 一个 1 个样本的 100% 和一个 4000 个样本的 100% 不该长得一样。
+ ["realOk","实成功%",r=>{
+   const R2=r.runs||{}, v=R2.successRate, j=R2.judged, st=R2.starts;
+   const thin = (j != null && j < 5) || (st != null && j != null && j < st * 0.5);
+   const tip = v==null ? "运行日志里还没有这个任务的动作返回码"
+     : `${R2.good}/${j} 个动作返回码判为成功` + (st!=null?` · 启动 ${st} 次`:"");
+   const col = v==null||thin ? "var(--faint)" : v>=95?"var(--ok)":"var(--bad)";
+   return `<td class="num" title="${esc(tip)}" style="color:${col}">${v==null?"-":v}</td>`;
+ },r=>(r.runs&&r.runs.successRate!=null)?r.runs.successRate:-1],
  ["realRuns","实跑",r=>`<td class="num" title="运行日志记录的启动次数">${r.runs?r.runs.starts:"-"}</td>`,r=>r.runs?r.runs.starts:-1],
  ["bad","失败",r=>`<td class="num" style="color:${(r.hist&&r.hist.bad)?"var(--bad)":"var(--faint)"}">${r.hist?r.hist.bad:"-"}</td>`,r=>r.hist?r.hist.bad:-1],
  ["stale","陈旧",r=>`<td class="num" style="color:${(r.hist&&r.hist.stale)?"var(--warn)":"var(--faint)"}">${r.hist?r.hist.stale:"-"}</td>`,r=>r.hist?r.hist.stale:-1],
@@ -1664,7 +1674,7 @@ function render(){
   $("s-off").textContent=S.disabled;
   $("s-src").innerHTML=`<span class="k">数据</span>${esc(S.generated)}`
     +((DATA.history&&DATA.history.available)?` <span class="faint">观察${DATA.history.days.length}d</span>`:` <span class="faint">无观察</span>`)
-    +((DATA.runlog&&DATA.runlog.available)?` <span class="faint">运行日志${DATA.runlog.count}</span>`:` <span class="faint">无运行日志</span>`);
+    +((DATA.runlog&&DATA.runlog.available)?` <span class="faint" title="${esc(DATA.runlog.countScope||"")}">运行日志${DATA.runlog.count}${DATA.runlog.countScope?" · "+esc(DATA.runlog.countScope):""}</span>`:` <span class="faint">无运行日志</span>`);
   // 含「历史」的那条警告不在这里重复:热力图不可用时会把它印在图的标题上(renderHeat),
   // 贴在图上比躺在警告堆里有用 : 人是在图空着的时候才想知道为什么空。
   $("warns").innerHTML=(DATA.warnings||[])
