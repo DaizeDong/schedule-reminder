@@ -50,6 +50,11 @@ if (-not $cfg.IsEnabled) {
 
 $since = (Get-Date).AddDays(-$Days)
 $rows = @()
+# Counters that travel with the rows. The fast reader (evtlog.py) has always produced these;
+# this one produced none of them, so the same page field was a measured number on one path and
+# a missing-treated-as-zero on the other.
+$dropped = 0
+$parseErrors = 0
 try {
   $evts = Get-WinEvent -FilterHashtable @{ LogName = $logName; Id = $wanted; StartTime = $since } -MaxEvents $MaxEvents -ErrorAction Stop
 } catch {
@@ -77,8 +82,13 @@ foreach ($e in $evts) {
         'ReturnCode' { $rc = $d.'#text' }
       }
     }
-  } catch { }
-  if (-not $name) { continue }
+  } catch { $parseErrors++ }
+  # Events whose EventData carries no TaskName are skipped. That USED to be silent: the payload
+  # had no "dropped" key at all, so the consumer's `raw.get("dropped") or 0` turned a missing
+  # count into a confident zero, and the page printed a run count with nothing saying part of it
+  # was thrown away. Count them instead. "I skipped some" and "there were none" are different
+  # answers and must not render identically.
+  if (-not $name) { $dropped++; continue }
   $rows += [ordered]@{
     task = ($name -replace '^\\', '')   # the log stores the full task path; the console keys on the bare name
     id   = [int]$e.Id
@@ -97,6 +107,10 @@ foreach ($e in $evts) {
   since   = $since.ToString('yyyy-MM-dd')
   oldest  = if ($rows) { ($rows | Select-Object -Last 1).t } else { $null }
   count   = $rows.Count
+  # Same three keys the fast reader emits, so the consumer never has to ask which reader it got.
+  dropped   = $dropped + $parseErrors
+  partial   = $false          # this reader either finishes the query or throws; there is no half state
+  truncated = ($rows.Count -ge $MaxEvents)
   # LOG IDENTITY. OldestRecordNumber going BACKWARDS between two passes is the observable
   # signature of the Operational log having been cleared. The ingester keys its dedup epoch on
   # that, so a restarted RecordId counter cannot make new events look like duplicates.

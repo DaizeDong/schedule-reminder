@@ -1437,8 +1437,19 @@ document.addEventListener("keydown", e=>{
   if(e.key !== "Enter" && e.key !== " ") return;
   // 概览那几类格子是 div/i,不是 button:给了 tabindex 就必须自己接 Enter 和空格,
   // 否则它们「看起来能聚焦」却按不动,比不可聚焦更让人困惑。
-  const act = e.target.closest &&
-    e.target.closest("[data-fr],[data-scat],[data-cvfile],.cv-gh,.tlrow[data-task]");
+  //
+  // ⚠ 这里原来还列着 [data-scat] / [data-cvfile] / .cv-gh / .tlrow[data-task] 四类,
+  // **而它们一个都聚焦不到**:全文件只有 .fr-c[data-fr] 在渲染时给了 tabindex="0",
+  // 那四类既没有 tabindex 也不是原生可聚焦元素,于是这四条分支永远不会被走到。
+  // 一段覆盖了五类、其中四类是死的处理器,读起来像「键盘可达性已经做过了」——
+  // 而真相是只做了五分之一,剩下四类连一个 tab 停靠点都没有。
+  //
+  // 不给那四类补 tabindex,是因为代价是几百个 tab 停靠点(表格每行、会话每行、
+  // 时间轴每行),侧栏当初正是为此改成 roving tabindex。
+  // 表格行另有出路:它有 tabindex="-1" 供 focusCur 程序化聚焦,而 Enter 由下面那个
+  // 全局 keydown 接(k==="Enter" -> toggleDetail),不需要这里再接一次。
+  // 所以这里只留真的能聚焦的那一类,并由 test_page_js.py 钉住这条对应关系。
+  const act = e.target.closest && e.target.closest("[data-fr]");
   if(act){ e.preventDefault(); e.stopPropagation(); act.click(); return; }
   const th = e.target.closest && e.target.closest("#tbl th[data-k]");
   if(!th) return;
