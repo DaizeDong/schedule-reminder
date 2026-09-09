@@ -127,6 +127,13 @@ def load(path: str | os.PathLike | None, days: int = 45) -> dict:
             "bad": tot["bad"],
             "stale": tot["stale"],
             "neutral": tot["neutral"],
+            # other 是判词表认不出来的那些。它原来只进分母不出现在任何字段里,
+            # 于是监控器换一种措辞(FAIL 而不是 FAILED、DEGRADED、WARN)之后,
+            # 每一行会显示 health 0.0% 而 ok / bad / stale 全是 0:
+            # **同一行里两个自称权威的数字互相矛盾,而没有任何字段说明观察去哪了**;
+            # skipped 也不会涨,因为行本身是解析成功的。
+            # 判据里凡有兜底桶,兜底桶就必须能被看见。
+            "other": tot.get("other", 0),
             "health": round(100.0 * tot["ok"] / judged, 1) if judged else None,
             "visibleRuns": len(runs[task]),
             "byDay": {d: {"ok": c["ok"], "bad": c["bad"], "stale": c["stale"],
