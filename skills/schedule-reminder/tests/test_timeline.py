@@ -89,3 +89,48 @@ def test_a_disabled_task_draws_nothing():
                           "start": "2026-09-01T09:00:00"}], state="Disabled"), NOW)
     assert got["points"] == [] and got["spans"] == []
     assert got.get("skipped") == "disabled"
+
+
+# ---------- expand 认出来的东西,build 必须交出去 ----------
+# ⚠ 上面那几条只测到 expand。expand 收集 unknownTriggers、注释还写着「认不出的类型
+# 照样出现在行里,像 eventDriven 那样」—— 而 build() 的过滤条件只看
+# points / spans / eventDriven / actual,拼出来的 row 里也没有这个键。
+# 于是一个只配了月度触发器的任务:expand 认出来了、build 把整行丢掉,
+# **今日时间轴上一行都没有**,页面上也没有任何一处说「有 1 个触发器我不认识」。
+# 屏幕表现与「这个任务今天本来就不该跑」逐像素相同。
+# 一个只覆盖到中间那一层的测试套件,会让上下游之间的断口一直看不见。
+
+def test_build_keeps_a_task_whose_only_trigger_is_unrecognised():
+    rows = T.build({"AcmeMonthly": task([{"kind": "Monthly", "enabled": True,
+                                          "start": "2026-09-01T03:00:00"}])},
+                   {}, NOW)["rows"]
+    assert len(rows) == 1, "只有认不出的触发器的任务被整行丢掉了"
+    assert rows[0]["unknownTriggers"] == ["Monthly"]
+
+
+def test_build_keeps_a_task_whose_trigger_has_no_kind():
+    rows = T.build({"AcmeBase": task([{"enabled": True}])}, {}, NOW)["rows"]
+    assert len(rows) == 1
+    assert rows[0]["unknownTriggers"] == ["(空)"]
+
+
+def test_build_reports_how_many_triggers_it_could_not_read():
+    """总数要能印在标题上。一个只存在于某一行 tooltip 里的信号,和没有这个信号差别不大。"""
+    out = T.build({
+        "AcmeMonthly": task([{"kind": "Monthly", "enabled": True,
+                              "start": "2026-09-01T03:00:00"}]),
+        "AcmeBase": task([{"enabled": True}]),
+        "AcmeDaily": task([{"kind": "Daily", "enabled": True,
+                            "start": "2026-09-01T03:00:00"}]),
+    }, {}, NOW)
+    assert out["unknownTriggerCount"] == 2
+    # 正对照:认得出的那个不该被算进来,也不该带上这个标记。
+    daily = [r for r in out["rows"] if r["name"] == "AcmeDaily"]
+    assert daily and daily[0]["unknownTriggers"] == []
+
+
+def test_a_task_with_nothing_at_all_is_still_dropped():
+    """负对照:这条改动只放行「认不出」,不能顺手把空任务也放进来 ——
+    那会让时间轴上多出一堆今天确实不跑的行,而那正是它当初要避免的噪音。"""
+    rows = T.build({"AcmeNever": task([])}, {}, NOW)["rows"]
+    assert rows == []

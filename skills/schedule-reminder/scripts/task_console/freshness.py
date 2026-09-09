@@ -46,17 +46,36 @@ def worst_of(*states: str) -> str:
     return max(states, key=lambda s: _SEVERITY.get(s, 0))
 
 
-def _ok_codes(decl: dict) -> set[int]:
-    """两个键名在实际的清单里都出现过(ok_codes / ok_exit_codes),都认。
-    一个只认其中一个名字的读取器会把另一批任务的声明静默丢掉,然后天天误报。"""
-    out = {0}
-    for key in ("ok_codes", "ok_exit_codes"):
+# 清单里这两个键名都出现过,都必须认。**这张表是唯一的一份**:
+# 一个只认其中一个名字的读取器会把另一批任务的声明静默丢掉,然后天天误报,
+# 而在同一屏上另一个认全的读取器会给出相反的结论 —— 两个自称权威的答案。
+# 2026-09-09 实测就是这个形状:`server.py` 只读 ok_codes,而本机清单里
+# AcmeQualityReview 声明的是 `ok_exit_codes: [0,3,5]`,于是它退出 3 时
+# 任务表标红、summary.bad +1、实成功率被拉低,而新鲜度面板判绿。
+OK_CODE_KEYS = ("ok_codes", "ok_exit_codes")
+
+
+def declared_ok_codes(decl: dict) -> list[int]:
+    """清单里**声明的**允许退出码,两个键名合起来,保持声明顺序、去重。
+
+    不隐式加 0:这个函数回答的是「他声明了什么」,给界面显示用。
+    「0 也算成功」是判定规则,属于 _ok_codes。
+    """
+    out: list[int] = []
+    for key in OK_CODE_KEYS:
         for v in decl.get(key) or ():
             try:
-                out.add(int(v))
+                iv = int(v)
             except (TypeError, ValueError):
-                pass
+                continue
+            if iv not in out:
+                out.append(iv)
     return out
+
+
+def _ok_codes(decl: dict) -> set[int]:
+    """判定用的允许集合。0 永远在里面。"""
+    return {0} | set(declared_ok_codes(decl))
 
 
 def _age_verdict(age_h: float | None, limit_h: float | None, grace_h: float | None) -> str:

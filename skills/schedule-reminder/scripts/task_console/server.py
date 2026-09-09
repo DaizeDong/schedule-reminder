@@ -119,7 +119,8 @@ def powershell() -> str:
     return "powershell.exe"
 
 
-def run_ps(script: Path, env_extra: dict[str, str] | None = None, timeout: int = 90):
+def run_ps(script: Path, env_extra: dict[str, str] | None = None, timeout: int = 90,
+           args: list[str] | None = None):
     """Run a PowerShell script and return (rc, stdout, stderr), stdout decoded as UTF-8.
 
     Decoding is pinned rather than left to the locale: PowerShell 5.1 in a non-interactive session
@@ -130,7 +131,7 @@ def run_ps(script: Path, env_extra: dict[str, str] | None = None, timeout: int =
     env.update(env_extra or {})
     p = subprocess.run(
         [powershell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-         "-File", str(script)],
+         "-File", str(script)] + list(args or []),
         capture_output=True, env=env, timeout=timeout, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
     return (p.returncode,
             p.stdout.decode("utf-8", "replace").strip(),
@@ -138,6 +139,21 @@ def run_ps(script: Path, env_extra: dict[str, str] | None = None, timeout: int =
 
 
 # --------------------------------------------------------------------------- run log
+# 运行日志的读取窗口与条数上限。**两条通路必须用同一份**:
+# 这里以前快路写死 evtlog.read(days=30),而慢路 run_ps(RUNLOG) 吃的是 runlog.ps1 自己的
+# 默认 `-Days 60`,返回的却都标注「最近 30 天」。走回落时页面上那句口径说明少报一半的窗口,
+# 而没有任何一处能看出自己走的是哪条通路。
+RUNLOG_DAYS = 30
+# 上限从 2 万提到 10 万。2 万是个凭感觉的数,实测下来它只覆盖 **3 天**
+# (2026-09-06 到今天),而返回的口径写着「最近 30 天」—— 一个七天没跑的任务
+# 在这条通路上看起来就像从来没跑过。
+# 实测(EvtQuery,本机):上限 2 万 -> 20000 条 / 1.8s / 截断;
+# 上限 10 万 -> 54447 条 / 7.4s / 不截断,而 54450 就是这个通道当前保有的全部。
+# 也就是说 10 万在这台机器上等于「有多少读多少」,代价是回落路径上多几秒,
+# 而那条路本来就有 180 秒预算,并且只在数据库不可用时才走。
+RUNLOG_MAX_EVENTS = 100000
+
+
 def load_runlog() -> dict:
     """Aggregate the Task Scheduler Operational log into per-task run counts.
 
@@ -158,7 +174,7 @@ def load_runlog() -> dict:
     raw = None
     fast_why = None
     try:
-        fast = evtlog.read(days=30)
+        fast = evtlog.read(days=RUNLOG_DAYS, max_events=RUNLOG_MAX_EVENTS)
         if fast.get("enabled"):
             raw = fast
         else:
@@ -167,7 +183,11 @@ def load_runlog() -> dict:
         fast_why = f"{type(e).__name__}: {e}"
 
     if raw is None:
-        rc, out, err = run_ps(RUNLOG, timeout=180)
+        # 天数与上限显式传进去,不吃脚本自己的默认值:
+        # 一个「两边各有一套默认值」的接口,迟早会在某次改动后悄悄分叉。
+        rc, out, err = run_ps(RUNLOG, timeout=180,
+                              args=["-Days", str(RUNLOG_DAYS),
+                                    "-MaxEvents", str(RUNLOG_MAX_EVENTS)])
         if rc != 0 or not out:
             return {"available": False,
                     "reason": f"读运行日志失败: {err or out or '无输出'}"
@@ -230,9 +250,24 @@ def load_runlog() -> dict:
     # 在回落时是「最近 N 天的事件条数」,而表里的「实跑」「实成功%」永远只统计另一个窗口:
     # 三个窗口、一个数字、页面不说是哪一个。想用它判断「日志覆盖了多久」的人会得到一个偏大的数,
     # 并据此相信历史比实际更完整。
+    # 撞上条数上限时,**取到的是最近 N 条,不是最近 30 天**。原来无论如何都标「最近 30 天」,
+    # 于是一份只覆盖到十几天前的数据会被读成整整 30 天的完整历史,
+    # 而「某个任务这段时间一次都没跑」和「它跑过但被截掉了」在屏幕上一模一样。
+    truncated = bool(raw.get("truncated"))
+    _oldest = raw.get("oldest")
+    if truncated:
+        scope = (f"最近 {RUNLOG_MAX_EVENTS} 条(撞上条数上限,没有覆盖满 {RUNLOG_DAYS} 天"
+                 + (f",最早只到 {str(_oldest)[:10]}" if _oldest else "") + ")")
+    else:
+        # 没截断也不等于覆盖满了那个窗口:这个通道是滚动缓冲,本机实测只保有约八天。
+        # 把真实回溯到哪天一起说出来,否则「这段时间它没跑」和「这段时间日志已经没了」
+        # 又变成同一个空白。
+        scope = f"最近 {RUNLOG_DAYS} 天" + (
+            f"(日志只回溯到 {str(_oldest)[:10]})" if _oldest else "")
     return {"available": True, "reason": None, "since": raw.get("since"),
             "oldest": raw.get("oldest"), "count": raw.get("count", len(evs)),
-            "windowDays": 30, "countScope": "最近 30 天",
+            "windowDays": (None if truncated else RUNLOG_DAYS), "countScope": scope,
+            "truncated": truncated,
             # 读到一半失败、以及解析不了的条数,两个都要带出去。读取器一直在数它们,
             # 而这里原来把两个数都扔了:事件格式一变、大批事件被丢掉时,页面上只会看到
             # 运行次数变少、成功率漂移,没有任何一处说明有多少条读不懂 ——
@@ -289,6 +324,12 @@ def load_from_db():
             "obs": c.get("obs", 0), "judged": c.get("judged", 0),
             "ok": c.get("ok", 0), "bad": c.get("bad", 0),
             "stale": c.get("stale", 0), "neutral": c.get("neutral", 0),
+            # other 是判词表认不出来的那些。它进分母(judged = 全部 - neutral)却不出现在
+            # 任何字段里,于是监控器换一种措辞之后,每一行会显示 health 0.0% 而
+            # ok / bad / stale 全是 0 : **同一行里两个自称权威的数字互相矛盾,
+            # 而没有任何字段说明观察去哪了**。history.py 那条通路 2026-09 就补上了这个桶,
+            # 而数据库这条主通路一直没有 —— 于是那次修复在实际走的通路上完全没生效。
+            "other": c.get("other", 0),
             "health": c.get("health"),
             "visibleRuns": sum((runs_by_day.get(task) or {}).values()),
             "visibleRunsScope": "runlog",  # 慢路给的是 "poll"
@@ -471,7 +512,7 @@ def build_freshness(tasks: dict, health: dict, health_reason: str | None = None)
 HISTORY_OUT = ("available", "reason", "days", "caveat", "matched", "source", "lastIngest")
 HISTORY_DROP = ("tasks", "skipped")          # tasks 很大且已并进每一行;skipped 页面用不到
 RUNLOG_OUT = ("available", "reason", "since", "oldest", "count", "note",
-              "partial", "dropped", "windowDays", "countScope")
+              "partial", "dropped", "truncated", "windowDays", "countScope")
 RUNLOG_DROP = ("tasks",)                      # 同上,已并进每一行
 
 
@@ -517,7 +558,11 @@ def build_payload() -> dict:
         # Chinese override first, then the task's own description. Neither is invented: if both are
         # absent the cell stays empty rather than being filled with a plausible guess.
         t["desc"] = descs.get(t["name"]) or t.get("description") or None
-        t["okCodes"] = ",".join(str(x) for x in e.get("ok_codes", [])) or None
+        # 两个键名都要认,而且**只能有一份表**知道它们叫什么。
+        # 这里以前是 `e.get("ok_codes", [])`,只认一个名字:声明成 ok_exit_codes 的任务
+        # 在这条渲染通路上被静默丢掉,而 freshness 那条认全 —— 同一个退出码,
+        # 任务表判红、新鲜度判绿,同一屏两个自称权威的结论,没有任何一处对账。
+        t["okCodes"] = ",".join(str(x) for x in freshness.declared_ok_codes(e)) or None
         t["artifact"] = e.get("artifact")
         t["artifactMax"] = e.get("artifact_max_age_hours")
         t["elsewhere"] = e.get("watched_elsewhere")
