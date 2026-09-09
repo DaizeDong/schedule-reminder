@@ -94,3 +94,34 @@ def test_fail_still_writes_json_when_stderr_exists(monkeypatch):
     import json
     out = json.loads(buf.getvalue())
     assert out["ok"] is False and out["error_code"] == "ERR_NOT_FOUND"
+
+
+# ---------- 3. 源码和注册态是同一个事实的两份副本 ----------
+
+def test_the_registered_task_matches_what_install_ps1_declares():
+    """真正让心跳静默死掉 17 天的是**已注册任务**里的 <Duration>,不是源码里的。
+
+    ⚠ 上面两条读的是 `install.ps1` 的文本。源码和注册态是同一个事实的两份副本,
+    而它们之间**没有任何东西对账**:源码修好了、注册态没跟着重装,心跳照样是死的,
+    而这两条用例仍然全绿。任何人手工在任务计划里编辑过一次,也是同一个结果。
+    (2026-09-09 实测:注册态此刻没有漂,所以这是补一道对账,不是缺陷已经发生。)
+
+    机器上没有这个任务(别的机器、CI)就跳过 —— 那时确实无从对账。
+    """
+    import subprocess
+    if os.name != "nt":
+        pytest.skip("只在 Windows 上有注册态可查")
+    r = subprocess.run(["schtasks", "/query", "/tn", "ScheduleReminderTick", "/xml"],
+                       capture_output=True, timeout=60, stdin=subprocess.DEVNULL)
+    if r.returncode != 0:
+        pytest.skip("这台机器上没有注册这个任务")
+    live = r.stdout.decode("utf-16", "replace")
+    if "<Repetition>" not in live:
+        live = r.stdout.decode("utf-8", "replace")
+    rep = re.search(r"<Repetition>(.*?)</Repetition>", live, re.S)
+    assert rep, "注册态里没有 <Repetition> —— 心跳不再重复"
+    body = rep.group(1)
+    assert "<Duration>" not in body, (
+        "**已注册的**任务里有 <Duration>:Windows 会在它走完之后永远停止重复。"
+        "源码修好不算修好,要重装那个任务。")
+    assert "<Interval>PT5M</Interval>" in body, f"注册态的间隔不是 PT5M: {body.strip()[:120]}"

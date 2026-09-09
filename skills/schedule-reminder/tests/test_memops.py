@@ -205,3 +205,29 @@ def test_a_real_memory_is_still_counted(tmp_path, monkeypatch):
     root = pool(tmp_path, entries=("a", "b"))
     monkeypatch.setenv("TASK_CONSOLE_MEMORY", str(root))
     assert M.read()["live"] == 2
+
+
+# ---------- 索引读不到 != 索引是空的 ----------
+# available 只表示**记忆池目录**读到了。MEMORY.md 不在或读不了时,
+# linePct / bytePct / indexLines / indexBytes 全是 None,而 available 仍然是 True。
+# 前端那一格原来写的是 `MEM.linePct||0` —— 于是印出**绿色的 0%** 和字面量「null/200 行」:
+# 一个查不成的东西被画成了最健康的样子。一个 None 说不出自己为什么是 None,所以要有原因。
+
+def test_a_missing_index_says_why(tmp_path, monkeypatch):
+    (tmp_path / "a.md").write_text("x", encoding="utf-8")
+    monkeypatch.setenv("TASK_CONSOLE_MEMORY", str(tmp_path))
+    r = M.read()
+    assert r["available"] is True, "目录是读到了的,available 不该因为索引缺失变假"
+    assert r["linePct"] is None and r["bytePct"] is None
+    assert r["indexReason"], "索引读不到却没有给出原因"
+    assert "MEMORY.md" in r["indexReason"]
+
+
+def test_a_present_index_gives_no_reason(tmp_path, monkeypatch):
+    """负对照:索引在的时候不许报原因。见谁都叫的字段会被无视。"""
+    (tmp_path / "a.md").write_text("x", encoding="utf-8")
+    (tmp_path / "MEMORY.md").write_text("- [x](a.md)\n" * 10, encoding="utf-8")
+    monkeypatch.setenv("TASK_CONSOLE_MEMORY", str(tmp_path))
+    r = M.read()
+    assert r["indexReason"] is None
+    assert r["linePct"] is not None and r["indexLines"] == 11

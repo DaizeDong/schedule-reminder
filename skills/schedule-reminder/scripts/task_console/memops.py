@@ -83,9 +83,22 @@ def read() -> dict:
     idx = root / "MEMORY.md"
     lines = ibytes = None
     referenced: set[str] = set()
+    # 索引读不到时,下面那几个百分比全是 None,而 available 仍然是 True
+    # (它只表示记忆池目录读到了)。消费方分不出「索引很空」和「索引没读到」——
+    # 实测概览那一格因此印出**绿色的 0%** 和字面量「null/200 行」,
+    # 一个查不成的东西被画成了最健康的样子。所以把原因单独交出去:
+    # **一个 None 说不出自己为什么是 None。**
+    index_reason = None
+    if not idx.is_file():
+        index_reason = f"索引文件不在: {idx}"
     if idx.is_file():
-        raw = idx.read_bytes()
-        ibytes, lines = len(raw), raw.count(b"\n") + 1
+        try:
+            raw = idx.read_bytes()
+        except OSError as e:
+            raw = b""
+            index_reason = f"索引文件读不了({e.__class__.__name__}): {idx}"
+        ibytes, lines = ((len(raw), raw.count(b"\n") + 1)
+                         if raw else (None, None))
         txt = raw.decode("utf-8", "replace")
         referenced = {Path(m).stem for m in INDEX_ENTRY.findall(txt)}
     cold_idx = arch / "MEMORY-archive.md" if arch else None
@@ -128,6 +141,8 @@ def read() -> dict:
         "danglingIndex": dangling,
         "biggest": sizes[:8],
         "archiverConfigured": bool(os.environ.get("TASK_CONSOLE_MEMORY_ARCHIVER")),
+        # 非空表示上面那几个索引字段是 None **因为读不到**,不是因为索引真的空。
+        "indexReason": index_reason,
     }
 
 
