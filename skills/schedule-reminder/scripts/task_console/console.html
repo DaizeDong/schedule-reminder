@@ -359,8 +359,34 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
    而截断的仓名读起来跟另一个仓一模一样。 */
 .rp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:1px;
   background:var(--line2);max-height:max(200px, calc(100vh - 190px));overflow:auto}
-.rp-r{background:var(--panel);display:grid;grid-template-columns:8px 1fr auto auto;gap:7px;
+/* 卡片是「一个仓和它的伴生仓」,不是「一个仓」。伴生仓住在宿主的卡里,
+   而不是网格里另一个位置 : 在 auto-fill 的网格里,两张相邻的卡片随时会被换行拆开,
+   那时「它俩有关系」这件事就只剩一个符号在说,而符号是会被读漏的。
+   住在同一张卡里的东西不需要任何连接线来说明自己属于谁。 */
+.rp-card{background:var(--panel)}
+.rp-r{display:grid;grid-template-columns:8px 1fr auto auto;gap:7px;
   align-items:center;padding:3px 7px;font-size:12px}
+/* 伴生行。缩进 + 小一号 + 名字降一档色,没有别的:从属是**看**出来的。
+   名字只写后缀,因为前缀逐字等于上面那一行 —— 重复一遍宿主名是纯噪音。
+   ⚠ 这里一度还有一条 1px 的竖线表示从属。实测它被算成 0.51px,
+   画在浅色主题的 --line 上基本看不见 —— **一个画了却看不见的元素比没画更糟**:
+   代码里有它,屏幕上没有,下一个人会以为从属关系已经有视觉表达了。
+   卡片边框本来就把这两行框在一起,那条线是多余的配饰。 */
+.rp-r.sub{padding-left:16px;font-size:11.5px}
+.rp-r.sub .n{color:var(--dim)}
+/* 组标题跨满整行。不用全大写 : 那是模板腔,而且这几个词里有中文,大写也无从谈起。 */
+.rp-gh{grid-column:1/-1;display:flex;align-items:baseline;gap:8px;
+  padding:9px 2px 2px;font-size:11px;color:var(--dim)}
+.rp-gh:first-child{padding-top:0}
+.rp-gh b{font-weight:600;color:var(--ink);font-size:11.5px}
+.rp-gh .n{color:var(--faint);font-variant-numeric:tabular-nums}
+/* 说明文字跟在计数后面,占住剩下的宽度 : 一个只有 hover 才看得到的解释,
+   对一个每天只瞥一眼的面板等于不存在。 */
+/* --dim 不是 --faint:实测 --faint 在这个字号下对比度只有 2.65(浅)/3.5(深),
+   两个主题都够不到 AA 的 4.5 —— 一行读不清的解释等于没写,而它恰好是回答
+   「为什么分成这三组」的那一行。 */
+.rp-gh .why{margin-left:6px;color:var(--dim);font-size:10.5px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .rp-r .dot{width:8px;height:8px;border-radius:2px}
 .rp-r .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono,inherit)}
 .rp-r .m{font-size:10.5px;color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -592,8 +618,10 @@ table.g td[data-col="timeout"]{font-family:var(--mono)}
    改成真的间隙 + 各自边框:同样是分隔,但读起来是几张卡片而不是一个表格区域。 */
 .tiles{gap:6px;background:none;border:0}
 .tile{border:1px solid var(--line);border-radius:3px}
-.rp-grid{gap:5px;background:none}
-.rp-r{border:1px solid var(--line);border-radius:3px}
+.rp-grid{gap:5px;background:none;align-items:start}
+.rp-card{border:1px solid var(--line);border-radius:3px;overflow:hidden}
+/* 组标题不是卡片,别给它边框 —— 它是标尺不是内容。 */
+.rp-gh{border:0}
 .mt-grid{gap:8px;background:none}
 .mt-col{border:1px solid var(--line);border-radius:3px}
 /* 卡头层级原来是反的:标题 11.5px/--dim,正文 12px/--ink,
@@ -1118,7 +1146,10 @@ function renderRepos(){
     // 长得一模一样。后端现在把原因带上来了,这里必须印出来,否则它到不了人眼前。
     +(S.visibilityReason?`<span style="color:var(--bad)">${esc(S.visibilityReason)}</span>`:"");
 
-  $("rpgrid").innerHTML=REPOS.repos.map(r=>{
+  // 一行一个仓。宿主和伴生用同一个函数画,只差一个 sub 标记 ——
+  // 伴生仓也会脏、也会有没推的提交,把它画成一个附属标签会把那两件事藏掉,
+  // 而「没推的提交没人会告诉你」正是这块面板存在的理由。
+  const rpRow = (r, sub) => {
     const bits=[];
     if(r.state==="error"){ bits.push(esc((r.why||"").slice(0,28))); }
     else{
@@ -1129,12 +1160,40 @@ function renderRepos(){
       if(r.ageDays!=null) bits.push(r.ageDays<1?"今天":r.ageDays.toFixed(0)+"d");
     }
     const vis=r.visibility?`<span class="vis ${/pub/i.test(r.visibility)?"pub":""}">${esc(r.visibility.slice(0,4))}</span>`:"";
-    return `<div class="rp-r" title="${esc(r.path)}${r.branch?" @ "+esc(r.branch):""}">
+    // 伴生行只显示后缀:前缀逐字等于宿主名,而完整名字仍在 title 里。
+    const label = sub ? (r.name.slice((r.companionOf||"").length).replace(/^-/,"") || r.name)
+                      : r.name;
+    return `<div class="rp-r${sub?" sub":""}" title="${esc(r.path)}${r.branch?" @ "+esc(r.branch):""}">
       <i class="dot d-${r.state}"></i>
-      <span class="n">${esc(r.name)}${r.nested?" <span class=\"lk\">↗</span>":""}</span>
+      <span class="n">${esc(label)}${r.nested?" <span class=\"lk\">↗</span>":""}</span>
       ${vis}<span class="m">${bits.join(" ")}</span>
       <button class="mini" data-mt="repo.fetch" data-name="${esc(r.name)}" title="git fetch,只取不合">fetch</button>
     </div>`;
+  };
+
+  // 分组。顺序和每类的条数都由后端给(summary.kindOrder / summary.kinds)——
+  // 前端自己再数一遍就是同一个事实的第二个来源。
+  const KIND_LAB = {skill: "skill", shared: "共享组件", other: "其它"};
+  const KIND_WHY = {
+    skill: "有 SKILL.md。伴生的配置仓跟在自己那一行下面。",
+    shared: "被别的仓当 submodule 用(闸门、样式这类)。改一处,所有引用它的仓跟着走。",
+    other: "工具、库、独立的配置仓。名字像伴生仓但在这次扫描里配不上宿主的,也在这里。",
+  };
+  const byHost = {};
+  REPOS.repos.forEach(r=>{ if(r.kind==="companion" && r.companionOf) byHost[r.companionOf]=r; });
+
+  const order = (S.kindOrder && S.kindOrder.length) ? S.kindOrder : ["skill","shared","other"];
+  $("rpgrid").innerHTML = order.map(k=>{
+    const rows = REPOS.repos.filter(r=>r.kind===k);
+    if(!rows.length) return "";
+    const n = (S.kinds && S.kinds[k] != null) ? S.kinds[k] : rows.length;
+    return `<div class="rp-gh"><b>${esc(KIND_LAB[k]||k)}</b>
+        <span class="n">${n}</span>
+        <span class="why">${esc(KIND_WHY[k]||"")}</span></div>`
+      + rows.map(r=>{
+          const c = byHost[r.name];
+          return `<div class="rp-card">${rpRow(r,false)}${c?rpRow(c,true):""}</div>`;
+        }).join("");
   }).join("");
 }
 

@@ -37,6 +37,73 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 CLEAN, DIRTY, UNPUSHED, DETACHED, ERROR = "clean", "dirty", "unpushed", "detached", "error"
 
+# 仓库的类型。**全部从仓库自身的形状观察出来,没有任何一张仓名表。**
+# 这不是洁癖:一份「哪个仓是什么、谁跟谁有关系」的清单就是舰队地图,
+# 而这个文件在公开仓里。判据只认形状,于是它在任何人的机器上都成立,
+# 也不会随着增删仓库而过期。
+KIND_SKILL = "skill"          # 有 SKILL.md(自己的或 skills/*/ 下的)
+KIND_COMPANION = "companion"  # origin 名是 <宿主>-config,而宿主也在这次扫描里
+KIND_SHARED = "shared"        # 被这次扫描里别的仓当 submodule 引用
+KIND_OTHER = "other"
+
+# 组的显示顺序。伴生仓不单独成组:它跟在自己的宿主下面。
+KIND_ORDER = (KIND_SKILL, KIND_SHARED, KIND_OTHER)
+
+
+def _repo_name_from_url(url: str | None) -> str | None:
+    """从 remote URL 取出裸仓名。
+
+    形式有两种:`https://host/owner/name.git` 和 `git@alias:owner/name.git`。
+    这段归一化和 guards/tools/datadir.py 的 `_proves_companion` 是同一套 ——
+    伴生关系的**权威判据在那里**(origin 名等于 `<skill>-config`,或有 .companion 标记),
+    这里只是照它的形状去认。
+    ⚠ 不要在这里发明第二套判据。这个面板回答的是「这次扫描里看得见什么关系」,
+    不回答「伴生仓在哪、对不对」—— 后者是 datadir 和 data_boundary 的职责,
+    而同一个问题有两个都自称权威的答案,正是这个控制台反复在修的那类缺陷。
+    """
+    if not url:
+        return None
+    base = url.rstrip("/").rsplit("/", 1)[-1]
+    if base.endswith(".git"):
+        base = base[:-4]
+    if ":" in base:
+        base = base.rsplit(":", 1)[-1]
+    return base or None
+
+
+def _submodule_parents(repo: Path) -> list[str]:
+    """这个仓把哪些仓当 submodule 用。读 .gitmodules,取每个 url 的裸仓名。
+
+    读文件而不是跑 `git submodule`:后者要求子模块已经 checkout,
+    而「声明了但没 checkout」正是这套闸门栽过的那个坑(目录存在且为空,
+    git 找不到钩子就什么都不跑、退出 0)。声明本身才是关系的事实。
+    """
+    p = repo / ".gitmodules"
+    try:
+        txt = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    out = []
+    for line in txt.splitlines():
+        line = line.strip()
+        if line.startswith("url"):
+            _, _, v = line.partition("=")
+            n = _repo_name_from_url(v.strip())
+            if n:
+                out.append(n)
+    return out
+
+
+def _has_skill_manifest(repo: Path) -> bool:
+    """SKILL.md 在根上,或者在 skills/<任意一个>/ 下。两种布局真实存在,都要认。"""
+    if (repo / "SKILL.md").is_file():
+        return True
+    skills = repo / "skills"
+    try:
+        return any((d / "SKILL.md").is_file() for d in skills.iterdir() if d.is_dir())
+    except OSError:
+        return False
+
 # 严重度序。unpushed 排在 dirty 前面:脏文件你自己知道,没推的提交没人会告诉你。
 _SEV = {CLEAN: 0, DETACHED: 1, DIRTY: 2, UNPUSHED: 3, ERROR: 4}
 
@@ -110,12 +177,81 @@ def scan_one(repo: Path, vis_table: dict, now: float) -> dict:
         state = CLEAN
 
     return dict(d, state=state, branch=branch, upstream=upstream,
+                # 形状事实。类型和关系在 scan() 里定,因为那需要看到全部仓;
+                # 这里只报「我这个目录长什么样」。
+                remoteName=_repo_name_from_url(remote),
+                hasSkillManifest=_has_skill_manifest(repo),
+                usesShared=_submodule_parents(repo),
                 ahead=ahead, behind=behind, dirty=dirty, remote=remote,
                 lastCommit=last,
                 ageDays=round((now - last) / 86400.0, 1) if last else None,
                 visibility=_visibility(str(repo), vis_table),
                 # 没有 upstream 时 ahead 是 None,不是 0。页面必须画成「未知」。
                 unpushedKnown=ahead is not None)
+
+
+def _classify(rows: list[dict]) -> None:
+    """就地给每个仓定 kind 和关系。只用这次扫描里看得见的事实。
+
+    三条判据互不重叠,优先级 companion > shared > skill > other:
+      * origin 名是 `<X>-config` **而且 X 也在这次扫描里** -> X 的伴生仓。
+        宿主不在这次扫描里的(比如一个独立的配置备份仓,去掉后缀后并没有那个仓),
+        不算伴生 —— 它只是名字长得像。**判据是配对成功,不是名字后缀。**
+      * 被别的仓在 .gitmodules 里引用 -> 共享组件。
+      * 有 SKILL.md -> skill 仓。
+
+    `companionInScan` 刻意只说「这次扫描里」:一个仓的伴生仓完全可以在扫描根之外
+    (真实存在的形态),那时这里是 False,而它**不表示缺口**。
+    缺口由 data_boundary 判,这里不抢那个答案。
+    """
+    by_name: dict[str, dict] = {}
+    for r in rows:
+        for key in (r.get("remoteName"), r.get("name")):
+            if key:
+                by_name.setdefault(key, r)
+
+    shared: set[str] = set()
+    for r in rows:
+        for parent in r.get("usesShared") or []:
+            if parent in by_name:
+                shared.add(parent)
+
+    for r in rows:
+        rn = r.get("remoteName") or r.get("name") or ""
+        host = None
+        if rn.endswith("-config"):
+            cand = rn[: -len("-config")]
+            if cand in by_name and by_name[cand] is not r:
+                host = by_name[cand]
+
+        if host is not None:
+            r["kind"] = KIND_COMPANION
+            r["companionOf"] = host.get("name")
+            host["companionInScan"] = r.get("name")
+        elif rn in shared:
+            r["kind"] = KIND_SHARED
+        elif r.get("hasSkillManifest"):
+            r["kind"] = KIND_SKILL
+        else:
+            r["kind"] = KIND_OTHER
+
+    for r in rows:
+        r.setdefault("companionInScan", None)
+
+
+def _group_counts(rows: list[dict]) -> dict:
+    """每个组标题下实际显示多少个仓。伴生仓归到它宿主所在的组。
+
+    不变量:各组之和 == 仓总数。tests/test_repos.py 钉住了这一条。
+    """
+    host_kind = {r.get("name"): r.get("kind") for r in rows}
+    counts = {k: 0 for k in KIND_ORDER}
+    for r in rows:
+        k = r.get("kind")
+        if k == KIND_COMPANION:
+            k = host_kind.get(r.get("companionOf")) or KIND_OTHER
+        counts[k] = counts.get(k, 0) + 1
+    return counts
 
 
 def _load_visibility() -> tuple[dict, str | None]:
@@ -159,6 +295,9 @@ def scan(root: str | None = None, now: float | None = None, workers: int = 10) -
                 "summary": {"total": 0, "counts": {}, "attention": 0,
                             "unknownUpstream": 0,
                             "attentionStates": ["unpushed", "dirty", "error"],
+                            "kinds": {k: 0 for k in (KIND_SKILL, KIND_SHARED,
+                                                     KIND_COMPANION, KIND_OTHER)},
+                            "kindOrder": list(KIND_ORDER),
                             "visibilityReason": None},
                 "note": "这个根目录下没有 git 仓"}
 
@@ -175,6 +314,7 @@ def scan(root: str | None = None, now: float | None = None, workers: int = 10) -
                 out.append({"name": r.name, "path": str(r), "state": ERROR,
                             "why": f"{e.__class__.__name__}: {e}"})
 
+    _classify(out)
     out.sort(key=lambda x: (-_SEV.get(x["state"], 0), x["name"]))
     counts: dict[str, int] = {}
     for x in out:
@@ -196,6 +336,15 @@ def scan(root: str | None = None, now: float | None = None, workers: int = 10) -
             # 一起消失,而那和「表里没登记这几个仓」长得一模一样。
             "visibilityReason": vis_reason,
             "unknownUpstream": sum(1 for x in out if x.get("unpushedKnown") is False),
+            # 每组实际会显示多少个仓。页面用它画分组标题,而不是自己再数一遍 ——
+            # 前端数一遍就是同一个事实的第二个来源。
+            #
+            # ⚠ 伴生仓算进**它宿主所在的那个组**,因为它就画在那里。
+            # 按 kind 直接数的话,三个组标题加起来会比「共 N」少掉伴生仓的数目,
+            # 而屏幕上没有任何一处解释那个差 —— 两个都自称权威的数字,
+            # 读的人只能自己去猜哪个漏了什么。加起来等于总数,就不需要解释。
+            "kinds": _group_counts(out),
+            "kindOrder": list(KIND_ORDER),
         },
     }
 
