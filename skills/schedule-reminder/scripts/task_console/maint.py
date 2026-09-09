@@ -116,14 +116,24 @@ def read_skills() -> dict:
     if not root or not root.is_dir():
         return {"available": False,
                 "reason": "没有设 TASK_CONSOLE_SKILLS,skill 这一栏是「未检查」。"}
-    live, budget = [], 0
+    live, budget, unreadable = [], 0, 0
     for name in sorted(os.listdir(root)):
         d = root / name
         if not (d / "SKILL.md").is_file():
             continue
-        n = _desc_len(d) or 0
+        # _desc_len 返回 None 表示「读不出来」(文件读不了、frontmatter 写坏),
+        # 返回 0 表示「真的没写描述」。`or 0` 把这两件事压成同一个数,
+        # 于是那份 skill 贡献的字符被当成 0,预算条读数偏低、颜色偏绿,
+        # 而真实预算已经更接近上限 : **一个被喂了空的度量打印的绿色,
+        # 和一个真没超标的度量打印的绿色一模一样**,而这条预算条正是用来防
+        # 「超了之后尾部条目的描述会在下一次会话里静默消失」的。
+        raw = _desc_len(d)
+        n = raw or 0
+        if raw is None:
+            unreadable += 1
         budget += n + len(name)
         live.append({"name": name, "chars": n + len(name),
+                     "descUnreadable": raw is None,
                      "linked": _is_link(d), "archived": False})
     archived = []
     if arch and arch.is_dir():
@@ -132,7 +142,9 @@ def read_skills() -> dict:
                 archived.append({"name": name, "chars": 0, "linked": False, "archived": True})
     return {"available": True, "root": str(root), "archiveSet": bool(arch),
             "skills": live + archived, "liveCount": len(live),
-            "archivedCount": len(archived), "budgetChars": budget}
+            "archivedCount": len(archived), "budgetChars": budget,
+            # 单独报,不并进 0:预算条旁边要能看出「这个数字是不完整的」。
+            "descUnreadable": unreadable}
 
 
 def read_memory() -> dict:

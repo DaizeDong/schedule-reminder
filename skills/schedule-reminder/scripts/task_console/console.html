@@ -948,7 +948,8 @@ function renderMaint(){
         data-name="${esc(k.name)}" title="${k.archived?"从归档区还原回来":"移出到归档区,不再占描述预算"}">${k.archived?"还原":"归档"}</button>
     </div>`).join("");
     el.innerHTML=`<div class="mt-t">SKILL <b>${S.liveCount}</b>
-        <span class="sub">${S.budgetChars} 字符</span></div>
+        <span class="sub">${S.budgetChars} 字符${
+          S.descUnreadable ? ` · <span style="color:var(--warn)">${S.descUnreadable} 份描述读不出来,这个数偏低</span>` : ""}</span></div>
       <div class="mt-meter"><i style="width:${Math.min(S.budgetChars/18600*100,100).toFixed(1)}%;
         background:${S.budgetChars>18600?"var(--bad)":S.budgetChars>15000?"var(--warn)":"var(--ok)"}"></i></div>
       <div class="mt-rows">${rows}</div>`;
@@ -1607,7 +1608,18 @@ const C=[
  ["name","任务",r=>`<td class="nm" title="${esc(r.name)}">${esc(r.name)}</td>`,r=>r.name],
  ["cat","大类",r=>`<td class="dim">${esc(r.cat)}</td>`,r=>r.cat],
  ["desc","说明",r=>`<td class="dim ds" title="${esc(r.desc||"")}">${esc(r.desc||"")}</td>`,r=>r.desc||""],
- ["health","健康%",r=>{const v=r.hist&&r.hist.health;return `<td class="num" style="color:${v==null?"var(--faint)":v>=95?"var(--ok)":v>=80?"var(--warn)":"var(--bad)"}">${v==null?"-":v}</td>`},r=>(r.hist&&r.hist.health!=null)?r.hist.health:-1],
+ // 健康% 旁边要能看出它是拿什么算出来的。判词表认不出来的那些进 other 桶,
+ // 它只进分母不出现在任何地方:监控器换一种措辞之后,每一行会显示 0.0% 而
+ // ok/bad/stale 全是 0,同一行里两个数字互相矛盾而没有任何字段说明观察去哪了。
+ ["health","健康%",r=>{
+   const h=r.hist||{}, v=h.health;
+   const oth=h.other||0;
+   const tip = v==null ? "没有观察记录"
+     : `${h.ok}/${h.judged} 条观察判为正常` + (oth ? ` · ${oth} 条判词认不出来,它们只进了分母` : "");
+   const col = v==null?"var(--faint)":oth&&oth>=h.judged*0.5?"var(--faint)"
+     :v>=95?"var(--ok)":v>=80?"var(--warn)":"var(--bad)";
+   return `<td class="num" title="${esc(tip)}" style="color:${col}">${v==null?"-":v}${oth?"*":""}</td>`;
+ },r=>(r.hist&&r.hist.health!=null)?r.hist.health:-1],
  ["realOk","实成功%",r=>{const v=r.runs&&r.runs.successRate;return `<td class="num" style="color:${v==null?"var(--faint)":v>=95?"var(--ok)":"var(--bad)"}" title="来自 Windows 运行日志">${v==null?"-":v}</td>`},r=>(r.runs&&r.runs.successRate!=null)?r.runs.successRate:-1],
  ["realRuns","实跑",r=>`<td class="num" title="运行日志记录的启动次数">${r.runs?r.runs.starts:"-"}</td>`,r=>r.runs?r.runs.starts:-1],
  ["bad","失败",r=>`<td class="num" style="color:${(r.hist&&r.hist.bad)?"var(--bad)":"var(--faint)"}">${r.hist?r.hist.bad:"-"}</td>`,r=>r.hist?r.hist.bad:-1],

@@ -284,3 +284,41 @@ def test_a_well_formed_listing_is_still_available(monkeypatch):
     got = M.read_plugins()
     assert got["available"] is True, got
     assert [p["enabled"] for p in got["plugins"]] == [True, False]
+
+
+# ---------- 读不出来的 skill 描述不能按 0 计入预算 ----------
+# 预算条是用来防「超了之后尾部条目的描述会在下一次会话里静默消失」的护栏。
+# _desc_len 返回 None 表示「读不出来」,返回 0 表示「真的没写描述」,
+# 而 `or 0` 把这两件事压成同一个数:那份 skill 贡献的字符被当成 0,
+# 预算条读数偏低、颜色偏绿,而真实预算已经更接近上限。
+# 一个被喂了空的度量打印的绿色,和一个真没超标的度量打印的绿色一模一样。
+
+def _skill(root, name, front):
+    d = root / name
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(front, encoding="utf-8")
+    return d
+
+
+def test_an_unreadable_description_is_counted_separately(tmp_path, monkeypatch):
+    root = tmp_path / "skills"
+    _skill(root, "good", "---\ndescription: hello there\n---\nbody\n")
+    _skill(root, "broken", "no frontmatter at all\n")     # _desc_len -> None
+    monkeypatch.setenv("TASK_CONSOLE_SKILLS", str(root))
+    monkeypatch.delenv("TASK_CONSOLE_SKILL_ARCHIVE", raising=False)
+    got = M.read_skills()
+    assert got["descUnreadable"] == 1, got
+    broken = next(s for s in got["skills"] if s["name"] == "broken")
+    assert broken["descUnreadable"] is True, broken
+
+
+def test_a_skill_with_an_empty_description_is_not_called_unreadable(tmp_path, monkeypatch):
+    """正对照:真的没写描述(frontmatter 在、没有 description 行)是 0 不是 None。
+    分不开的话这个提示会在每台机器上天天亮,而天天亮的提示等于没有。"""
+    root = tmp_path / "skills"
+    _skill(root, "nodesc", "---\nname: nodesc\n---\nbody\n")
+    monkeypatch.setenv("TASK_CONSOLE_SKILLS", str(root))
+    monkeypatch.delenv("TASK_CONSOLE_SKILL_ARCHIVE", raising=False)
+    got = M.read_skills()
+    assert got["descUnreadable"] == 0, got
+    assert got["skills"][0]["descUnreadable"] is False
