@@ -162,20 +162,49 @@ def _iter_health_rows(p: Path, h: dict):
 
 
 # --------------------------------------------------------------------------- run log
-def ingest_runlog(con, days: int) -> tuple[bool, int, str]:
-    started = now()
+def _read_runlog(days: int) -> tuple[dict, str]:
+    """读运行日志。先试 EvtQuery 那条快路,不成再回落到 PowerShell。返回 (原始结构, 用了哪条路)。
+
+    ⚠ 这里之前只有 PowerShell 一条路,而它在这台机器上**读不完**:实测
+    runlog.ps1 -Days 60 会撞上 900 秒超时,于是 runlog 的摄入从 2026-09-05 起一直失败。
+    那个 Windows 通道是滚动缓冲、约五天覆盖一次,所以**没被摄入的历史是永久丢失的**。
+
+    快路(evtlog.py 的 EvtQuery)本来就写好了、也在生产里跑着,只是当时只接进了
+    server.py 的读路径,没有接进摄入器。同一份日志、同样 60 天:快路 4.6 秒读到 52991 条,
+    慢路 900 秒读不完 —— 差约两百倍。**一个已经写好、量过、还在跑的快路,
+    只是没有人把它接到第二个调用点。**
+
+    快路说 enabled=False 是一个**结论**(通道关着 / 读不到通道配置),不是「快路不可用」,
+    直接把它交出去:回落到 PowerShell 只会得到同一个结论,还要多花十五分钟。
+    """
+    try:
+        import evtlog
+        ok, _why = evtlog.available()
+        if ok:
+            return evtlog.read(days=days, max_events=500000), "evtlog"
+    except Exception:
+        pass
     rc, out, err = run_ps(RUNLOG, ["-Days", str(days)], timeout=900)
     if rc != 0 or not out:
-        note_run(con, "runlog", started, False, 0, (err or out)[:400])
-        return False, 0, f"读运行日志失败: {err or out}"
+        return {"enabled": False, "reason": f"读运行日志失败: {err or out}"}, "powershell"
     try:
-        raw = json.loads(out)
+        return json.loads(out), "powershell"
     except Exception as e:
-        note_run(con, "runlog", started, False, 0, str(e)[:400])
-        return False, 0, f"运行日志 JSON 解析失败: {e}"
+        return {"enabled": False, "reason": f"运行日志 JSON 解析失败: {e}"}, "powershell"
+
+
+def ingest_runlog(con, days: int) -> tuple[bool, int, str]:
+    started = now()
+    raw, via = _read_runlog(days)
+    if not isinstance(raw, dict):
+        note_run(con, "runlog", started, False, 0, "读运行日志返回了非预期的结构")
+        return False, 0, "读运行日志返回了非预期的结构"
     if not raw.get("enabled"):
-        note_run(con, "runlog", started, False, 0, raw.get("reason", "")[:400])
-        return False, 0, raw.get("reason") or "运行历史日志是关闭的"
+        # reason 这个键在两条通路上都可能存在但为 None,所以 .get("reason", "") 会取回 None
+        # 而不是空串,再切片就是 TypeError —— 一个「日志关着」的正常分支会炸成异常。
+        why = raw.get("reason") or "运行历史日志是关闭的"
+        note_run(con, "runlog", started, False, 0, f"[{via}] {why}"[:400])
+        return False, 0, why
 
     oldest = raw.get("oldestRecordId")
     prev = con.execute("SELECT * FROM runlog_ingest WHERE id=1").fetchone()
@@ -208,8 +237,12 @@ def ingest_runlog(con, days: int) -> tuple[bool, int, str]:
             "oldest_record_id=excluded.oldest_record_id, record_count=excluded.record_count, "
             "last_ingest_at=excluded.last_ingest_at",
             (epoch, raw.get("maxRecordId") or 0, oldest, raw.get("recordCount"), now()))
+        # 走了哪条路要写进去。两条路的读取上限、耗时、能不能读满 60 天都不一样,
+        # 事后看一行「摄入成功 0 条」时,不知道它是哪条路读的就没法判断该查哪边。
         note_run(con, "runlog", started, True, added,
-                 f"epoch={epoch} oldest={oldest} events={len(raw.get('events') or [])}")
+                 f"[{via}] epoch={epoch} oldest={oldest} "
+                 f"events={len(raw.get('events') or [])}"
+                 + ("" if oldest is not None else " ⚠oldestRecordId 读不到,日志清空探测器这一轮是关的"))
         con.execute("COMMIT")
     except Exception as ex:
         con.execute("ROLLBACK")

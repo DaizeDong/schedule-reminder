@@ -63,6 +63,27 @@ def channel_enabled() -> tuple[bool | None, str | None]:
         return None, f"读不到通道配置: {e.__class__.__name__}"
 
 
+def log_stats() -> tuple[int | None, int | None]:
+    """(通道里最老的记录号, 通道里的记录总数)。问不出来就是 (None, None)。
+
+    第一个数是**日志被清空的探测器**:EventRecordID 在日志被清空后从 1 重新开始,
+    不看它的话,重新开始的记录号会长得像已经摄入过的旧记录号,新事件被去重逻辑整批丢掉,
+    而两边的计数都还是「正常」的。摄入器把它存进 runlog_ingest,下一轮拿来比。
+    """
+    try:
+        import win32evtlog
+        h = win32evtlog.EvtOpenLog(CHANNEL, win32evtlog.EvtOpenChannelPath)
+        out = []
+        for prop in (win32evtlog.EvtLogOldestRecordNumber,
+                     win32evtlog.EvtLogNumberOfLogRecords):
+            v = win32evtlog.EvtGetLogInfo(h, prop)
+            # 这个 API 返回 (值, 类型) 元组。
+            out.append(int(v[0] if isinstance(v, tuple) else v))
+        return out[0], out[1]
+    except Exception:
+        return None, None
+
+
 def _xpath(ids, since: _dt.datetime | None) -> str:
     cond = " or ".join(f"EventID={i}" for i in ids)
     if since is None:
@@ -168,6 +189,7 @@ def read(days: int = 30, max_events: int = 20000, now: _dt.datetime | None = Non
             if len(rows) >= max_events:
                 break
 
+    oldest_rid, record_count = log_stats()
     return {
         "enabled": True,
         "reason": (f"事件读到一半失败({broke}),下面的条数是不完整的" if broke else None),
@@ -179,5 +201,11 @@ def read(days: int = 30, max_events: int = 20000, now: _dt.datetime | None = Non
         # 变成同一个空列表。
         "dropped": dropped,
         "truncated": len(rows) >= max_events,
+        # 下面三个只有摄入器用:去重的水位线、日志被清空的探测器、通道里的记录总数。
+        # 它们和 runlog.ps1 输出里的同名键一一对应 —— 摄入器两条通路读同一组键,
+        # 缺一个都会让它把「问不出来」当成一个值来用(maxRecordId 缺失会变成 0)。
+        "maxRecordId": max((r["rid"] for r in rows if r.get("rid")), default=0),
+        "oldestRecordId": oldest_rid,
+        "recordCount": record_count,
         "events": rows,
     }
