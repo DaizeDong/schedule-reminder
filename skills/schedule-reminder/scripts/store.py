@@ -987,6 +987,22 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
             (now_s, now_s, stale),
         ).fetchall()
 
+        # 被别人握着的那些,在**查询阶段**就被上面那条 `claimed_at <= stale` 排除掉了,
+        # 所以它们根本走不到下面的 CAS,也就永远不会进 `skipped`。
+        # ⚠ CAS 旁边那句注释写的是「输给 CAS -> skipped」—— 那只对一个很窄的竞态成立
+        # (查询时还没被认领、查询与 UPDATE 之间被别人抢走)。常见的那条路上,
+        # 一个正在被另一次 tick 处理的提醒**在输出里完全不可见**:
+        # 它既不在 dispatched 也不在 skipped,只能从 undelivered 里间接看出来。
+        # 「有 3 条被别人握着」和「有 3 条谁都没管」需要的反应完全不同。
+        held = [r["id"] for r in conn.execute(
+            "SELECT id FROM items WHERE due_at IS NOT NULL "
+            "AND state NOT IN ('done','cancelled') "
+            "AND notified_at IS NULL "
+            "AND (next_retry_at IS NULL OR next_retry_at <= ?) "
+            "AND (wait_until IS NULL OR wait_until <= ?) "
+            "AND claimed_at IS NOT NULL AND claimed_at > ? ORDER BY due_at ASC",
+            (now_s, now_s, stale)).fetchall()]
+
         for row in rows:
             item_id = row["id"]
             item = _row_to_item(row)
@@ -999,7 +1015,9 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
                 continue
 
             # atomic EXCLUSIVE claim: only an unclaimed-or-stale, not-yet-notified item is grabbed.
-            # A concurrent tick that already claimed it (fresh claimed_at) loses this CAS -> skipped.
+            # 这里输掉 CAS 只覆盖一个**很窄的竞态**:查询时还没被认领,查询与这条 UPDATE
+            # 之间被另一次 tick 抢走。常见情形(查询时就已经被握着)在上面那条 SELECT 里
+            # 就被排除了,走不到这里 —— 那些统计在 `held` 里。
             with _Tx(conn):
                 cur = conn.execute(
                     "UPDATE items SET claimed_at=? WHERE id=? AND notified_at IS NULL "
@@ -1058,7 +1076,11 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
         # the tick is not already awake for.
         swept = sweep_lapsed(now=now_s, dry_run=dry_run, db_path=db_path, actor=actor)
         return {"dispatched": dispatched, "retried": retried, "blocked": blocked,
-                "skipped": skipped, "now": now_s,
+                "skipped": skipped,
+                # 被另一次 tick 握着的条目。新增键,不动 skipped 的语义:
+                # skipped 一直是「走到认领这一步才输掉」,而这是「压根没被选中」。
+                "heldByOther": held,
+                "now": now_s,
                 "lapsed": swept["lapsed"], "undelivered": swept["undelivered"]}
     finally:
         conn.close()
