@@ -151,6 +151,16 @@ def test_attention_counts_the_ones_a_human_must_act_on(tmp_path):
     assert s["attention"] == 1
     # 没上游的仓数要单独报:它们的「没推」是看不见的。
     assert s["unknownUpstream"] == 2
+    # attention 这个数和 attentionStates 那张表是同一件事的两处手写副本,
+    # 而没有任何用例对账过 —— 改了其中一处,另一处照旧,页面上就会出现
+    # 一个和它自己的明细对不上的计数。这里拿明细去重算一遍。
+    repos = R.scan(root=str(tmp_path), now=NOW)["repos"]
+    states = set(s["attentionStates"])
+    recomputed = sum(1 for r in repos if (r.get("state") or r.get("status")) in states
+                     or any(r.get(k) for k in states if isinstance(r.get(k), bool)))
+    assert recomputed == s["attention"], (
+        f"attention={s['attention']} 与按 attentionStates={sorted(states)} "
+        f"重算出来的 {recomputed} 对不上")
 
 
 def test_unpushed_sorts_above_dirty(tmp_path):
@@ -169,11 +179,40 @@ def test_unpushed_sorts_above_dirty(tmp_path):
 
 
 def test_nested_marker_distinguishes_submodules(tmp_path):
+    """普通仓不是 nested,而 .git 是文件的那种**是**。
+
+    ⚠ 原来这条只有前半边:`assert r["nested"] is False` 再确认 .git 是个目录 ——
+    **一个恒返回 False 的实现能让它全绿**。而这个判据是承重的:
+    submodule 的 .git 是文件不是目录,舰队里正是靠这个形状去跳过 submodule 目录
+    (曾经硬编码过名字表,拆出第二个 submodule 当天 23 个仓全部开始误报)。
+    只有「不是」这一半的对照,证明不了那个区分真的存在。
+    """
     d = mkrepo(tmp_path, "a")
     r = R.scan(root=str(tmp_path), now=NOW)["repos"][0]
     assert r["nested"] is False
     # submodule 的 .git 是文件不是目录,这个区分是承重的。
     assert (d / ".git").is_dir()
+
+    # 正对照:把 .git 换成一个文件(submodule 的真实形状),必须被判成 nested。
+    import os as _os
+    import shutil
+    import stat as _stat
+    sub = mkrepo(tmp_path, "b")
+    real_git = sub / ".git"
+
+    def _force_writable(func, path, exc):
+        # Windows 上 .git 里有只读文件(pack/idx),rmtree 会直接 PermissionError。
+        # 这是我第一版的 bug:测试自己挂了,而它要测的东西根本没跑到。
+        _os.chmod(path, _stat.S_IWRITE)
+        func(path)
+
+    shutil.rmtree(real_git, onexc=_force_writable)
+    real_git.write_text("gitdir: ../.git/modules/b" + chr(10), encoding="utf-8")
+    rows = {x["name"]: x for x in R.scan(root=str(tmp_path), now=NOW)["repos"]}
+    assert rows["b"]["nested"] is True, (
+        ".git 是文件(submodule 的形状)却没有被判成 nested —— "
+        "一个恒返回 False 的实现和现在的实现在这条用例里长得一样")
+    assert rows["a"]["nested"] is False, "普通仓被误判成 nested 了"
 
 
 # ---------- fetch 的参数闸 ----------

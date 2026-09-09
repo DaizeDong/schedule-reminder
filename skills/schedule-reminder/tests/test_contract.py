@@ -448,7 +448,20 @@ def test_concurrent_tick_exclusive_claim(db, tmp_path):
     set_claim("2026-06-25T12:00:00.000000+00:00")  # fresh claim by a concurrent tick
     res = jout(run(["tick", "--now", now], db, {"SCHEDULE_RELAY_CMD": stub}))
     assert iid not in res["dispatched"]  # exclusive claim respected -> no double fire
-    assert iid in res["skipped"] or iid not in res["dispatched"]
+    # ⚠ 这一行原来是 `iid in res["skipped"] or iid not in res["dispatched"]` ——
+    # 右半边和**上一行**逐字相同,所以整条 or 由上一行保证恒成立,
+    # 「被跳过要报出来」这半条断言从来没有被检验过。
+    # 一个 `A or 上一行已经断言过的 A`,写出来就是一条永远为真的语句。
+    # 而「被别人抢走了所以我跳过」正是这条通路唯一能让人事后看懂的痕迹:
+    # 没有它,一次正确的跳过和一次悄悄什么都没做长得一模一样。
+    # 收紧之后第一次跑就红了,而且红得对:被别人握着的条目**根本不进 skipped** ——
+    # 它在那条 SELECT 的 `claimed_at <= stale` 上就被排除了,走不到 CAS。
+    # (CAS 旁边的注释写的是「输给 CAS -> skipped」,那只对一个很窄的竞态成立。)
+    # 于是一次正在被另一个 tick 处理的提醒在输出里完全不可见:既不在 dispatched
+    # 也不在 skipped。新增的 heldByOther 就是补这个可见性的。
+    assert iid in res["heldByOther"], (
+        f"被另一次 tick 握着的条目没有被报出来: {res}")
+    assert iid not in res["skipped"], "它不该进 skipped:那一档是走到认领才输掉的"
 
     set_claim("2026-06-25T11:00:00.000000+00:00")  # stale claim (> _CLAIM_TTL ago) -> reclaim
     res2 = jout(run(["tick", "--now", now], db, {"SCHEDULE_RELAY_CMD": stub}))
