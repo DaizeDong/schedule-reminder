@@ -524,7 +524,8 @@ section[data-view][hidden]{display:none}
   white-space:nowrap}
 .tile .v.ok{color:var(--ok)} .tile .v.bad{color:var(--bad)}
 .tile .v.warn{color:var(--warn)} .tile .v.idle{color:var(--faint)}
-/* 上面两处的 height:auto 现在是冗余的,留着无害。
+/* 上面 .tile 那处的 height:auto 现在是冗余的,留着无害(注释以前写「两处」,只剩一处了 ——
+   一段替不存在的第二处背书的注释,会让读的人去找它)。
    本页曾给工具条写过 `button{height:22px}` 这条元素选择器,任何拿 <button> 当积木的
    多行部件都会被它钉死,内容照样按自己的高度排、溢出去盖住下一行 : 看起来像排版错乱,
    不像高度被覆盖。当时的对策是「拿 button 做新部件时一律显式写 height:auto」,
