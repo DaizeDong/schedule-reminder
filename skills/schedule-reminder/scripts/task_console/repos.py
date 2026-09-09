@@ -152,8 +152,14 @@ def scan(root: str | None = None, now: float | None = None, workers: int = 10) -
     repos = [d for d in sorted(base.iterdir())
              if d.is_dir() and (d / ".git").exists()]
     if not repos:
+        # summary 的形状必须和正常分支一致。少给几个键不会报错,只会让前端把
+        # `undefined` 拼进副标题(实测:「无上游 undefined」)——
+        # 一个 undefined 印在屏幕上比一个说不出来的空更糟,因为它看起来像一个值。
         return {"available": True, "root": str(base), "repos": [],
-                "summary": {"total": 0, "counts": {}, "attention": 0},
+                "summary": {"total": 0, "counts": {}, "attention": 0,
+                            "unknownUpstream": 0,
+                            "attentionStates": ["unpushed", "dirty", "error"],
+                            "visibilityReason": None},
                 "note": "这个根目录下没有 git 仓"}
 
     vis, vis_reason = _load_visibility()

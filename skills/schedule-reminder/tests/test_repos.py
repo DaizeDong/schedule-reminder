@@ -230,3 +230,32 @@ def test_a_good_table_parses_with_no_reason(tmp_path, monkeypatch):
     monkeypatch.setenv("TASK_CONSOLE_VISIBILITY", str(p))
     table, why = R._load_visibility()
     assert table == {"a": "PUBLIC"} and why is None
+
+
+def test_the_empty_root_branch_has_the_same_summary_shape(tmp_path, monkeypatch):
+    """「这个根目录下没有 git 仓」那条分支的 summary,形状必须和正常分支一致。
+
+    少给几个键不会报错,只会让前端把 `undefined` 拼进副标题 ——
+    实测印出「无上游 undefined」。**一个 undefined 印在屏幕上比一个说不出来的空更糟,
+    因为它看起来像一个值。**
+    这条按**键集合**比对两条分支,而不是只查 unknownUpstream:下一个漏掉的键也会被抓到。
+    """
+    empty = tmp_path / "empty-root"
+    empty.mkdir()
+    monkeypatch.setenv("TASK_CONSOLE_REPOS", str(empty))
+    blank = R.scan()
+    assert blank["available"] is True and blank["repos"] == []
+
+    # 正常分支:建一个真的 git 仓
+    import subprocess
+    live = tmp_path / "live-root" / "acme-repo"
+    live.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=live, check=True,
+                   stdin=subprocess.DEVNULL, capture_output=True)
+    monkeypatch.setenv("TASK_CONSOLE_REPOS", str(live.parent))
+    normal = R.scan()
+    if not normal.get("repos"):
+        pytest.skip("这台机器上建不出临时 git 仓")
+
+    a, b = set(blank["summary"]), set(normal["summary"])
+    assert a == b, f"只在空分支里: {sorted(a - b)};只在正常分支里: {sorted(b - a)}"

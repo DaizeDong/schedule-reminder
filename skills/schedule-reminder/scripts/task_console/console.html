@@ -1567,8 +1567,13 @@ function renderTiles(){
 
   if(REPOS && REPOS.available && REPOS.summary){
     const R = REPOS.summary;
+    // unknownUpstream 在「这个根目录下没有 git 仓」那条分支上不存在,
+    // 而这里原来无条件拼进去 —— 副标题印出「无上游 undefined」。
+    // 后端已经补齐了那条分支,这里再兜一层:一个 undefined 印在屏幕上,
+    // 比一个说不出来的空更糟,因为它看起来像一个值。
+    const up = (R.unknownUpstream == null) ? "?" : R.unknownUpstream;
     out.push(tile("repos","仓库要人管",R.attention,
-      `共 ${R.total} · 无上游 ${R.unknownUpstream}`, R.attention?"bad":"ok"));
+      `共 ${R.total} · 无上游 ${up}`, R.attention?"bad":"ok"));
   } else out.push(tile("repos","仓库","-","未检查","idle"));
 
   if(SYS && SYS.disk && SYS.disk.usedPct != null){
@@ -1577,7 +1582,13 @@ function renderTiles(){
       `剩 ${(d.free/1073741824).toFixed(0)}G`, d.usedPct>=95?"bad":d.usedPct>=85?"warn":"ok"));
   } else out.push(tile("storage","磁盘","-","未检查","idle"));
 
-  if(MEM && MEM.available){
+  // ⚠ available 只表示**记忆池目录**读到了。MEMORY.md 不在或读不了时,
+  // linePct / bytePct / indexLines / indexBytes 全是 null,而 available 仍然是 true。
+  // 这里原来是 `MEM.linePct||0`,于是一个「索引读不到」的机器上印出的是
+  // **绿色的 0%** 和字面量「null/200 行」—— 一个查不成的东西被画成了最健康的样子。
+  // 同一个文件里 renderTodo 早就为此加了判空并写了一段注释,而这一格没跟着改:
+  // **同一个坑修在了两处中的一处**,而两处的输入是同一个对象。
+  if(MEM && MEM.available && (MEM.linePct != null || MEM.bytePct != null)){
     const p = Math.max(MEM.linePct||0, MEM.bytePct||0);
     // 取大的那个:两条上限哪条先撞都是撞。副标题要说出取的是哪一条,
     // 否则这个百分比对不上配置屏那两条独立的条,看起来像两处在打架。
@@ -1591,6 +1602,10 @@ function renderTiles(){
     out.push(tile("storage","记忆索引",p+"%",
       `${pWhich}占比 · ${pFrac} · 冷层 ${MEM.cold}`,
       p>=100?"bad":p>=90?"warn":"ok"));
+  } else if(MEM && MEM.available){
+    // 目录读到了、索引没读到 —— 这不是「未检查」,是「查了但查不成」。
+    out.push(tile("storage","记忆索引","?",
+      esc(MEM.indexReason || "MEMORY.md 读不到"),"warn"));
   } else out.push(tile("storage","记忆索引","-","未检查","idle"));
 
   if(CONVOS && CONVOS.available && CONVOS.summary){

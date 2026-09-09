@@ -174,3 +174,28 @@ def test_no_more_items_is_a_normal_end_not_a_failure():
     class Other(Exception):
         winerror = 5
     assert E._is_no_more(Other()) is False
+
+    # ⚠ 判据是 `winerror == 259 or "259" in str(e)`,而上面两个用例的 str() 都是空串 ——
+    # **第二条分支从来没有被任何用例走到过**,更没有负对照。
+    # 那条分支存在是因为有些 pywin32 版本不带 winerror 属性,只有消息;
+    # 但它同时意味着**任何消息里恰好含 259 的真错误都会被当成正常读完**,
+    # 于是一段读到一半失败的日志会被报成「读完了」,页面上就是一个偏小但看起来确定的条数。
+    class MsgOnly(Exception):
+        def __str__(self):
+            return "The data area passed to a system call is too small. (259)"
+    assert E._is_no_more(MsgOnly()) is True, "只有消息、没有 winerror 的那条分支没生效"
+
+    # 负对照:这才是这条判据真正的代价 —— 一个不相干的错误因为消息里有 259 被放过。
+    # 钉住它不是为了让它变绿,是为了**下次有人收紧这条判据时能看到它在保护什么**。
+    class Unrelated(Exception):
+        def __str__(self):
+            return "Access is denied while reading record 12590 of the channel"
+    assert E._is_no_more(Unrelated()) is True, (
+        "这条断言记录的是一个**已知的过宽判据**:消息里含 259 的连续数字也会命中。"
+        "改成按词边界匹配之后它会红,那时该改的是这条用例,不是把判据改回去。")
+
+    # 完全不相干、也不含 259 的,必须判假 —— 否则上面那条说明不了任何事。
+    class Clean(Exception):
+        def __str__(self):
+            return "Access is denied"
+    assert E._is_no_more(Clean()) is False
