@@ -1,8 +1,59 @@
 # Roadmap
 
-Current: **v0.6.0**
+Current: **v0.7.0**
 
-## v0.6.0 (current), one reader and one writer
+## v0.7.0 (current), the console, and the rule that unchecked never looks like passing
+
+`scripts/task_console/` is a local single-page app for looking at a Windows install: its scheduled
+tasks, the git repositories under one root, and whatever skill, memory and transcript directories
+the operator points it at. It had shipped and grown for weeks without appearing in this file at
+all, which is its own instance of the defect it exists to fight: a whole subsystem that the
+project's own record of itself said nothing about.
+
+What it is: a loopback-only Python server (`server.py`) that mints a token per start and never
+writes it down, a page (`console.html`) that reads seventeen keys off each payload, an out-of-band
+ingester (`console_ingest.py`) that pays the 109-second cost of reading the Windows event log so
+page loads do not, and a database (`console_store.py`, `schema.sql`) that resolves through the
+companion repo and refuses to fall back into this one. Every path it reads comes from a
+`TASK_CONSOLE_*` variable; the tool ships no defaults outside its own namespace.
+
+The invariant the whole thing is built around: **an unchecked source must never render as a passing
+one.** Every panel reports `available` plus a reason in the operator's own language, `selfcheck.py`
+counts every configured source into its own denominator so that a check that skipped a source cannot
+print full marks, and each of the following was a real case where the two had become
+indistinguishable on screen.
+
+- **Freshness is judged, not printed.** The last-ingest time used to be a grey timestamp, so an
+  ingester stopped for two weeks looked like one that had just run: heatmap drawn, health
+  percentages specific, all of them frozen. `console_store.ingest_verdict` states the age as a
+  verdict, judges the oldest pipeline rather than the newest, and separates "never ingested" from
+  "fine" because a judge fed nothing prints the same green as a judge that checked. Its thresholds
+  measure loss risk: the Windows run log is a rolling buffer that wraps in five to eight days, so
+  past four days the unread history is gone rather than late.
+- **The visibility view had never worked.** It compared filesystem paths against a table keyed by
+  `owner/repo`, so it matched nothing, drew no badge on any repository, and said nothing about it,
+  which is exactly what "the table has no row for these repos" also looks like. Matching is now by
+  owner and repo, the panel reports how many of the loaded rows matched, and a table that loads but
+  matches zero says so.
+- **Repositories are grouped by observed type**, with each companion configuration repo nested in
+  its host's card rather than placed adjacently in a grid that reflows. Adjacency is not a
+  relationship once the column count changes.
+- **The README's environment table is reconciled against what the code reads**, in both directions,
+  because the launcher that sets those variables lives outside this repo and cannot be tested from
+  here. Its upstream can be: a variable missing from the table is a variable missing from every
+  launcher anyone writes from it. That gate immediately found three.
+- **One source of truth per fact**: a single `$TaskNames` parser (`allowlist.py`), one set of
+  declared-OK exit codes (`freshness.py`), health entries merged to the strictest when a name is
+  declared more than once and the duplication reported rather than silently resolved.
+- **Every gate is poisoned before it is trusted**, with a positive control alongside, since a
+  poison that does not change behaviour reads as a judge that cannot catch anything. Suite 541 →
+  694.
+
+Note that the ingester is a separate program. Nothing in this repo schedules it, so on any install
+where it has not been registered the database advances only when someone runs it by hand, and the
+freshness verdict above is what says so.
+
+## v0.6.0, one reader and one writer
 - **One enumeration of which channels are read** (`ingest.channels()`): registered streams, plus
   every other readable text channel in the guild, plus the operator DM. This replaced a second
   reader that swept the guild on its own timer with its own cursors. The two disagreed about which
