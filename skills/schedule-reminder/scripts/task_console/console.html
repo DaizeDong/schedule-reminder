@@ -1577,6 +1577,27 @@ function RP_ATT(){
   return S.attentionStates || ["unpushed","dirty","error"];
 }
 
+// 摄入新鲜度的判定同样只从后端读。阈值(24h 注意 / 96h 进丢失窗口)写在
+// console_store.ingest_verdict 里,连同它为什么是这两个数 —— 在这里再写一遍就是
+// 同一条规则的第二份,而两份一定会漂,漂的时候两处都还在正常渲染。
+function INGEST(){
+  const h = (typeof DATA !== "undefined" && DATA && DATA.history) || {};
+  const v = h.ingest;
+  // 后端没给判定 ≠ 摄入器没事。老版本的后端、或者一条忘了带这个键的通路,
+  // 都会走到这里;此时说「不知道」,不说「正常」。
+  if(!v || typeof v !== "object")
+    return {state:"unknown", why:"这份数据没带摄入新鲜度判定,没法判断摄入器是不是还在跑。",
+            failed:[], ageHours:null};
+  return v;
+}
+// 判定 -> 严重度。n/a 和 ok 都不算要人管,但它们是两件事,所以分开写在这里而不是
+// 靠一个 falsy 检查把两者折成一个。
+function INGEST_SEV(state){
+  return state === "loss" || state === "failed" ? 3
+       : state === "stale" || state === "never" || state === "unknown" ? 2
+       : 0;
+}
+
 function renderTodo(){
   const box = $("todod"); if(!box) return;
   const rows = [];
@@ -1600,6 +1621,16 @@ function renderTodo(){
   if(REPOS && REPOS.available && Array.isArray(REPOS.repos))
     REPOS.repos.filter(r=>RP_ATT().indexOf(r.state) >= 0).forEach(r=>rows.push(
       {v:"repos", src:"仓库", nm:r.name, why:REPO_WHY[r.state] || r.state, sev:2}));
+
+  // 摄入器停摆。这一条要出现在清单上,而不是只在顶栏当一个灰色时间串:
+  // 顶栏那行是给已经在看的人的,清单才是「今天有什么要管」的那份答案,
+  // 而摄入器停了的后果比清单上任何一条都大 —— 页面上每一个运行与健康数字都停在那一刻,
+  // 且滚动日志过了窗口就永久没了。
+  {
+    const V = INGEST(), sev = INGEST_SEV(V.state);
+    if(sev) rows.push({v:"tasks", src:"摄入", nm:"运行日志摄入",
+                       why:V.why || ("摄入状态 " + V.state), sev:sev});
+  }
 
   if(SYS && SYS.disk && SYS.disk.usedPct >= 95)
     rows.push({v:"storage", src:"存储", nm:"系统盘",
@@ -1896,12 +1927,21 @@ function render(){
        // 取最旧的那一条:摄入器是几条流水线,任何一条停了这些数字就有一部分停在那一刻。
        rows.sort((a,b)=>String(a[1].at).localeCompare(String(b[1].at)));
        const [oldName, oldest] = rows[0];
-       const bad = rows.filter(([,v])=>v.ok === false).map(([k])=>k);
+       // 判定由后端给。以前这里只按 ok 标红,而**时间有多旧完全没人看** ——
+       // 一个九天前成功的摄入,在屏幕上和刚跑完的摄入长得一模一样:灰色、一个时间串,
+       // 而热力图和健康% 全部停在九天前照常显示。没有人会读一眼时间再在心里减出九天。
+       const V = INGEST();
        const tip = rows.map(([k,v])=>`${k}: ${v.at}${v.ok===false?" (失败)":""}`).join(" · ")
-         + " — 摄入器停了的话,上面这些数字会一直停在那一刻,而页面看起来毫无异常";
-       return ` <span class="${bad.length?"":"faint"}" style="${bad.length?"color:var(--bad)":""}"
-         title="${esc(tip)}">最后摄入 ${esc(String(oldest.at).slice(0,16))}${
-         bad.length?` · ${esc(bad.join("/"))} 失败`:""}</span>`;
+         + (V.why ? " — " + V.why
+                  : " — 摄入器停了的话,上面这些数字会一直停在那一刻,而页面看起来毫无异常");
+       const sev = INGEST_SEV(V.state);          // 3 红 / 2 黄 / 0 不着色
+       const col = sev >= 3 ? "var(--bad)" : sev >= 2 ? "var(--warn)" : "";
+       const tail = V.state === "failed" ? ` · ${esc((V.failed||[]).join("/"))} 失败`
+                  : (V.state === "stale" || V.state === "loss")
+                      ? ` · ${(V.ageHours/24).toFixed(1)}d 没摄入`
+                  : V.state === "unknown" ? " · 时间读不出来" : "";
+       return ` <span class="${col?"":"faint"}" style="${col?`color:${col}`:""}"
+         title="${esc(tip)}">最后摄入 ${esc(String(oldest.at).slice(0,16))}${tail}</span>`;
      })()
     +(()=>{
        const R=DATA.runlog;

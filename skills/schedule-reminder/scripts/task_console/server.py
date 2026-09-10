@@ -357,12 +357,16 @@ def load_from_db():
                 f"{cov['health'].get('to') or '未知'}),摄入器可能已经停了")
         hist = {"available": False, "reason": _why, "source": "db",
                 "matched": _rows, "skipped": 0, "days": [], "tasks": {},
-                "lastIngest": cov.get("lastIngest")}
+                "lastIngest": cov.get("lastIngest"),
+                "ingest": console_store.ingest_verdict(cov.get("lastIngest"))}
     else:
       hist = {
         "available": True, "reason": None, "source": "db",
         # lastIngest 原来算完就被丢掉,而它正是区分「摄入器挂了」和「本来就没跑过」的唯一信号。
         "lastIngest": cov.get("lastIngest"),
+        # 而光有时间戳还不够:没有人会读一眼时间然后在心里减出九天。判定在这里做完,
+        # 页面只负责搬结论 —— 页面自己再判一次就是同一条规则的第二份,两份一定会漂。
+        "ingest": console_store.ingest_verdict(cov.get("lastIngest")),
         "matched": cov["health"]["rows"], "skipped": 0, "days": all_days, "tasks": htasks,
         "caveat": ("健康率来自每小时轮询的观察序列,不是每次运行的成功率:一个坏了一整天的任务贡献约 24 条"
                    "不健康观察而不是 1 条。「实成功率」那一列才是每次运行的,来自 Windows 运行日志。"),
@@ -604,7 +608,8 @@ def build_freshness(tasks: dict, health: dict, health_reason: str | None = None)
 # 导出给页面的字段,以及**刻意不导出**的那些。两个集合加起来必须覆盖 hist / runs 里
 # 写下的每一个键 : tests/test_console_security.py 直接对着这两个常量和生产者的字面量比对,
 # 所以新增一个字段而忘了归类,会让测试变红,而不是让那个字段安静地到不了页面。
-HISTORY_OUT = ("available", "reason", "days", "caveat", "matched", "source", "lastIngest")
+HISTORY_OUT = ("available", "reason", "days", "caveat", "matched", "source", "lastIngest",
+               "ingest")
 HISTORY_DROP = ("tasks", "skipped")          # tasks 很大且已并进每一行;skipped 页面用不到
 RUNLOG_OUT = ("available", "reason", "since", "oldest", "count", "note",
               "partial", "dropped", "truncated", "windowDays", "countScope")

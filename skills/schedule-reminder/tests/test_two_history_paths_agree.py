@@ -80,7 +80,7 @@ def both_paths(tmp_path, monkeypatch):
     hist_db, _runs, reason = S.load_from_db()
     assert not reason, f"数据库通路不可用: {reason}"
     hist_log = history.load(str(log))
-    return (hist_db.get("tasks") or {}), (hist_log.get("tasks") or {})
+    return hist_db, hist_log
 
 
 def test_the_synthetic_log_really_contains_an_unrecognised_verdict():
@@ -95,14 +95,14 @@ def test_the_synthetic_log_really_contains_an_unrecognised_verdict():
 
 
 def test_database_path_produces_every_required_field(both_paths):
-    db, _ = both_paths
+    db = both_paths[0].get("tasks") or {}
     one = next(iter(db.values()))
     missing = REQUIRED - set(one)
     assert not missing, f"数据库通路少了这些字段: {sorted(missing)}"
 
 
 def test_log_path_produces_every_required_field(both_paths):
-    _, lg = both_paths
+    lg = both_paths[1].get("tasks") or {}
     one = next(iter(lg.values()))
     missing = REQUIRED - set(one)
     assert not missing, f"日志通路少了这些字段: {sorted(missing)}"
@@ -114,14 +114,16 @@ def test_the_two_paths_expose_the_same_field_set(both_paths):
     这一条比上面两条强:上面两条只查一张手写清单里的键,而一张手写清单本身就可能漏。
     这一条拿两边互相当对方的判据 —— 任何一边单方面加或减一个字段都会红。
     """
-    db, lg = both_paths
+    db = both_paths[0].get("tasks") or {}
+    lg = both_paths[1].get("tasks") or {}
     a, b = set(next(iter(db.values()))), set(next(iter(lg.values())))
     assert a == b, (f"只在数据库通路里: {sorted(a - b)};"
                     f" 只在日志通路里: {sorted(b - a)}")
 
 
 def test_the_two_paths_count_the_unrecognised_bucket_the_same(both_paths):
-    db, lg = both_paths
+    db = both_paths[0].get("tasks") or {}
+    lg = both_paths[1].get("tasks") or {}
     assert db["AcmeSyncJob"]["other"] == lg["AcmeSyncJob"]["other"] == 1
     # 正对照:认得出的那个任务里这个桶必须是 0,否则上面那个 1 可能来自别处。
     assert db["AcmeReportJob"]["other"] == 0
@@ -134,8 +136,8 @@ def test_judged_denominator_accounts_for_every_bucket(both_paths):
     四个桶加起来必须正好等于 judged,否则就有一批观察进了分母却不在任何一栏里 ——
     那正是 other 这个桶存在的理由。
     """
-    for label, tasks in zip(("数据库", "日志"), both_paths):
-        for name, c in tasks.items():
+    for label, d in zip(("数据库", "日志"), both_paths):
+        for name, c in (d.get("tasks") or {}).items():
             s = c["ok"] + c["bad"] + c["stale"] + c["other"]
             assert s == c["judged"], (
                 f"{label}通路 {name}: ok+bad+stale+other={s} 但 judged={c['judged']} —— "
@@ -179,3 +181,42 @@ def test_a_populated_run_event_table_gives_no_reason(both_paths, tmp_path):
     assert not reason
     assert runs["available"] is True
     assert runs["reason"] is None, runs["reason"]
+
+
+# --------------------------------------------------------------------------- 顶层字段
+# 上面几条比的是**每任务**的字段。顶层那一层一直没人比,而页面从顶层读的键
+# 一样多:available / reason / days / caveat / matched / source / lastIngest / ingest。
+# 实测:给数据库通路加 ingest 判定、日志通路不加,上面五条用例全绿 ——
+# 于是回落一次,顶栏那段判定代码什么都不画,而那和「摄入器好好的」在屏幕上一样。
+TOP_REQUIRED = {"available", "reason", "days", "matched", "source", "caveat",
+                "lastIngest", "ingest"}
+
+
+def test_both_paths_expose_the_same_top_level_field_set(both_paths):
+    a, b = set(both_paths[0]), set(both_paths[1])
+    assert a == b, (f"只在数据库通路里: {sorted(a - b)};"
+                    f" 只在日志通路里: {sorted(b - a)}")
+
+
+def test_both_paths_carry_every_top_level_key_the_page_reads(both_paths):
+    """互相当判据还不够:两边**同时**漏掉一个键时,上一条是绿的。"""
+    for label, d in (("数据库", both_paths[0]), ("日志", both_paths[1])):
+        missing = TOP_REQUIRED - set(d)
+        assert not missing, f"{label}通路顶层少了: {sorted(missing)}"
+
+
+def test_the_fallback_path_says_the_ingester_does_not_apply(both_paths):
+    """回落通路不经过摄入器 —— 但「不适用」和「键不在」不能长得一样。
+
+    也不能谎称 ok:那会让人以为摄入器在跑,而此刻页面上的数字根本不是它给的。
+    """
+    v = both_paths[1]["ingest"]
+    assert v["state"] == "n/a", v
+    assert v["why"], "n/a 也要说清楚为什么不适用"
+
+
+def test_the_database_path_actually_judges(both_paths):
+    """正对照:主通路给的必须是一个真判定,不是同一个 n/a。"""
+    v = both_paths[0]["ingest"]
+    assert v["state"] != "n/a", "主通路把摄入新鲜度也说成不适用,那这道闸没在判任何东西"
+    assert v["state"] in {"ok", "stale", "loss", "failed", "never", "unknown"}, v
