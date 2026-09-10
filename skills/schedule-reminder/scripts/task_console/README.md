@@ -60,11 +60,14 @@ names with your own tasks. Everything else is optional.
 | `TASK_CONSOLE_MEMORY` | a memory directory | unset means the memory panel reads NOT CHECKED |
 | `TASK_CONSOLE_MEMORY_ARCHIVER` | the existing archiver script | unset means the archive button is not offered |
 | `TASK_CONSOLE_REPOS` | a directory holding git repos | unset means the repository panel reads NOT CHECKED |
-| `TASK_CONSOLE_VISIBILITY` | a map of repo path to PUBLIC/PRIVATE | unset means visibility shows as unknown, never guessed |
+| `TASK_CONSOLE_VISIBILITY` | a JSON object keyed by `owner/repo` (lowercase), each value `PUBLIC` or `PRIVATE`, or an object with a `visibility` field | unset means every repo's visibility reads unknown and no badge is drawn, which is deliberately hard to tell apart from a repo the table has no row for, so the panel also reports the table it loaded and how many rows matched |
 | `TASK_CONSOLE_PLUGIN_CACHE` | a plugin cache directory | unset means the cache row reads NOT CHECKED and nothing can be deleted |
 | `TASK_CONSOLE_SESSIONS` | a session transcript directory | unset means that row reads NOT CHECKED |
 | `TASK_CONSOLE_CLAUDE` | the CLI used for plugin actions | falls back to PATH; not found means the plugin panel reads NOT CHECKED |
 | `TASK_CONSOLE_ALLOWED_HOSTS` | extra Host header values to accept | only the three loopback spellings are accepted |
+| `TASK_CONSOLE_CONVO_CACHE` | where the conversation index caches its scan | unset means the first scan of every page load walks every transcript again; correctness is unaffected, the page is just slower |
+| `TASK_CONSOLE_DB` | the SQLite file the ingester writes and the page reads | falls back to the companion repo's `data/task-console/console.sqlite3`, and if no companion resolves it reports UNINITIALISED with setup instructions rather than falling back into this repo |
+| `TASK_CONSOLE_POWERSHELL` | the powershell.exe that task commands run through | falls back to the pinned `System32\WindowsPowerShell\v1.0\powershell.exe`, and only to a bare `powershell.exe` off PATH when that file is not there |
 
 The tool defaults only into its own namespace. Pointing it at whatever else a machine keeps its
 watch-list and allow-list in is the launcher's job, and the launcher belongs on that machine.
