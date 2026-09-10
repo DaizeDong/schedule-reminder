@@ -366,3 +366,126 @@ def test_every_repo_gets_exactly_one_kind(tmp_path):
     for r in d["repos"]:
         assert r.get("kind") in known, r
     assert len(d["repos"]) == d["summary"]["total"]
+
+
+# ---------- 可见性:静默变空的视图比没有视图更危险 ----------
+
+def _vis_table(tmp_path, monkeypatch, mapping):
+    import json
+    p = tmp_path / "visibility.json"
+    p.write_text(json.dumps(dict(mapping, _refreshed="2026-01-01T00:00:00Z")),
+                 encoding="utf-8")
+    monkeypatch.setenv("TASK_CONSOLE_VISIBILITY", str(p))
+    return p
+
+
+def test_visibility_matches_on_owner_repo_not_on_a_filesystem_path(tmp_path, monkeypatch):
+    """可见性表的键是 `owner/repo`,不是路径。
+
+    ⚠ 这个匹配以前拿仓库的**文件系统路径**去比表里的键,于是它把
+    `acme/widget` 当成一个相对路径去 expanduser + abspath —— 永远匹配不上。
+    结果是**整个公开/私有视图从来没有工作过**:每一行都不显示徽章,
+    而原因是 None,页面一句话都不说。
+    屏幕上「表里没登记这几个仓」和「匹配逻辑压根不对」长得一模一样,
+    而可见性正是判断一个仓能不能装真实数据的依据。
+    """
+    r = mkrepo(tmp_path, "widget")
+    import subprocess
+    subprocess.run(["git", "-C", str(r), "remote", "add", "origin",
+                    "https://github.com/Acme/widget.git"],
+                   check=True, capture_output=True, stdin=subprocess.DEVNULL)
+    _vis_table(tmp_path, monkeypatch, {"acme/widget": "PUBLIC"})
+    d = R.scan(root=str(tmp_path), now=NOW)
+    row = {x["name"]: x for x in d["repos"]}["widget"]
+    assert row["visibility"] == "PUBLIC", row
+    assert d["summary"]["visibilityReason"] is None
+
+
+@pytest.mark.parametrize("url,want", [
+    ("https://github.com/Acme/Widget.git", "acme/widget"),
+    ("git@github.com:Acme/Widget.git", "acme/widget"),
+    # 本机用 ssh alias,URL 里没有 host 那一段 —— 真实形态,必须认。
+    ("git@my-alias:Acme/Widget.git", "acme/widget"),
+    ("https://example.com/Acme/Widget", "acme/widget"),
+    (None, None),
+    ("nonsense", None),
+])
+def test_owner_repo_parses_every_real_remote_shape(url, want):
+    assert R._owner_repo(url) == want
+
+
+def test_a_table_that_matches_nothing_says_so(tmp_path, monkeypatch):
+    """表读到了却一条都没对上 —— 必须说出来。
+
+    没有这句话时,「没登记」和「匹配坏了」在屏幕上是同一个样子:没有徽章、没有原因。
+    前者是配置问题,后者是代码 bug,要做的事完全不同。
+    """
+    r = mkrepo(tmp_path, "widget")
+    import subprocess
+    subprocess.run(["git", "-C", str(r), "remote", "add", "origin",
+                    "https://github.com/Acme/widget.git"],
+                   check=True, capture_output=True, stdin=subprocess.DEVNULL)
+    _vis_table(tmp_path, monkeypatch, {"someone/else": "PUBLIC", "third/party": "PRIVATE"})
+    d = R.scan(root=str(tmp_path), now=NOW)
+    why = d["summary"]["visibilityReason"]
+    assert why and "没对上" in why, why
+
+
+def test_a_repo_without_a_remote_is_unknown_not_guessed(tmp_path, monkeypatch):
+    """没有 remote 的仓,可见性是「未知」,不是猜一个。
+
+    负对照:这条同时保证上面那条 reason 不会因为一个本来就没 remote 的仓而误报 ——
+    只要有别的仓对上了,就不该说「一条都没对上」。
+    """
+    mkrepo(tmp_path, "local-only")          # 没有 origin
+    r2 = mkrepo(tmp_path, "widget")
+    import subprocess
+    subprocess.run(["git", "-C", str(r2), "remote", "add", "origin",
+                    "https://github.com/Acme/widget.git"],
+                   check=True, capture_output=True, stdin=subprocess.DEVNULL)
+    _vis_table(tmp_path, monkeypatch, {"acme/widget": "PUBLIC"})
+    d = R.scan(root=str(tmp_path), now=NOW)
+    rows = {x["name"]: x for x in d["repos"]}
+    assert rows["local-only"]["visibility"] is None
+    assert rows["widget"]["visibility"] == "PUBLIC"
+    assert d["summary"]["visibilityReason"] is None, "有仓对上了,不该报「一条都没对上」"
+
+
+def test_shared_components_report_how_many_repos_use_them(tmp_path):
+    """共享组件要报出被多少个仓引用。
+
+    「被 25 个仓用」和「被 1 个仓用」是完全不同的两件东西:前者改一行会波及整片。
+    这个数字原来只以一个类型标签的形式存在。
+    """
+    for n in ("acme-one", "acme-two"):
+        u = mkrepo(tmp_path, n)
+        (u / "SKILL.md").write_text("x", encoding="utf-8")
+        (u / ".gitmodules").write_text(
+            '[submodule "g"]\n\tpath = g\n\turl = https://example.com/acme/acme-kit.git\n',
+            encoding="utf-8")
+    mkrepo(tmp_path, "acme-kit")
+    rows = {r["name"]: r for r in R.scan(root=str(tmp_path), now=NOW)["repos"]}
+    assert rows["acme-kit"]["usedBy"] == 2, rows["acme-kit"]
+    # 非共享组件不该带这个数:一个对所有行都有值的字段说明不了任何事。
+    assert rows["acme-one"]["usedBy"] is None
+
+
+def test_visibility_matches_when_the_table_key_is_not_lowercase(tmp_path, monkeypatch):
+    """表的键大小写和 remote 不一致时也要匹配上。
+
+    ⚠ 这条是投毒逼出来的:`_visibility` 里有一段大小写回落,而本机的表和
+    `_owner_repo` 的输出**都是小写**,于是那个分支从来没有被任何用例走到 ——
+    把它整段删掉,33 条用例全过。
+    一段没有任何用例走到的兜底代码,和一段不存在的兜底代码,区别只在于它会让
+    读的人以为这种情况已经处理过了。表由外部工具生成,键的大小写不由这里决定。
+    """
+    r = mkrepo(tmp_path, "widget")
+    import subprocess
+    subprocess.run(["git", "-C", str(r), "remote", "add", "origin",
+                    "git@my-alias:Acme/Widget.git"],
+                   check=True, capture_output=True, stdin=subprocess.DEVNULL)
+    _vis_table(tmp_path, monkeypatch, {"Acme/Widget": "PRIVATE"})   # 键是大写
+    d = R.scan(root=str(tmp_path), now=NOW)
+    row = {x["name"]: x for x in d["repos"]}["widget"]
+    assert row["visibility"] == "PRIVATE", row
+    assert d["summary"]["visibilityReason"] is None

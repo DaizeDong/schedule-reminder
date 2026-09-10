@@ -364,7 +364,12 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
    那时「它俩有关系」这件事就只剩一个符号在说,而符号是会被读漏的。
    住在同一张卡里的东西不需要任何连接线来说明自己属于谁。 */
 .rp-card{background:var(--panel)}
-.rp-r{display:grid;grid-template-columns:8px 1fr auto auto;gap:7px;
+/* 五列:状态点、仓名、公开/私有、状态位、fetch。
+   ⚠ 这里原来是四列,而行里一直有五个元素 —— 只是第三个(可见性徽章)长期是空串,
+   因为那个视图的匹配逻辑坏了、从来没渲染出来过。匹配修好的当天,
+   每一行的 fetch 按钮就被挤到了第二行。
+   **一个从来没工作过的视图,连带它的布局也从来没有被验证过。** */
+.rp-r{display:grid;grid-template-columns:8px 1fr auto auto auto;gap:7px;
   align-items:center;padding:3px 7px;font-size:12px}
 /* 伴生行。缩进 + 小一号 + 名字降一档色,没有别的:从属是**看**出来的。
    名字只写后缀,因为前缀逐字等于上面那一行 —— 重复一遍宿主名是纯噪音。
@@ -390,8 +395,12 @@ td.ops .mini.danger:hover{border-color:var(--bad);color:var(--bad)}
 .rp-r .dot{width:8px;height:8px;border-radius:2px}
 .rp-r .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono,inherit)}
 .rp-r .m{font-size:10.5px;color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
+/* --dim 不是 --faint:实测 --faint 在这个字号下对比度 3.01,够不到 AA 的 4.5。
+   而「私有」读不清就会和「没有徽章」混在一起 —— 后者表示可见性未知,
+   而未知在闸门那边是**按公开拦**的。这两个状态要采取的行动相反,不能长得一样。
+   公开那一档仍然用 --warn 更醒目:危险的是公开,不是私有。 */
 .rp-r .vis{font-size:9.5px;padding:0 3px;border-radius:2px;border:1px solid var(--line);
-  color:var(--faint)}
+  color:var(--dim)}
 .rp-r .vis.pub{color:var(--warn);border-color:var(--warn)}
 .d-clean{background:var(--ok)} .d-dirty{background:var(--warn)}
 .d-unpushed{background:var(--bad)} .d-error{background:var(--bad)}
@@ -1159,7 +1168,16 @@ function renderRepos(){
       if(r.dirty) bits.push("~"+r.dirty);
       if(r.ageDays!=null) bits.push(r.ageDays<1?"今天":r.ageDays.toFixed(0)+"d");
     }
-    const vis=r.visibility?`<span class="vis ${/pub/i.test(r.visibility)?"pub":""}">${esc(r.visibility.slice(0,4))}</span>`:"";
+    // 共享组件多说一件事:被多少个仓引用。改这一个仓,那么多仓跟着走 ——
+    // 这是这块面板上信息密度最高的一个数字,而它原来只以一个类型标签的形式存在。
+    if(r.usedBy) bits.unshift(r.usedBy+" 个仓在用");
+    // 「PUBL」「PRIV」是 slice(0,4) 截出来的半个词。这是中文界面,而「公开/私有」
+    // 就是这个概念在这套体系里的原词。**没有徽章表示未知,而未知不等于私有** ——
+    // 闸门对未知 remote 是按公开拦的,所以这两者绝不能在屏幕上长得一样。
+    const visPub = /pub/i.test(r.visibility||"");
+    const vis=r.visibility
+      ? `<span class="vis ${visPub?"pub":""}" title="${esc(r.visibility)}">${visPub?"公开":"私有"}</span>`
+      : "";
     // 伴生行只显示后缀:前缀逐字等于宿主名,而完整名字仍在 title 里。
     const label = sub ? (r.name.slice((r.companionOf||"").length).replace(/^-/,"") || r.name)
                       : r.name;

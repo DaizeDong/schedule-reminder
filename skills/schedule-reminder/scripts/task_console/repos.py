@@ -124,15 +124,56 @@ def _git(repo: Path, *args: str, timeout: int = 20) -> tuple[int, str]:
         return 127, f"{e.__class__.__name__}: {e}"
 
 
-def _visibility(path: str, table: dict) -> str | None:
-    """可见性表由外部提供(仓外文件)。查不到就是 None,页面显示「未知」而不是猜 PRIVATE。"""
+def _owner_repo(url: str | None) -> str | None:
+    """从 remote URL 取出 `owner/repo`(小写)。可见性表就是按这个键存的。
+
+    三种形式都要认:
+        https://github.com/Owner/Name.git
+        git@github.com:Owner/Name.git
+        git@<ssh-alias>:Owner/Name.git      <- 本机用 alias,没有 github.com 这一段
+    """
+    if not url:
+        return None
+    u = url.strip().rstrip("/")
+    if u.endswith(".git"):
+        u = u[:-4]
+    # scp 式:host-or-alias:owner/repo
+    if "://" not in u and ":" in u:
+        u = u.rsplit(":", 1)[-1]
+    parts = [p for p in u.replace("\\", "/").split("/") if p]
+    if len(parts) < 2:
+        return None
+    return (parts[-2] + "/" + parts[-1]).lower()
+
+
+def _visibility(remote: str | None, table: dict) -> str | None:
+    """这个仓是公开还是私有。查不到就是 None,页面显示「未知」而不是猜 PRIVATE。
+
+    ⚠ 这个函数以前拿仓库的**文件系统路径**去比表里的键,而表的键是 `owner/repo`
+    (实测 150 条里 148 条是这个形状,含路径分隔符的 0 条)。
+    于是它把 `daizedong/schedule-reminder` 当成一个相对路径 expanduser + abspath,
+    结果永远匹配不上 —— **整个公开/私有视图从来没有工作过**:
+    每一行都不显示 PUB/PRI 徽章,而 visibilityReason 是 None,页面一句话都不说。
+
+    屏幕上「表里没登记这几个仓」和「匹配逻辑压根不对」长得一模一样,
+    而这个模块自己的注释早就写过这句话:**一个静默变空的可见性视图,
+    比没有这个视图更危险** —— 可见性正是判断一个仓能不能装真实数据的依据。
+    所以现在除了修匹配,scan() 还会数「表里 N 条、匹配上 M 条」,M 为 0 时明说。
+    """
     if not table:
         return None
-    key = os.path.normcase(os.path.abspath(path))
-    for k, v in table.items():
-        if os.path.normcase(os.path.abspath(os.path.expanduser(k))) == key:
-            return v if isinstance(v, str) else (v or {}).get("visibility")
-    return None
+    key = _owner_repo(remote)
+    if not key:
+        return None
+    v = table.get(key)
+    if v is None:
+        for k, vv in table.items():
+            if isinstance(k, str) and k.lower() == key:
+                v = vv
+                break
+    if v is None:
+        return None
+    return v if isinstance(v, str) else (v or {}).get("visibility")
 
 
 def scan_one(repo: Path, vis_table: dict, now: float) -> dict:
@@ -185,7 +226,7 @@ def scan_one(repo: Path, vis_table: dict, now: float) -> dict:
                 ahead=ahead, behind=behind, dirty=dirty, remote=remote,
                 lastCommit=last,
                 ageDays=round((now - last) / 86400.0, 1) if last else None,
-                visibility=_visibility(str(repo), vis_table),
+                visibility=_visibility(remote, vis_table),
                 # 没有 upstream 时 ahead 是 None,不是 0。页面必须画成「未知」。
                 unpushedKnown=ahead is not None)
 
@@ -211,10 +252,12 @@ def _classify(rows: list[dict]) -> None:
                 by_name.setdefault(key, r)
 
     shared: set[str] = set()
+    used_by: dict[str, int] = {}
     for r in rows:
         for parent in r.get("usesShared") or []:
             if parent in by_name:
                 shared.add(parent)
+                used_by[parent] = used_by.get(parent, 0) + 1
 
     for r in rows:
         rn = r.get("remoteName") or r.get("name") or ""
@@ -237,6 +280,31 @@ def _classify(rows: list[dict]) -> None:
 
     for r in rows:
         r.setdefault("companionInScan", None)
+        # 共享组件被多少个仓用。这是关系的另一半 : 「谁被谁引用」在页面上原来只有
+        # 一个类型标签在说,而「被 25 个仓用」和「被 1 个仓用」是完全不同的两件东西 ——
+        # 前者改一行会波及整片,后者基本是私事。
+        rn = r.get("remoteName") or r.get("name")
+        r["usedBy"] = used_by.get(rn, 0) if r.get("kind") == KIND_SHARED else None
+
+
+def _vis_match_reason(rows: list[dict], table: dict) -> str | None:
+    """可见性表明明读到了,却一条都没匹配上 —— 说出来。
+
+    没有这句话时,「表里没登记这几个仓」和「匹配逻辑坏了」在屏幕上是同一个样子:
+    每一行都没有徽章,而且没有任何原因。前者是配置问题,后者是代码 bug,
+    要做的事完全不同。
+    """
+    if not table:
+        return None
+    entries = sum(1 for k in table if isinstance(k, str) and not k.startswith("_"))
+    if not entries or not rows:
+        return None
+    matched = sum(1 for r in rows if r.get("visibility"))
+    if matched:
+        return None
+    return (f"可见性表读到了 {entries} 条,却和这 {len(rows)} 个仓一条都没对上 —— "
+            f"这不是「没登记」,是对不上(remote 取不到,或者表的键换了形状)。"
+            f"所有仓的公开/私有标记因此都不显示。")
 
 
 def _group_counts(rows: list[dict]) -> dict:
@@ -334,7 +402,9 @@ def scan(root: str | None = None, now: float | None = None, workers: int = 10) -
             "attentionStates": [UNPUSHED, DIRTY, ERROR],
             # 可见性表读不出来时要说出来。原来它被吞成空表,于是所有仓的公开/私有标记
             # 一起消失,而那和「表里没登记这几个仓」长得一模一样。
-            "visibilityReason": vis_reason,
+            # 「读到了但一条都没匹配上」同样要说 —— 那是匹配逻辑坏了,不是没登记,
+            # 而这两件事在屏幕上原本长得一样(都是没有徽章、没有原因)。
+            "visibilityReason": vis_reason or _vis_match_reason(out, vis),
             "unknownUpstream": sum(1 for x in out if x.get("unpushedKnown") is False),
             # 每组实际会显示多少个仓。页面用它画分组标题,而不是自己再数一遍 ——
             # 前端数一遍就是同一个事实的第二个来源。
