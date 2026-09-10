@@ -232,6 +232,94 @@ def runs_by_day(con, days: int = 60) -> dict:
     return out
 
 
+# 摄入器停摆多久算「要人管」。这两个数不是随手定的档位,它们量的是**丢失风险**:
+# Windows 的任务运行日志是滚动缓冲,实测约 5-8 天覆盖一轮,所以没被摄入的运行历史
+# 过了那个窗口就是永久没了 —— 不是「晚点补」,是补不回来。
+#   24h  这台机器上任何一条自动流水线的正常间隔都远小于一天。超过一天没摄入,
+#        要么排班没了,要么在连续失败。此时还追得回来,所以是「注意」不是「严重」。
+#   96h  进入丢失边缘。按实测最短的那个覆盖窗口(5 天)留一天余量,过了这条线
+#        就要按「已经开始丢」处理。
+INGEST_WARN_HOURS = 24.0
+INGEST_LOSS_HOURS = 96.0
+
+
+def ingest_verdict(last_ingest: dict | None, now=None) -> dict:
+    """摄入器还活着吗 —— 一个**判定**,不是一个时间戳。
+
+    这个函数存在的理由是页面顶栏原来只印一个时间。时间戳在屏幕上永远「看起来正常」:
+    没有人会读一眼 `最后摄入 09-01 10:21` 然后在心里减出九天。于是一个已经停了两周的
+    摄入器,和一个刚跑完的摄入器,长得一模一样 —— 热力图照画,健康% 照给一个具体数字,
+    而那些数字全部停在两周前。**一个坏掉的东西显示成正常**,正是这块面板存在的理由。
+
+    判定取**最旧**的那一条流水线,不取最新:摄入器是几条流水线,任何一条停了,
+    页面上就有一部分数字停在那一刻,而其余部分照常刷新 —— 那比整块停掉更难发现。
+
+    `never` 和 `ok` 必须是两个不同的答案:没有任何摄入记录时,这里绝不能因为
+    「没有超时的记录」而判绿。一个被喂了空的判定器,打印出的绿色跟真绿一模一样。
+    """
+    import datetime as _dt
+
+    now = _dt.datetime.now() if now is None else now
+    rows = [(k, v) for k, v in (last_ingest or {}).items()
+            if isinstance(v, dict) and v.get("at")]
+    if not rows:
+        return {"state": "never", "ageHours": None, "source": None, "at": None,
+                "failed": [], "why": "摄入器没有留下任何运行记录 —— 库里的数字要么是"
+                                     "手动灌的,要么根本没有。跑一次 console_ingest.py。"}
+
+    def _parse(s):
+        t = str(s).strip().replace("T", " ")[:19]
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return _dt.datetime.strptime(t, fmt)
+            except ValueError:
+                continue
+        return None
+
+    parsed = [(k, v, _parse(v["at"])) for k, v in rows]
+    unreadable = [k for k, _v, t in parsed if t is None]
+    parsed = [(k, v, t) for k, v, t in parsed if t is not None]
+    failed = sorted(k for k, v, _t in parsed if v.get("ok") is False)
+
+    if not parsed:
+        # 时间读不出来不能当成「没超时」。读不懂的戳和一个新鲜的戳,在判定器眼里
+        # 必须是两件事,否则格式一变,这道闸就永远绿着。
+        return {"state": "unknown", "ageHours": None, "source": None, "at": None,
+                "failed": failed,
+                "why": "摄入记录的时间戳读不出来(" + "、".join(unreadable[:3])
+                       + "),没法判断摄入器是不是还在跑。"}
+
+    parsed.sort(key=lambda x: x[2])
+    src, row, at = parsed[0]
+    age = (now - at).total_seconds() / 3600.0
+
+    if failed:
+        state = "failed"
+        why = ("摄入器最近一次运行是失败的(" + "、".join(failed)
+               + ")。这些数字停在上一次成功那一刻,而页面其余部分看不出异常。")
+    elif age >= INGEST_LOSS_HOURS:
+        state = "loss"
+        why = (f"{src} 已经 {age / 24:.1f} 天没摄入。Windows 运行日志是滚动缓冲,"
+               f"实测约 5-8 天覆盖一轮,所以这段历史很可能已经永久没了。")
+    elif age >= INGEST_WARN_HOURS:
+        state = "stale"
+        why = (f"{src} 已经 {age:.0f} 小时没摄入,页面上的运行与健康数字都停在那时候。"
+               f"再拖到 {INGEST_LOSS_HOURS / 24:.0f} 天就进丢失窗口了。")
+    else:
+        state = "ok"
+        why = None
+
+    out = {"state": state, "ageHours": round(age, 2), "source": src,
+           "at": row.get("at"), "failed": failed, "why": why}
+    if unreadable:
+        # 部分读不懂时判定照给,但要说清楚它是在几条里判的 —— 否则一条读不懂的流水线
+        # 会静默地退出评判范围,而它恰好可能是停掉的那条。
+        out["unreadable"] = unreadable
+        out["why"] = ((why + " ") if why else "") + (
+            "另有 " + "、".join(unreadable[:3]) + " 的时间戳读不出来,没有参与这次判断。")
+    return out
+
+
 def coverage(con) -> dict:
     """What the database actually covers, so the page can say it instead of implying it."""
     def one(sql, *a):
