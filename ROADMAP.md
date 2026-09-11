@@ -1,10 +1,26 @@
 # Roadmap
 
-Current: **v0.7.0**
+Current: **v0.8.0**
 
-## v0.7.0 (current), the console, and the rule that unchecked never looks like passing
+## v0.8.0 (current), the console moved out
 
-`scripts/task_console/` is a local single-page app for looking at a Windows install: its scheduled
+The console now lives in its own repository, [`DaizeDong/task-console`](https://github.com/DaizeDong/task-console),
+with its 28 tests and the history of the 65 commits that built it. It was never coupled to this
+project: no `sys.path` stitching, no import of anything else here, and nothing here importing it. It
+was a self-contained directory that happened to have this repo as its address, and its place in the
+architecture is underneath the components rather than inside one of them.
+
+What stays here is the reminder engine and the Agent Center bus, with 13 tests. One thing improves
+as a side effect: this repo's CI runs on `ubuntu-latest`, and the console's tests drive Windows Task
+Scheduler and PowerShell, so they could only ever fail there. The suite had been red since
+2026-09-09 for exactly that reason.
+
+The section below is kept as written, because it is the record of why the console is shaped the way
+it is, and that reasoning left with the code rather than being undone by the move.
+
+## v0.7.0, the console, and the rule that unchecked never looks like passing
+
+`scripts/task_console/` was a local single-page app for looking at a Windows install: its scheduled
 tasks, the git repositories under one root, and whatever skill, memory and transcript directories
 the operator points it at. It had shipped and grown for weeks without appearing in this file at
 all, which is its own instance of the defect it exists to fight: a whole subsystem that the
