@@ -105,10 +105,25 @@ def _run_contributor(c: dict, now: str | None) -> tuple[str, str | None]:
 
 
 def _assemble(now: str | None):
-    """Run every enabled contributor; return (sections, problems). No I/O side effects."""
+    """Run every enabled contributor; return (enabled, sections, problems, roster). No side effects.
+
+    ROSTER exists because a digest assembled from plug-in sources can go quiet in three different
+    ways that look identical once the message is written: a source that ran and had nothing to say,
+    a source that failed, and a source that is registered but switched off. Only the first is
+    "nothing happened today". The other two are "you are not being told about something", and with
+    only sections in the output they are indistinguishable from a calm day.
+
+    That distinction is about to carry real weight. The nightly message is currently assembled by
+    the config-backup task, which always runs, so the message always arrives. Splitting that task
+    into several means the message stops being carried by anything guaranteed, and a source that
+    quietly stops contributing would simply shrink the digest. Counting the roster is what keeps a
+    silent absence from reading as a quiet day.
+    """
     d = _load()
-    contribs = [c for c in d.get("contributors", []) if c.get("enabled", True)]
-    sections, problems = [], []
+    everyone = d.get("contributors", [])
+    contribs = [c for c in everyone if c.get("enabled", True)]
+    off = [c.get("name", "?") for c in everyone if not c.get("enabled", True)]
+    sections, problems, silent = [], [], []
     for c in contribs:
         text, err = _run_contributor(c, now)
         title = c.get("title", c.get("name", "?"))
@@ -116,20 +131,51 @@ def _assemble(now: str | None):
             problems.append("%s: %s" % (c.get("name", "?"), err))
         elif text:
             sections.append("**%s**\n%s" % (title, text))
-    return contribs, sections, problems
+        else:
+            silent.append(c.get("name", "?"))
+    roster = {"registered": len(everyone), "enabled": len(contribs),
+              "spoke": len(sections), "silent": silent, "disabled": off,
+              "failed": [p.split(":", 1)[0] for p in problems]}
+    return contribs, sections, problems, roster
+
+
+def roster_line(roster: dict) -> str:
+    """One line naming what was expected and what actually answered.
+
+    Always emitted when anything is registered, including on a perfectly quiet day, because a line
+    that only appears when something is wrong trains people to read its absence as good news; the
+    absence would be equally consistent with the aggregator not having run at all.
+    """
+    if not roster.get("registered"):
+        # Worth saying out loud rather than printing nothing. Measured 2026-09-11: this aggregator
+        # had been wired into the nightly push for months with an EMPTY contributor list, so the
+        # section was silently omitted every single night and nobody could tell.
+        return "来源 0 —— 没有任何已注册的当日总结贡献者,所以这一段永远是空的。"
+    bits = ["来源 %d" % roster["registered"], "有内容 %d" % roster["spoke"]]
+    if roster["silent"]:
+        bits.append("明确无内容 %d(%s)" % (len(roster["silent"]), "、".join(roster["silent"])))
+    if roster["failed"]:
+        bits.append("⚠ 没答上来 %d(%s)" % (len(roster["failed"]), "、".join(roster["failed"])))
+    if roster["disabled"]:
+        bits.append("已停用 %d(%s)" % (len(roster["disabled"]), "、".join(roster["disabled"])))
+    return " · ".join(bits)
 
 
 def run(now: str | None = None, dry_run: bool = False) -> int:
     """Assemble + deliver the standalone 当日总结 to Big Brother (used if NOT folded into another push)."""
     date = (now or "").split("T")[0] if now else None
     header = "📋 当日总结" + (" · " + date if date else "")
-    contribs, sections, problems = _assemble(now)
+    contribs, sections, problems, roster = _assemble(now)
     if not contribs:
         body = header + "\n\n（暂无已注册的当日总结贡献者。skill 安装时会自动注册。）"
     elif not sections:
         body = header + "\n\n（今日各来源无内容。）"
     else:
         body = header + "\n\n" + "\n\n".join(sections)
+    # The roster goes in the MESSAGE, not only to #infra. A failure reported on another channel is
+    # a failure the reader of this message does not see, and this message is the one that is meant
+    # to answer "did everything report today".
+    body += "\n\n" + roster_line(roster)
 
     relay = _relay()
     if dry_run:
@@ -148,9 +194,15 @@ def collect(now: str | None = None) -> int:
     daily push (e.g. sync-config-to-backup.ps1's single merged Notify). Empty output if nothing to
     contribute, so the host push can conditionally include it. Contributor failures are reported to
     #infra (non-fatal) just like run()."""
-    _contribs, sections, problems = _assemble(now)
-    if sections:
-        sys.stdout.write("\n\n".join(sections))
+    _contribs, sections, problems, roster = _assemble(now)
+    # ALWAYS write the roster line, even with nothing to report. The host embeds this output
+    # conditionally (`if ($skillDigest)`), so printing nothing makes the whole section vanish from
+    # the nightly message, and a vanished section is indistinguishable from an aggregator that was
+    # never run. Emitting one line means the section is always present and always says what it
+    # checked, which is the difference this whole file is about.
+    parts = list(sections)
+    parts.append(roster_line(roster))
+    sys.stdout.write("\n\n".join(parts))
     if problems:
         try:
             _relay().relay("infra", "当日总结 collect：部分来源失败 -> " + "; ".join(problems), username="digest")
