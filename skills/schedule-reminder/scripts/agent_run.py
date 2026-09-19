@@ -1,62 +1,23 @@
 #!/usr/bin/env python3
-"""schedule-reminder - Agent Center WORK ORDER RUNNER: the half of the bus that acts.
+"""Detached work-order runner: owned generation -> act -> verify -> independent review.
 
-Runs ONE work order to a terminal state, in its own detached process, for as long as it takes.
-
-    agent_run.py --id <work order id>
-
-THE ROUND is act, verify, review, decide.
-
-  act     the agent is told the request, the workspace, and (from round 2) the previous round's
-          verification failure VERBATIM. It must return a JSON tail carrying `verify`, a command
-          that exits non-zero when the job is NOT done.
-  verify  this module runs that command itself and records the real return code and output. The
-          agent never reports on its own verification; that is the entire point.
-  review  only if verification passed. An independent read-only reviewer on a DIFFERENT provider
-          gets the request, the diff, the command and its actual output, and answers DONE or
-          CONTINUE.
-  decide  a failing check or a CONTINUE verdict starts another round carrying the failure text.
-
-STALL. After each round a signature is taken over the normalized check output and the content of the
-changed files. Three identical signatures in a row mean the round is not moving, whatever the model
-says about its effort. That does not stop the order: it ROTATES THE APPROACH, a fresh run directory,
-a different provider, and a prompt with the problem and the current state of the world but NOT the
-failed reasoning, told that the earlier framing may itself be wrong. Two rotations that both stall
-end the order as stalled. There is no round ceiling and no wall-clock ceiling; evidence ends a run,
-not a timer.
-
-THREE DELIBERATE DEVIATIONS FROM llmcall DEFAULTS, each a measured hazard rather than a preference:
-
-  1. LLMCALL_AGENT_RUNNER is pointed at the shim BEFORE llmcall is imported. llmcall freezes that
-     path at import time. Left alone on this machine it resolves to the full machine runner, which
-     internally retries cc, then codex, then claude direct; the cc leg of an agentic call therefore
-     runs codex a SECOND time and every file edit happens twice.
-  2. The acting chain is a SINGLE provider. One provider means the reported provider is the true one
-     and the side effects happen once. A cost ladder is right for judgement and wrong for actions.
-  3. schema=/extract= are never used with mode="agent". On a parse miss llmcall retries the SAME
-     provider with a nudge, and for an agentic call "retry" means doing the work again. The JSON
-     tail is parsed here, and a missing tail degrades to the review-only path instead.
-
-Stdlib plus llmcall plus the sibling relay/agent_task modules.
+The workflow may run for hours; each child call is bounded and owned by llmcall.process.
+Unknown execution outcomes never trigger automatic replay. A reviewer needs actual model-family
+identity and real before/after evidence; missing evidence preserves the work as unavailable.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
-import subprocess
 import sys
 import tempfile
+from dataclasses import asdict
+from contextvars import ContextVar
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
-
-# Set BEFORE importing llmcall: it snapshots this into a module constant at import time, so setting
-# it afterwards is a silent no-op. The shim forwards -DirectOnly -NoCodex, which is what keeps the
-# delegate from running codex a second time. See deviation 1 in the module docstring.
-_SHIM = os.environ.get("AGENT_EXEC_LLMCALL_RUNNER") or os.path.join(
-    os.path.expanduser("~"), ".llmcall", "agent-runner.ps1")
-os.environ["LLMCALL_AGENT_RUNNER"] = _SHIM
 
 import agent_task  # noqa: E402
 import relay       # noqa: E402
@@ -67,39 +28,13 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-# One approach per available provider, in llmcall's order. Rotating the PROVIDER as well as the
-# prompt is what makes a rotation a genuinely different attempt rather than the same model rephrasing
-# itself, and each approach acts on a SINGLE provider so the reported provider is the true one and
-# the side effects happen once.
-#
-# Derived from llmcall.active_chain() rather than hardcoded, so excluding a provider there (an
-# outage, a quota, a suspended account) also stops this tier from opening every work order against
-# a dead endpoint. Falls back to the literal ladder when llmcall cannot be imported at all, which is
-# a broken install rather than a routing decision.
-def _approach_chains():
-    try:
-        import llmcall
-        names = [n for n in llmcall.active_chain() if n]
-    except Exception:
-        names = ["codex", "cc", "claude"]
-    return tuple([n] for n in names) or (["codex"],)
-
-
-APPROACH_CHAINS = _approach_chains()
-# The reviewer must not be the actor, so the review chain is the acting order rotated by one: the
-# first approach's provider ends up LAST here and is reached only if nothing else answers. The report
-# always names who reviewed, so a review that fell back to the same family is visible rather than
-# assumed.
-REVIEW_CHAIN = [c[0] for c in APPROACH_CHAINS[1:]] + [c[0] for c in APPROACH_CHAINS[:1]]
-
 ACT_TIMEOUT = int(os.environ.get("AGENT_EXEC_ACT_TIMEOUT") or 1800)
 REVIEW_TIMEOUT = int(os.environ.get("AGENT_EXEC_REVIEW_TIMEOUT") or 420)
 VERIFY_TIMEOUT = int(os.environ.get("AGENT_EXEC_VERIFY_TIMEOUT") or 600)
 STALL_ROUNDS = int(os.environ.get("AGENT_EXEC_STALL_ROUNDS") or 3)
-MAX_APPROACHES = len(APPROACH_CHAINS)
+MAX_APPROACHES = 3  # workflow reframing limit, independent of provider routing
 
-_DISCORD_MAX = 1900   # the hard cap is 2000; relay.relay posts one message and does not chunk
-_NOWINDOW = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+_DISCORD_MAX = 2000   # compatibility constant; the shared relay owns chunk presentation
 
 
 def _log(msg):
@@ -107,14 +42,20 @@ def _log(msg):
 
 
 # --------------------------------------------------------------------------- reporting
-def post(stream, text):
-    """Deliver a report, split so no chunk can be rejected for length. A failed post must never
-    change the outcome of work that already happened."""
+def post(stream, text, *, run_id=None, condition='done', retry_failed=False):
+    """One owner terminal event. Shared relay owns splitting and receipt persistence."""
     try:
-        body = text if isinstance(text, str) else str(text)
-        while body:
-            chunk, body = body[:_DISCORD_MAX], body[_DISCORD_MAX:]
-            relay.relay(stream, chunk)
+        import notification_client as client
+        if run_id is None and _OPERATION.get() is not None:
+            item_id, generation = _OPERATION.get()
+            op = agent_task.operation(item_id)
+            if op and op['generation'] == generation:
+                run_id = op['run_id']
+        receipt = client.submit('work-order', run_id, 'terminal', condition, stream, str(text),
+                                language='preserve', fallback='big_brother', retry_failed=retry_failed)
+        if receipt['state'] != 'sent':
+            _log('report: ' + client.detail(receipt))
+        return receipt
     except Exception as e:
         _log("report: relay failed (%s)" % type(e).__name__)
 
@@ -129,20 +70,110 @@ def fence(text, limit=900):
 
 
 # --------------------------------------------------------------------------- llmcall
-def _llm(prompt, chain, timeout, mode):
-    """One model call. Returns (text, provider, error).
-
-    The mode string is validated here because llmcall's own mode tuple is dead code: a typo silently
-    degrades an agentic call to a read-only judgement that changes nothing and reports success."""
+def _llm(prompt, timeout, mode, *, workspace, cancel=None, actor_family=None):
+    """Preserve the installed llmcall policy and fail closed on explicit hard requirements."""
     if mode not in ("judge", "research", "agent"):
         raise ValueError("invalid llmcall mode: %r" % mode)
+    import llmcall
+    requirements = llmcall.ExecutionRequirements(
+        workspace=workspace, access="workspace_write" if mode == "agent" else "read_only",
+        replay="never_after_start" if mode == "agent" else "read_only")
+    return llmcall.call(prompt, mode=mode, timeout=float(timeout), cwd=workspace,
+                        requirements=requirements, cancel=cancel, avoid=actor_family,
+                        log=lambda m: _log("llmcall: " + m))
+
+
+def identity(result):
+    return {key: getattr(result, key, None) for key in (
+        "call_id", "provider", "effective_provider", "effective_model", "model_family",
+        "model_source", "policy_source", "execution_started", "outcome", "effects")}
+
+
+def independent_review(actor, reviewer):
+    return bool(actor.effective_model and actor.model_family and reviewer.effective_model
+                and reviewer.model_family and actor.model_family != reviewer.model_family)
+
+
+class OperationCancellation:
+    """The common process module polls this alongside its own deadline; DB failure revokes work."""
+    def __init__(self, item_id, generation):
+        self.item_id, self.generation = item_id, generation
+
+    def is_set(self):
+        try:
+            return not agent_task.owns(self.item_id, self.generation)
+        except Exception:
+            return True
+
+
+class CleanupUncertain(RuntimeError):
+    """The shared owner could not establish cleanup; manual reconciliation is required."""
+
+
+class BaselineUnavailable(RuntimeError):
+    """An initial baseline cannot be reconstructed after execution has begun."""
+
+
+_OPERATION = ContextVar("reminder_operation", default=None)
+
+
+def _observed_call(phase, call, *args, **kwargs):
+    """Journal execution before launch and cleanup before consuming or persisting its output.
+
+    This is a consumer receipt, not a process supervisor. Only llmcall owns child cleanup.
+    A lost receipt stays in_flight durably, including when the runner is killed.
+    """
+    owner = _OPERATION.get()
+    if owner is None:
+        return call(*args, **kwargs)
+    if not agent_task.child_started(*owner, {"phase": phase}):
+        raise CleanupUncertain("execution reservation unavailable")
     try:
-        import llmcall
-    except Exception as e:
-        return "", None, "llmcall unavailable: %s" % e
-    r = llmcall.call(prompt, chain=list(chain), mode=mode, timeout=float(timeout),
-                     log=lambda m: _log("llmcall: " + m))
-    return (r.text or ""), r.provider, (None if r else (r.error or "chain failed"))
+        result = call(*args, **kwargs)
+    except BaseException as exc:
+        agent_task.child_finished(*owner, {"phase": phase, "exception": type(exc).__name__},
+                                  quiescent=False)
+        raise
+    receipt = {"phase": phase, **identity(result), "error": getattr(result, "error", None),
+               "returncode": getattr(result, "returncode", None),
+               "attempts": [{"outcome": a.outcome, "execution_started": a.execution_started}
+                            for a in getattr(result, "attempts", ())]}
+    outcomes = [receipt, *receipt["attempts"]]
+    # cleanup_failed can survive in an earlier attempt even if the outer result was relabelled.
+    uncertain = any(r["outcome"] in ("cleanup_failed", "execution_uncertain") or
+                    (r["outcome"] is None and r["execution_started"] is not False)
+                    for r in outcomes)
+    # Model failures can be relabelled by routing/validation; they do not carry the command
+    # layer's cleanup confirmation. A started failed model call therefore stays unknown.
+    if phase != "command":
+        uncertain = uncertain or any(r["outcome"] != "success" and
+                                     r["execution_started"] is not False for r in outcomes)
+    if not agent_task.child_finished(*owner, receipt, quiescent=not uncertain):
+        raise CleanupUncertain("cleanup receipt could not be committed")
+    if uncertain:
+        raise CleanupUncertain("shared execution cleanup unknown; manual reconciliation required")
+    return result
+
+
+class CommandResult(tuple):
+    """Keep the public (rc, output) contract while retaining the shared structured result."""
+    def __new__(cls, result):
+        if type(result.returncode) is int:
+            rc = result.returncode
+            output = ((result.stdout or "") + (result.stderr or "")).strip()
+        else:
+            rc = {"timeout": 124, "cancelled": 130}.get(result.outcome, 127)
+            output = result.error or result.outcome or "process result unavailable"
+        value = super().__new__(cls, (rc, output))
+        value.process_output = result
+        return value
+
+
+def _contained_command(argv, workspace, timeout, cancel=None):
+    from llmcall import process
+    result = _observed_call("command", process.run, argv, "", timeout,
+                            context=process.resolve_context(cwd=workspace), cancel=cancel)
+    return CommandResult(result)
 
 
 # --------------------------------------------------------------------------- the JSON tail
@@ -154,7 +185,7 @@ def parse_tail(text):
 
     Scans candidates from the END: the agent is asked to put the tail last, and an earlier brace
     group is usually an example it quoted from the instructions. A missing or unparseable tail is
-    NOT retried (deviation 3); it degrades to the review-only path."""
+    NOT retried; missing evidence leaves the draft review_unavailable."""
     if not text:
         return {}
     body = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
@@ -181,34 +212,56 @@ def parse_tail(text):
 
 # --------------------------------------------------------------------------- the world
 def _git(workspace, *args):
-    try:
-        p = subprocess.run(["git", *args], cwd=workspace, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=60, **_NOWINDOW)
-        return p.stdout if p.returncode == 0 else ""
-    except Exception as e:
-        # Empty output is read downstream as "the working tree is clean". A git that timed out or
-        # never ran says nothing about the tree, so it must not look like a clean one.
-        _log("git %s did not complete in %s (%s); treating output as empty"
-             % (" ".join(args), workspace, type(e).__name__))
-        return ""
+    rc, output = _contained_command(["git", *args], workspace, 30)
+    if rc:
+        raise RuntimeError("git evidence unavailable: " + output[:200])
+    return output
 
 
 def is_repo(workspace):
-    return bool(workspace) and os.path.isdir(os.path.join(workspace, ".git"))
+    try:
+        return _git(workspace, "rev-parse", "--is-inside-work-tree").strip() == "true"
+    except CleanupUncertain:
+        raise
+    except RuntimeError:
+        return False
 
 
 def detect_changes(workspace, claimed):
-    """What actually changed, preferring the working tree over the agent's account of it.
-
-    In a repo the porcelain status is ground truth and an omission cannot hide a change. Outside a
-    repo there is nothing to diff against, so the agent's own list is all there is; the terminal
-    report says which of the two it used, because a self-reported change list is a materially weaker
-    piece of evidence and should not look like the strong one."""
     if is_repo(workspace):
         out = _git(workspace, "status", "--porcelain")
         files = [ln[3:].strip().strip('"') for ln in out.splitlines() if len(ln) > 3]
         return sorted(set(files)), "git"
     return sorted({str(c).strip() for c in (claimed or []) if str(c).strip()}), "self-reported"
+
+
+def capture_diff(workspace):
+    """Actual staged/unstaged diffs and untracked contents, including pre-existing changes.
+
+    Refuse incomplete evidence instead of declaring a self-reported file list a diff.
+    """
+    parts = ["STAGED\n" + _git(workspace, "diff", "--cached", "--binary", "--no-ext-diff"),
+             "UNSTAGED\n" + _git(workspace, "diff", "--binary", "--no-ext-diff")]
+    rc, revision = _contained_command(["git", "rev-parse", "--verify", "--quiet", "HEAD"], workspace, 30)
+    if rc not in (0, 1):
+        raise RuntimeError("cannot establish baseline revision")
+    parts.insert(0, "HEAD " + (revision if rc == 0 else "unborn"))
+    names = _git(workspace, "ls-files", "--others", "--exclude-standard", "-z")
+    for name in names.split("\0"):
+        if not name:
+            continue
+        path = os.path.realpath(os.path.join(workspace, name))
+        if os.path.commonpath([os.path.realpath(workspace), path]) != os.path.realpath(workspace):
+            raise RuntimeError("untracked path escapes workspace")
+        with open(path, "rb") as handle:
+            data = handle.read(1_000_001)
+        if len(data) > 1_000_000:
+            raise RuntimeError("untracked evidence exceeds review limit")
+        parts.append("UNTRACKED " + name + "\n" + data.decode("utf-8"))
+    evidence = "\n".join(parts)
+    if len(evidence) > 1_000_000:
+        raise RuntimeError("diff exceeds review limit")
+    return evidence
 
 
 # The check runs in POWERSHELL on Windows, not cmd. Measured, in that order of discovery:
@@ -259,7 +312,7 @@ _PS_WRAPPER = (
 VERIFY_SHELL = "PowerShell 5.1" if sys.platform == "win32" else "sh"
 
 
-def run_verify(cmd, workspace):
+def run_verify(cmd, workspace, *, cancel=None):
     """Execute the check. Returns (rc, output). A check that cannot be run at all is a failure like
     any other: an unrunnable check has not passed, so it never returns 0."""
     script = None
@@ -270,15 +323,11 @@ def run_verify(cmd, workspace):
             with open(script, "w", encoding="utf-8-sig", newline="\r\n") as f:
                 f.write(_PS_WRAPPER % cmd)
             argv = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script]
-            p = subprocess.run(argv, cwd=workspace, capture_output=True, text=True,
-                               encoding="utf-8", errors="replace", timeout=VERIFY_TIMEOUT,
-                               **_NOWINDOW)
         else:
-            p = subprocess.run(cmd, cwd=workspace, shell=True, capture_output=True, text=True,
-                               encoding="utf-8", errors="replace", timeout=VERIFY_TIMEOUT)
-        return p.returncode, ((p.stdout or "") + (p.stderr or "")).strip()
-    except subprocess.TimeoutExpired:
-        return 124, "verify command timed out after %ds" % VERIFY_TIMEOUT
+            argv = ["sh", "-c", cmd]
+        return _contained_command(argv, workspace, VERIFY_TIMEOUT, cancel=cancel)
+    except CleanupUncertain:
+        raise
     except Exception as e:
         return 127, "verify command could not run: %s" % e
     finally:
@@ -328,7 +377,8 @@ def act_prompt(request, workspace, last_failure=None, fresh=False):
     return "\n".join(parts)
 
 
-def review_prompt(request, summary, changed, changed_via, cmd, rc, out):
+def review_prompt(request, summary, changed, changed_via, cmd, rc, out, *, diff="",
+                  actor_identity=None, before=""):
     return "\n".join([
         "你在独立复核另一个 agent 刚刚完成的工作。你没有参与这项工作。",
         "只回答一个词开头的结论: DONE 或 CONTINUE:<一句话说明还差什么>。",
@@ -341,161 +391,202 @@ def review_prompt(request, summary, changed, changed_via, cmd, rc, out):
         # second question and has to be asked as one.
         "(2) 有没有【顺手改坏请求之外的东西】。删掉了请求没让删的功能、改变了无关行为、"
         "为了让检查通过而绕开问题,都判 CONTINUE 并指出具体是哪一处。请求之外的东西应当保持原样。",
-        "", "原始请求:", (request or "").strip()[:2000],
+        "", "原始请求:", (request or "").strip(),
         "", "执行者的自述:", (summary or "(无)")[:1000],
         "", "实际改动的文件(来源: %s):" % changed_via, ", ".join(changed[:40]) or "(无)",
         "", "系统亲自执行的验证命令:", str(cmd),
-        "返回码: %s" % rc, "真实输出:", (out or "(无输出)")[:2500],
+        "返回码: %s" % rc, "真实输出:", (out or "(无输出)"),
+        "", "实际执行者身份:", json.dumps(actor_identity or {}, ensure_ascii=False),
+        "", "首次执行前的不可变基线(含原 HEAD 和后来删除的未跟踪文件内容):", before,
+        "", "执行后真实 diff / 新文件内容(与首次基线比较):", diff,
         "", "你的结论:"])
 
 
 # --------------------------------------------------------------------------- the run
 def _write(path, text):
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(text if isinstance(text, str) else str(text))
-    except OSError:
-        pass
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text if isinstance(text, str) else str(text))
+        f.flush()
+        os.fsync(f.fileno())
 
 
-def run_order(item_id, post_reports=True):
+def _initial_baseline(item_id, generation, workspace):
+    op = agent_task.operation(item_id)
+    workspace = os.path.normcase(os.path.realpath(workspace))
+    if op["baseline"] is None:
+        if op["checkpoint"] != "running":
+            raise BaselineUnavailable("initial baseline missing after execution checkpoint")
+        try:
+            before = capture_diff(workspace)
+        except CleanupUncertain:
+            raise
+        except (OSError, RuntimeError, UnicodeError) as exc:
+            raise BaselineUnavailable("initial baseline unavailable: " + str(exc)[:200]) from exc
+        digest = hashlib.sha256(before.encode("utf-8")).hexdigest()
+        if not agent_task.save_baseline(item_id, generation, before, digest, workspace):
+            raise BaselineUnavailable("initial baseline publication rejected")
+        op = agent_task.operation(item_id)
+    before = op["baseline"]
+    if (op["baseline_workspace"] != workspace or not isinstance(before, str) or
+            hashlib.sha256(before.encode("utf-8")).hexdigest() != op["baseline_sha256"]):
+        raise BaselineUnavailable("initial baseline evidence is corrupt or belongs to another workspace")
+    return before
+
+
+def run_order(item_id, post_reports=True, *, generation=None):
     item = agent_task.get(item_id)
-    if not item:
-        _log("no such work order: %s" % item_id)
+    if not item or generation is None:
+        return 2
+    alive, pstart = agent_task.proc_identity(os.getpid())
+    if not alive or pstart is None or not agent_task.start_runner(item_id, generation, os.getpid(), pstart):
+        _log("runner has no owned generation; no execution")
         return 2
     ext = item.get("ext") or {}
     stream = ext.get(agent_task.EXT_STREAM) or "infra"
     workspace = ext.get(agent_task.EXT_WORKSPACE) or agent_task.default_workspace()
+    try:
+        from llmcall import process
+        with process.execution_scope(cancel=OperationCancellation(item_id, generation)):
+            return _execute_order(item, generation, stream, workspace, post_reports)
+    except Exception as exc:
+        agent_task.finish(item_id, False, "runner interrupted: " + type(exc).__name__,
+                          exec_state_value="reconcile", generation=generation)
+        raise
+    finally:
+        # The store rejects release after a failed/missing child cleanup receipt, even on cancel.
+        agent_task.release(item_id, generation)
+
+
+def _execute_order(item, generation, stream, workspace, post_reports):
+    item_id = item["id"]
     request = agent_task.read_request(item)
-    short = item_id[:8]
-
     if not os.path.isdir(workspace):
-        agent_task.finish(item_id, False, "workspace missing: %s" % workspace)
-        if post_reports:
-            post(stream, "⛔ 工作单 `%s` 无法开始:工作目录不存在 `%s`。" % (short, workspace))
+        agent_task.finish(item_id, False, "workspace missing", generation=generation)
         return 1
-
-    # The write sandbox of an agentic codex call is the CALLER's current directory: llmcall never
-    # passes one. Without this chdir the agent would be sandboxed to wherever the scheduler happened
-    # to start the tick, and its edits would silently go nowhere.
-    os.chdir(workspace)
-    if not os.path.isfile(_SHIM):
-        _log("warning: llmcall agent shim not found at %s; only the codex leg can act" % _SHIM)
-
-    approach = 0
-    while approach < MAX_APPROACHES:
-        chain = APPROACH_CHAINS[approach]
-        verdict = _run_approach(item_id, stream, request, workspace, approach, chain, post_reports)
-        if verdict["outcome"] == "done":
-            return 0
-        if verdict["outcome"] == "failed":
-            return 1
-        approach += 1
-        if approach < MAX_APPROACHES:
-            agent_task.append_event(item, "approach_rotated", approach=approach,
-                                    reason="no progress for %d rounds" % STALL_ROUNDS)
-            if post_reports:
-                post(stream, "🔁 工作单 `%s`:连续 %d 轮没有任何进展,换一个思路重来"
-                             "(第 %d 个思路,换用 %s)。" % (short, STALL_ROUNDS, approach + 1, chain[0]))
-
-    last = _load_last(item, approach - 1)
-    agent_task.finish(item_id, False, "stalled after %d approaches" % MAX_APPROACHES,
-                      exec_state_value=agent_task.STATE_STALLED)
-    if post_reports:
-        post(stream, "\n".join([
-            "⛔ 工作单 `%s` 停止:换了 %d 个思路,每个都连续 %d 轮没有进展。**没有完成。**"
-            % (short, MAX_APPROACHES, STALL_ROUNDS),
-            "请求:%s" % request.strip().replace("\n", " ")[:150],
-            "最后一次验证 `%s` 返回 %s,输出:" % (last.get("cmd"), last.get("rc")),
-            fence(last.get("out"), 700),
-            "它最后的自述:%s" % (last.get("summary") or "(无)")[:200],
-            "完整记录:`%s`" % agent_task.run_dir(item),
-        ]))
+    for approach in range(MAX_APPROACHES):
+        verdict = _run_approach(item_id, stream, request, workspace, approach, post_reports, generation=generation)
+        if verdict["outcome"] != "stalled":
+            return 0 if verdict["outcome"] == "done" else 1
+    agent_task.finish(item_id, False, "no progress after %d approaches" % MAX_APPROACHES,
+                      exec_state_value="stalled", generation=generation)
     return 1
 
-
-def _load_last(item, approach):
+def _run_approach(item_id, stream, request, workspace, approach, post_reports, *, generation=None):
+    token = _OPERATION.set((item_id, generation))
     try:
-        p = os.path.join(agent_task.run_dir(item), "a%d" % max(0, approach), "last.json")
-        with open(p, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
+        return _run_approach_owned(item_id, stream, request, workspace, approach,
+                                   post_reports, generation=generation)
+    except (CleanupUncertain, BaselineUnavailable) as exc:
+        outcome = "reconcile" if isinstance(exc, CleanupUncertain) else "review_unavailable"
+        updated = agent_task.finish(item_id, False, str(exc), exec_state_value=outcome,
+                                     generation=generation)
+        return {"outcome": outcome if updated else "cancelled"}
+    finally:
+        _OPERATION.reset(token)
 
 
-def _run_approach(item_id, stream, request, workspace, approach, chain, post_reports):
-    """One approach: rounds until it closes, fails hard, or stalls. Returns
-    {"outcome": done|failed|stalled}."""
+def _run_approach_owned(item_id, stream, request, workspace, approach, post_reports, *, generation=None):
+    """Known verification failures may continue; unknown execution/review results never replay."""
     item = agent_task.get(item_id)
-    short = item_id[:8]
-    adir = os.path.join(agent_task.run_dir(item, create=True), "a%d" % approach)
+    op = agent_task.operation(item_id)
+    if not op or op["generation"] != generation:
+        return {"outcome": "cancelled"}
+    if not agent_task.owns(item_id, generation):
+        return {"outcome": "cancelled"}
+    before = _initial_baseline(item_id, generation, workspace)
+    adir = os.path.join(agent_task.run_dir(item, create=True), op["attempt_id"], "a%d" % approach)
+    cancel = OperationCancellation(item_id, generation)
     sigs, last_failure, rnd = [], None, 0
 
-    while True:
+    def stop(outcome, note):
+        updated = agent_task.finish(item_id, False, note, exec_state_value=outcome,
+                                     generation=generation)
+        return {"outcome": outcome if updated else "cancelled"}
+
+    while not cancel.is_set():
         rnd += 1
         rdir = os.path.join(adir, "r%d" % rnd)
-        agent_task.patch_ext(item_id, **{agent_task.EXT_ROUND: rnd,
-                                         agent_task.EXT_APPROACH: approach})
-        agent_task.set_progress(item_id, min(90, 10 + rnd * 10))
-
+        if not agent_task.checkpoint(item_id, generation, "acting", fields={
+                agent_task.EXT_ROUND: rnd, agent_task.EXT_APPROACH: approach},
+                progress=min(90, 10 + rnd * 10)):
+            return {"outcome": "cancelled"}
         prompt = act_prompt(request, workspace, last_failure, fresh=(approach > 0 and rnd == 1))
         _write(os.path.join(rdir, "prompt.txt"), prompt)
-        _log("approach %d round %d: acting via %s" % (approach, rnd, chain))
-        text, provider, err = _llm(prompt, chain, ACT_TIMEOUT, "agent")
-        _write(os.path.join(rdir, "answer.txt"), text or ("(no answer) " + str(err)))
-        if not text:
-            # The provider itself is unavailable, which is different from work that failed its
-            # check. Rotating to another provider is the right response, so this ends the approach
-            # rather than the order.
-            agent_task.append_event(item, "act_failed", approach=approach, round=rnd, error=str(err))
-            _log("act failed: %s" % err)
-            _write(os.path.join(adir, "last.json"),
-                   json.dumps({"cmd": None, "rc": None, "out": str(err),
-                               "summary": "provider unavailable"}, ensure_ascii=False))
-            return {"outcome": "stalled"}
-
-        tail = parse_tail(text)
-        cmd = tail.get("verify")
-        summary = (tail.get("summary") or "").strip()
+        result = _observed_call("actor", _llm, prompt, ACT_TIMEOUT, "agent", workspace=workspace, cancel=cancel)
+        _write(os.path.join(rdir, "actor.json"), json.dumps(asdict(result), ensure_ascii=False))
+        _write(os.path.join(rdir, "answer.txt"), result.text or result.error or "")
+        if cancel.is_set():
+            return {"outcome": "cancelled"}
+        if result.error or result.outcome != "success" or not result.text:
+            outcome = "reconcile" if result.execution_started is not False else (result.outcome or "failed")
+            return stop(outcome, result.error or "agent execution outcome unavailable")
+        if not agent_task.checkpoint(item_id, generation, "verifying"):
+            return {"outcome": "cancelled"}
+        tail = parse_tail(result.text)
+        if not tail:
+            return stop("review_unavailable", "execution returned no verification evidence; draft retained")
+        cmd, summary = tail.get("verify"), str(tail.get("summary") or "").strip()
         changed, changed_via = detect_changes(workspace, tail.get("changed"))
-
-        if cmd:
-            rc, out = run_verify(str(cmd), workspace)
-        else:
-            rc, out = None, "(执行者未给出可执行的验证命令)"
-        _write(os.path.join(rdir, "verify.txt"),
-               "cmd: %s\nrc: %s\n\n%s" % (cmd, rc, out))
-        _write(os.path.join(adir, "last.json"),
-               json.dumps({"cmd": cmd, "rc": rc, "out": out, "summary": summary},
-                          ensure_ascii=False))
-        agent_task.append_event(item, "round", approach=approach, round=rnd, provider=provider,
-                                verify_rc=rc, changed=len(changed), changed_via=changed_via)
-
+        rc, out = run_verify(str(cmd), workspace, cancel=cancel) if cmd else (None, "(no executable verification)")
+        _write(os.path.join(rdir, "verify.txt"), "cmd: %s\nrc: %s\n\n%s" % (cmd, rc, out))
+        if cancel.is_set():
+            return {"outcome": "cancelled"}
         if cmd and rc != 0:
+            if rc in (124, 127, 130):
+                return stop("reconcile", "verification interrupted: " + out[:200])
             last_failure = "命令: %s\n返回码: %s\n输出:\n%s" % (cmd, rc, out)
         else:
-            # Verification passed, or there was none to run. Either way an independent reviewer
-            # decides, and when there was no check the terminal report says so.
-            rev, rprov, rerr = _llm(
-                review_prompt(request, summary, changed, changed_via, cmd, rc, out),
-                REVIEW_CHAIN, REVIEW_TIMEOUT, "judge")
-            _write(os.path.join(rdir, "review.txt"), "provider: %s\n%s" % (rprov, rev or rerr))
-            decision = (rev or "").strip()
-            if decision.upper().startswith("DONE"):
-                agent_task.finish(item_id, True, summary[:200] or "done")
+            if not result.effective_model or not result.model_family or before is None:
+                return stop("review_unavailable", "independent actor identity or baseline diff unavailable")
+            try:
+                diff = capture_diff(workspace)
+            except CleanupUncertain:
+                raise
+            except (OSError, RuntimeError, UnicodeError) as exc:
+                return stop("review_unavailable", "actual diff unavailable: " + str(exc)[:200])
+            if before.startswith("HEAD ") and before.splitlines()[0] != diff.splitlines()[0]:
+                return stop("review_unavailable", "revision changed; working-tree diff alone is incomplete")
+            _write(os.path.join(rdir, "before.diff"), before)
+            _write(os.path.join(rdir, "after.diff"), diff)
+            review = review_prompt(request, summary, changed, changed_via, cmd, rc, out,
+                                   diff=diff, before=before, actor_identity=identity(result))
+            _write(os.path.join(rdir, "review-prompt.txt"), review)
+            _write(os.path.join(rdir, "evidence.json"), json.dumps({
+                "work_item_id": item_id, "run_id": op["run_id"], "attempt_id": op["attempt_id"],
+                "generation": generation, "actor": identity(result),
+                "baseline_sha256": hashlib.sha256(before.encode("utf-8")).hexdigest(),
+                "original_head": before.splitlines()[0],
+                "diff_sha256": hashlib.sha256(diff.encode()).hexdigest(),
+                "review_input_sha256": hashlib.sha256(review.encode()).hexdigest()}, ensure_ascii=False))
+            if not agent_task.checkpoint(item_id, generation, "reviewing"):
+                return {"outcome": "cancelled"}
+            reviewer = _observed_call("reviewer", _llm, review, REVIEW_TIMEOUT, "judge", workspace=workspace, cancel=cancel,
+                            actor_family=result.model_family)
+            _write(os.path.join(rdir, "review.json"), json.dumps(asdict(reviewer), ensure_ascii=False))
+            if cancel.is_set():
+                return {"outcome": "cancelled"}
+            if reviewer.error or reviewer.outcome != "success" or not independent_review(result, reviewer):
+                return stop("review_unavailable", "independent reviewer unavailable; draft retained")
+            decision = (reviewer.text or "").strip()
+            if re.match(r"^DONE(?:\b|:)", decision, re.I):
+                # A changed workspace during review invalidates the evidence, not the work.
+                if capture_diff(workspace) != diff:
+                    return stop("review_unavailable", "workspace changed during review")
+                if not agent_task.finish(item_id, True, summary[:200] or "done", generation=generation):
+                    return {"outcome": "cancelled"}
                 if post_reports:
-                    post(stream, _done_report(short, request, summary, changed, changed_via,
-                                              cmd, rc, out, rprov, decision, approach, rnd,
-                                              agent_task.run_dir(item)))
+                    post(stream, _done_report(item_id[:8], request, summary, changed, changed_via,
+                         cmd, rc, out, reviewer.effective_model, decision, approach, rnd,
+                         agent_task.run_dir(item)))
                 return {"outcome": "done"}
-            last_failure = ("独立复核判定还没完成:%s" % (decision or ("复核不可用: %s" % rerr))) + (
-                "\n\n（上一轮的验证命令 `%s` 返回 %s）" % (cmd, rc) if cmd else "")
-
+            if not re.match(r"^CONTINUE(?:\b|:)", decision, re.I):
+                return stop("review_unavailable", "review verdict unavailable; draft retained")
+            last_failure = "独立复核判定还没完成: " + decision
         sigs.append(agent_task.signature(rc, out, changed, workspace))
         if len(sigs) >= STALL_ROUNDS and len(set(sigs[-STALL_ROUNDS:])) == 1:
-            agent_task.append_event(item, "stalled", approach=approach, rounds=rnd)
             return {"outcome": "stalled"}
+    return {"outcome": "cancelled"}
 
 
 def _done_report(short, request, summary, changed, changed_via, cmd, rc, out, rprov, decision,
@@ -517,18 +608,15 @@ def _done_report(short, request, summary, changed, changed_via, cmd, rc, out, rp
 def main():
     ap = argparse.ArgumentParser(prog="agent_run.py")
     ap.add_argument("--id", required=True)
+    ap.add_argument("--generation", required=True, type=int)
     ap.add_argument("--no-post", dest="post", action="store_false",
-                    help="dry run: do not deliver reports to the channel")
+                    help="execute normally without delivering channel reports")
     a = ap.parse_args()
     try:
-        return run_order(a.id, post_reports=a.post)
+        return run_order(a.id, post_reports=a.post, generation=a.generation)
     except Exception as e:
         # The reaper would catch a hard crash anyway, but recording WHY beats a bare dead pid.
         _log("runner crashed: %s: %s" % (type(e).__name__, e))
-        try:
-            agent_task.finish(a.id, False, "runner crashed: %s" % type(e).__name__)
-        except Exception:
-            pass
         return 1
 
 

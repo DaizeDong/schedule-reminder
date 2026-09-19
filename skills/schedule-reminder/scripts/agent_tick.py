@@ -38,6 +38,9 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 import agent_task  # noqa: E402
 import relay       # noqa: E402
+from contextvars import ContextVar
+
+_NOTIFICATION = ContextVar('work_notification', default=(None, 'reconcile'))
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -61,11 +64,27 @@ def _log(msg):
     print(msg, flush=True)
 
 
-def _post(stream, text):
+def _post(stream, text, *, run_id=None, condition='reconcile'):
     try:
-        relay.relay(stream, text[:1900])
+        import notification_client as client
+        if run_id is None:
+            run_id, condition = _NOTIFICATION.get()
+        receipt = client.submit('work-order', run_id, 'terminal', condition, stream, text,
+                                language='preserve', fallback='big_brother')
+        if receipt['state'] != 'sent':
+            _log('report: ' + client.detail(receipt))
+        return receipt
     except Exception as e:
         _log("relay failed: %s" % type(e).__name__)
+
+
+def _post_owner(stream, text, *, run_id, condition='reconcile'):
+    """Retain the existing two-argument reporting callback seam."""
+    token = _NOTIFICATION.set((run_id, condition))
+    try:
+        return _post(stream, text)
+    finally:
+        _NOTIFICATION.reset(token)
 
 
 def _age_seconds(item):
@@ -92,38 +111,48 @@ def log_tail(item, lines=18):
 
 
 def reap(items=None, post=True):
-    """Report every running order whose process is gone. Returns the list of reaped ids."""
+    """Reconcile dead/ambiguous generations without ever replaying an action.
+
+    A receipt written after our liveness probe makes the snapshot CAS fail. A late child must
+    win its startup CAS before doing work, so revoking an unstarted generation is safe.
+    Parent identity is not descendant cleanup evidence. In-flight/unknown cleanup keeps its
+    reservation after reconciliation; only the shared execution receipt can establish quiescence.
+    """
     reaped = []
-    for it in agent_task.running(items):
-        ext = it.get("ext") or {}
-        pid, pstart = ext.get(agent_task.EXT_PID), ext.get(agent_task.EXT_PSTART)
-        if agent_task.is_live(pid, pstart):
+    for op in agent_task.store.work_reservations():
+        it = agent_task.get(op["item_id"])
+        pid = op["pid"] if op["pid"] is not None else op["launch_pid"]
+        pstart = op["pstart"] if op["pid"] is not None else op["launch_pstart"]
+        if pid is not None:
+            alive, actual_start = agent_task.proc_identity(pid)
+            if alive and (pstart is None or actual_start is None or str(actual_start) == str(pstart)):
+                continue
+        if op["outcome"] is not None:
+            agent_task.release(op["item_id"], op["generation"])
             continue
-        if pid is None and _age_seconds(it) < CLAIM_GRACE_SECONDS:
-            _log("reap: %s claimed %.0fs ago and has no pid yet; still starting"
-                 % (it["id"][:8], _age_seconds(it)))
+        if not op["started_at"] and _age_seconds({"updated_at": op["updated_at"]}) < CLAIM_GRACE_SECONDS:
             continue
-        tail = log_tail(it)
-        agent_task.append_event(it, "reaped", pid=pid)
-        agent_task.finish(it["id"], False, "runner process died (pid=%s)" % pid)
+        note = "runner identity absent; reconcile without replay (pid=%s)" % pid
+        if not agent_task.reconcile(it["id"], op, note):
+            continue
         reaped.append(it["id"])
-        _log("reap: %s dead (pid=%s)" % (it["id"][:8], pid))
+        _log("reconcile: %s pid=%s" % (it["id"][:8], pid))
         if post:
-            _post(ext.get(agent_task.EXT_STREAM) or "infra", "\n".join([
-                "⛔ 工作单 `%s` 的执行进程没了(pid=%s),**任务没有完成**,不会自动重排。"
-                % (it["id"][:8], pid),
-                "标题:%s" % (it.get("title") or "")[:120],
-                ("日志末尾:\n```\n%s\n```" % tail[:800]) if tail else "(没有日志可读)",
-            ]))
+            _post_owner((it.get("ext") or {}).get(agent_task.EXT_STREAM) or "infra",
+                  "工作单 `%s` 没有完成；执行状态待核对，不会自动重排。" % it["id"][:8], run_id=op['run_id'])
     return reaped
 
 
-def launch(item):
+def launch(item, *, generation=None, post_reports=True):
     """Spawn the runner detached and record (pid, creation time). Returns True on success."""
     ext = item.get("ext") or {}
+    generation = generation if generation is not None else ext.get(agent_task.EXT_GENERATION)
+    if not agent_task.begin_spawn(item["id"], generation):
+        return False
     workspace = ext.get(agent_task.EXT_WORKSPACE) or agent_task.default_workspace()
     if not os.path.isdir(workspace):
-        agent_task.finish(item["id"], False, "workspace missing: %s" % workspace)
+        agent_task.finish(item["id"], False, "workspace missing: %s" % workspace, generation=generation)
+        agent_task.release(item["id"], generation)
         return False
     d = agent_task.run_dir(item, create=True)
     # A pythonw parent would give the child no usable stdout; a real file handle does. Prefer the
@@ -139,17 +168,24 @@ def launch(item):
         if sys.platform == "win32":
             flags = _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW
         kw = {"creationflags": flags} if sys.platform == "win32" else {"start_new_session": True}
-        p = subprocess.Popen([exe, RUNNER, "--id", item["id"]],
+        argv = [exe, RUNNER, "--id", item["id"], "--generation", str(generation)]
+        if not post_reports:
+            argv.append("--no-post")
+        p = subprocess.Popen(argv,
                              stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
                              cwd=workspace, close_fds=True, **kw)
     except Exception as e:
         logf.close()
-        agent_task.finish(item["id"], False, "could not launch runner: %s" % type(e).__name__)
+        # Popen may have crossed the OS spawn boundary before raising. Revoke only an
+        # unstarted snapshot; a child that already owns the generation must be reconciled alive.
+        op = agent_task.operation(item["id"])
+        if op and op["generation"] == generation and not op["started_at"]:
+            agent_task.reconcile(item["id"], op, "launch outcome unknown: " + type(e).__name__)
         _log("launch failed: %s" % e)
         return False
     logf.close()
     _alive, pstart = agent_task.proc_identity(p.pid)
-    agent_task.record_process(item["id"], p.pid, pstart)
+    agent_task.record_process(item["id"], p.pid, pstart, generation=generation)
     agent_task.append_event(item, "launched", pid=p.pid, workspace=workspace)
     _log("launched %s pid=%d in %s" % (item["id"][:8], p.pid, workspace))
     return True
@@ -167,44 +203,42 @@ def stop(item_id, note="", post=True):
         targets = [it for it in items if it["id"] == item_id or it["id"].startswith(item_id)]
     out = []
     for it in targets:
-        ext = it.get("ext") or {}
-        agent_task.cancel(it["id"], note or "user asked to stop")
+        notification_op = agent_task.operation(it['id'])
+        cancelled = agent_task.cancel(it["id"], note or "user asked to stop")
+        ext = (cancelled or it).get("ext") or {}
         killed = agent_task.kill_tree(ext.get(agent_task.EXT_PID), ext.get(agent_task.EXT_PSTART))
         agent_task.append_event(it, "stopped", killed=killed)
         out.append({"id": it["id"], "killed": killed})
         _log("stopped %s (process killed: %s)" % (it["id"][:8], killed))
         if post:
-            _post(ext.get(agent_task.EXT_STREAM) or "infra",
+            _post_owner(ext.get(agent_task.EXT_STREAM) or "infra",
                   "🛑 已停止工作单 `%s`%s。%s" % (
                       it["id"][:8],
                       "" if killed else "(它的进程本来就已经不在了)",
-                      "标题:%s" % (it.get("title") or "")[:100]))
+                      "标题:%s" % (it.get("title") or "")[:100]),
+                  run_id=notification_op['run_id'] if notification_op else 'work-order:' + it['id'],
+                  condition='cancelled')
     return out
 
 
 def run(post=True, reap_only=False):
+    agent_task.store.init_db()
+    run_id = agent_task.store.uuid7()
     items = agent_task.orders()
     reaped = reap(items, post=post)
     if reaped:
         items = agent_task.orders()
-    live = [it for it in agent_task.running(items)
-            if agent_task.is_live((it.get("ext") or {}).get(agent_task.EXT_PID),
-                                  (it.get("ext") or {}).get(agent_task.EXT_PSTART))
-            or _age_seconds(it) < CLAIM_GRACE_SECONDS]
+    reservations = agent_task.store.work_reservations()
     q = agent_task.queued(items)
-    if reap_only:
-        return {"reaped": reaped, "running": len(live), "queued": len(q), "launched": None}
     launched = None
-    # Serial on purpose. Two agents editing one working tree concurrently is a corruption source,
-    # not throughput.
-    if not live and q:
-        target = q[0]                       # ids are time ordered, so this is the oldest
-        if agent_task.claim(target["id"]):  # the compare and swap is what makes overlapping ticks safe
-            if launch(agent_task.get(target["id"])):
-                launched = target["id"]
-        else:
-            _log("claim lost for %s (another tick took it)" % target["id"][:8])
-    return {"reaped": reaped, "running": len(live), "queued": len(q), "launched": launched}
+    # The transaction, not this snapshot, enforces serial workspace writes across ticks.
+    if not reap_only and not reservations and q:
+        target = q[0]
+        op = agent_task.claim(target["id"], run_id=run_id, return_operation=True)
+        if op and launch(agent_task.get(target["id"]), generation=op["generation"], post_reports=post):
+            launched = target["id"]
+    return {"run_id": run_id, "reaped": reaped, "running": len(reservations),
+            "queued": len(q), "launched": launched}
 
 
 def main():

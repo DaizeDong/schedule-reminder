@@ -37,3 +37,6 @@ Thumbs.db
 PROGRESS.md
 scratchpad/
 *.log
+
+# Local development and verification output
+/.superpowers/

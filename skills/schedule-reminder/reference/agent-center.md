@@ -81,7 +81,7 @@ private registry, opts the channel out of inbound command processing, and can pr
 ```
 python agent_center_admin.py ensure-notification \
   --stream model-mapping --category specific-notifications --channel model-mapping \
-  --skill cc-model-refresh --description "cc model mapping changes" \
+  --skill cc-model-refresh --description "cc 模型映射变更（档位 → 模型 id）" \
   --test-text "Agent Center model-mapping route verified"
 
 python agent_center_admin.py check-notification \
@@ -92,6 +92,85 @@ The command is idempotent: it creates missing resources, moves one same-named te
 category when needed, and refuses duplicate names rather than guessing. It never prints the bot
 token or webhook URLs. Notification-only streams use the registry's canonical bot token and need no
 additional webhook secret.
+
+**One channel per notification type, and provisioning is only half the job.** The category is a
+folder, not a shared inbox: two notification types in one channel are two alert histories a human
+has to de-interleave before either can be read. Each type gets its own `ensure-notification` call.
+
+The other half is the sender, and it is the half that rots. A notifier that predates the bus carries
+its own Discord client and posts straight to the operator's DM, which is how an alert ends up
+outside every filter, every category and every per-stream identity the Agent Center already
+provides. Migrating one is a caller-side edit, not a transport change:
+
+```python
+# Before: a private Discord client, hardcoded credentials, everything lands in one DM.
+#   subprocess.run(["python", MY_OWN_SEND_PY, "-"], input=text.encode("utf-8"))
+# After: the one egress, addressed at this notification's own channel.
+import base64, os, subprocess, sys
+RELAY = os.path.expanduser(os.environ.get(
+    "AGENT_CENTER_RELAY", os.path.join("~", ".claude", "skills", "schedule-reminder",
+                                       "scripts", "relay.py")))
+STREAM = "model-mapping"
+
+def notify(text):
+    if not os.path.isfile(RELAY):        # a missing sender is a failure, never a quiet no-op
+        return False
+    payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    proc = subprocess.run([sys.executable, RELAY, "send", "--stream", STREAM,
+                           "--text-b64", payload],
+                          stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+    return proc.returncode == 0
+```
+
+`--text-b64` rather than `--text` because these alerts are multi line and often Chinese, and Windows
+PowerShell mangles non-ASCII argv. `return False` rather than `except Exception: pass` because an
+announcement that never left the machine has to look different from one that was read.
+
+**A channel probe does not verify a migration.** `check-notification --probe` posts the probe
+*itself*, so it stays green while the sender still DMs: the channel is provisioned, reachable, and
+empty. `scripts/verify_model_mapping_route.py` is the check that means something, because it drives
+each sender's real production entry point and then reads the channel back for the message that entry
+point produced. Its `ROUTES` table is the machine-readable version of "one channel per notification
+type"; adding a specific notification means adding a row and provisioning it. Each row is driven in
+its own process, because sibling jobs ship same-named `config`/`apply`/`state` modules and one
+interpreter would hand the second sender the first one's config.
+
+Currently migrated: `model-mapping` (cc proxy tier → model map, from `cc-model-refresh/apply.py`)
+and `gateway-model-mapping` (codexg gateway model, from `codexg-model-refresh/refresh.py`). The
+second one is why the relay path is asserted rather than assumed: it pointed at a relay that is not
+installed on this machine and returned early, so every announcement it ever made was discarded in
+silence.
+
+**A new channel inherits the bus, not the language.** Every stream on this deployment reads in
+Simplified Chinese, and both channels above shipped in English anyway, because a new sender is
+written in the language of the code around it and nobody says the rule out loud until the channel is
+already live. So say it here: the notification BODY is written in the operator's language. What
+stays in its original form is what the message quotes rather than writes -- model ids, tier names,
+exception class names, and every `detail`/`reason` string handed up from a gateway, a proxy or the
+stdlib. Translating a machine's own error text turns evidence into paraphrase, and those lines exist
+to be pasted into a bug report.
+
+Two things make that a rule rather than a preference. First, the message text goes in a pure function
+(`change_notice`, `switch_notice`, ...) instead of inline at the call site. The wording used to be
+reachable only by standing up a live gateway, a live proxy and two paid probes, and a rule you can
+only check in production is a rule that drifts back. Second, a checker alongside the senders drives
+those functions offline and fails on any English prose left over once the quoted values are
+subtracted. Subtracting is what makes it honest: a global allow-list of permitted words would pass
+`deployment failed` forever the day someone added `deployment` to it.
+
+And the rule is 简体中文, not "Chinese". `採用 Claude-Opus-5，因為它是同代中最新的部署` carries no
+English whatsoever, so a CJK-and-no-English check calls it clean and the channel gets 繁體 -- which is
+what happened. Models fluent in both scripts slip between them, sometimes for one character. Watch
+how that clause is implemented, because the obvious implementation fails the same way twice: a
+hand-written list of traditional characters is a list of the ones somebody already thought of, and
+`啟用 Claude-Opus-5` walked through the first one. The rule therefore screens characters against two
+charsets already in the stdlib (absent from GB2312, present in Big5 = traditional) and keeps the
+hand-written pairs only for the few that screen misses and for saying what to write instead.
+
+Note what `verify_model_mapping_route.py` does NOT cover here. For an `entry: "notify"` route it
+calls `notify()` with its own marker text, so it proves the transport and the channel binding and
+says nothing at all about the wording the job would really send. Language is checked where language
+lives, in each sender's own suite; the route verifier answers a different question.
 
 ## digest.py, the one daily 当日总结
 

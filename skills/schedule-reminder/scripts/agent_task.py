@@ -34,6 +34,8 @@ import re
 import subprocess
 import sys
 
+import store
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REMINDER = os.path.join(_HERE, "reminder.py")
 
@@ -55,14 +57,17 @@ EXT_STATE = "x_agent_exec_state"          # queued|running|stalled|done|failed
 EXT_STREAM = "x_agent_exec_stream"        # origin channel key
 EXT_MSG = "x_agent_exec_msg_id"           # origin Discord message id (may be None)
 EXT_DIR = "x_agent_exec_dir"              # run directory NAME, relative to runs_root()
-EXT_WORKSPACE = "x_agent_exec_workspace"  # cwd the runner works in (== codex write sandbox)
+EXT_WORKSPACE = "x_agent_exec_workspace"  # requested cwd and llmcall workspace boundary
 EXT_PID = "x_agent_exec_pid"
 EXT_PSTART = "x_agent_exec_pstart"        # process creation time, the pid-reuse discriminator
 EXT_ROUND = "x_agent_exec_round"
 EXT_APPROACH = "x_agent_exec_approach"
 EXT_NOTE = "x_agent_exec_note"            # short terminal reason, for the pool view
+EXT_GENERATION = "x_agent_exec_generation"
+EXT_RUN_ID = "x_agent_exec_run_id"
+EXT_ATTEMPT_ID = "x_agent_exec_attempt_id"
 
-EXT_VERSION = 1
+EXT_VERSION = 2
 # ext is argv-bound (see the module docstring). This ceiling is asserted in the tests so a future
 # field that carries free text gets caught here rather than by a truncated command line in the field.
 EXT_MAX_CHARS = 2000
@@ -172,15 +177,22 @@ def proc_identity(pid):
     if not pid or sys.platform != "win32":
         return (False, None)
     k = ctypes.windll.kernel32
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    k.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
     h = k.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
     if not h:
-        return (False, None)
+        # Access denied is not proof of death; the reaper must hold the reservation.
+        return (k.GetLastError() == 5, None)
     try:
         c, e, kt, ut = (wintypes.FILETIME() for _ in range(4))
         if not k.GetProcessTimes(h, *map(ctypes.byref, (c, e, kt, ut))):
             return (True, None)
         code = ctypes.c_ulong()
-        k.GetExitCodeProcess(h, ctypes.byref(code))
+        if not k.GetExitCodeProcess(h, ctypes.byref(code)):
+            return (True, None)
         return (code.value == _STILL_ACTIVE, (c.dwHighDateTime << 32) | c.dwLowDateTime)
     finally:
         k.CloseHandle(h)
@@ -214,7 +226,7 @@ def enqueue(stream, request, workspace=None, msg_id=None, title=None):
     ws, note = resolve_workspace(workspace)
     ext = {
         EXT_V: EXT_VERSION,
-        EXT_STATE: STATE_QUEUED,
+        EXT_STATE: "preparing",
         EXT_STREAM: stream,
         EXT_MSG: msg_id,
         EXT_WORKSPACE: ws,
@@ -234,28 +246,26 @@ def enqueue(stream, request, workspace=None, msg_id=None, title=None):
     d = run_dir(item, create=True)
     with open(os.path.join(d, "request.txt"), "w", encoding="utf-8", newline="\n") as f:
         f.write(request or "")
+        f.flush()
+        os.fsync(f.fileno())
+    item = store.publish_work(item["id"], actor=ACTOR)
+    if not item:
+        return {"_err": "work preparation cancelled or changed"}
     append_event(item, "enqueued", stream=stream, workspace=ws, note=note)
     return item
 
 
 def read_request(item):
-    try:
-        with open(os.path.join(run_dir(item), "request.txt"), encoding="utf-8") as f:
-            return f.read()
-    except OSError:
-        return item.get("title") or ""
+    # A missing full request must not turn its truncated display title into execution authority.
+    with open(os.path.join(run_dir(item), "request.txt"), encoding="utf-8") as f:
+        return f.read()
 
 
 def orders(active_only=True):
     """Every work order, newest last. Paginates, because `list` caps at 100 per page."""
     out, cursor = [], None
     while True:
-        args = ["list", "--source", WORK_SOURCE, "--limit", "100"]
-        if active_only:
-            args.append("--active")
-        if cursor:
-            args += ["--cursor", cursor]
-        r = rem(*args)
+        r = store.list_items(source=WORK_SOURCE, active_only=active_only, limit=100, cursor=cursor)
         out += r.get("items", [])
         cursor = r.get("next_cursor")
         if not cursor:
@@ -264,7 +274,7 @@ def orders(active_only=True):
 
 
 def get(item_id):
-    return rem("get", "--id", item_id).get("item")
+    return store.get_item(item_id)
 
 
 def running(items=None):
@@ -290,36 +300,82 @@ def set_progress(item_id, pct):
     return rem("update", "--id", item_id, "--set", "progress=%d" % max(0, min(100, int(pct))))
 
 
-def claim(item_id):
-    """Move a queued order to running. Returns True only for the caller that won.
+def claim(item_id, *, run_id=None, return_operation=False):
+    """Atomically reserve the serial writer and publish state/ext/generation.
 
-    --expect pending is the whole safety story for overlapping ticks: the loser gets
-    ERR_STATE_CONFLICT and must not launch anything."""
-    r = rem("transition", "--id", item_id, "--to", "doing", "--expect", "pending")
-    if r.get("_err"):
+    The legacy bool result remains available. The dispatcher requests the winning receipt,
+    rather than rereading a possibly newer generation after cancellation/reopen.
+    """
+    store.init_db()
+    op = store.claim_work(item_id, run_id=run_id, actor=ACTOR)
+    return op if return_operation else bool(op)
+
+
+def operation(item_id):
+    return store.work_operation(item_id)
+
+
+def _advance(item_id, generation, action, **kwargs):
+    if generation is None:
         return False
-    patch_ext(item_id, **{EXT_STATE: STATE_RUNNING})
-    return True
+    return store.advance_work(item_id, generation, action, actor=ACTOR, **kwargs)
 
 
-def record_process(item_id, pid, pstart):
-    return patch_ext(item_id, **{EXT_PID: pid, EXT_PSTART: pstart})
+def begin_spawn(item_id, generation):
+    return _advance(item_id, generation, "spawn")
 
 
-def finish(item_id, ok, note="", exec_state_value=None):
-    """Terminal state. ok -> pool done; not ok -> pool blocked, which keeps the order visible in the
-    active list instead of quietly disappearing into done."""
-    st = exec_state_value or (STATE_DONE if ok else STATE_FAILED)
-    patch_ext(item_id, **{EXT_STATE: st, EXT_NOTE: (note or "")[:300]})
-    if ok:
-        return rem("done", "--id", item_id)
-    return rem("transition", "--id", item_id, "--to", "blocked",
-               "--reason", (note or st)[:300])
+def start_runner(item_id, generation, pid, pstart):
+    return _advance(item_id, generation, "start", pid=pid, pstart=pstart)
+
+
+def record_process(item_id, pid, pstart, *, generation=None):
+    return _advance(item_id, generation, "receipt", pid=pid, pstart=pstart)
+
+
+def checkpoint(item_id, generation, name, *, fields=None, progress=None):
+    return _advance(item_id, generation, "checkpoint", checkpoint=name,
+                    fields=fields, progress=progress)
+
+
+def owns(item_id, generation):
+    op = operation(item_id)
+    item = get(item_id)
+    return bool(op and op["generation"] == generation and op["outcome"] is None
+                and op["started_at"] and item and item["state"] == "doing")
+
+
+def reconcile(item_id, snapshot, note):
+    return _advance(item_id, snapshot["generation"], "reconcile", expected=snapshot, note=note)
+
+
+def release(item_id, generation):
+    """Release only with a quiescent receipt; parent exit cannot clear uncertain cleanup."""
+    return _advance(item_id, generation, "release")
+
+
+def child_started(item_id, generation, receipt):
+    return _advance(item_id, generation, "child_start", receipt=receipt)
+
+
+def child_finished(item_id, generation, receipt, *, quiescent):
+    return _advance(item_id, generation, "child_finish", receipt=receipt,
+                    outcome="quiescent" if quiescent else "unknown")
+
+
+def save_baseline(item_id, generation, baseline, digest, workspace):
+    return _advance(item_id, generation, "baseline", baseline=baseline,
+                    baseline_sha256=digest, workspace=workspace)
+
+
+def finish(item_id, ok, note="", exec_state_value=None, *, generation=None):
+    """Only the owned generation can finish. Cancellation and prior outcomes are immutable."""
+    return _advance(item_id, generation, "finish", note=note,
+                    outcome=exec_state_value or (STATE_DONE if ok else STATE_FAILED))
 
 
 def cancel(item_id, note=""):
-    patch_ext(item_id, **{EXT_STATE: STATE_FAILED, EXT_NOTE: ("cancelled: " + (note or ""))[:300]})
-    return rem("transition", "--id", item_id, "--to", "cancelled", "--reason", (note or "stopped")[:300])
+    return store.transition(item_id, "cancelled", reason=(note or "stopped")[:300], actor=ACTOR)
 
 
 # --------------------------------------------------------------------------- stall signature

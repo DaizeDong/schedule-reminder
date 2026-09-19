@@ -18,7 +18,9 @@ Resolution order (first one that exists wins):
   3. bigbrother DM       — the native Big Brother DM sender (`bigbrother.send_dm`), only if relay.py
      is missing (standalone install). Replaces the old shell-out to the legacy DM notifier script.
 
-Contract: notify(text) -> bool  (True = delivered, False = failed; never raises for delivery errors).
+Contract: notify(text, run_id=...) -> bool. Only a sent receipt returns True.
+Text-only compatibility callers must bind TASK_RUN_ID/SCHEDULE_RUN_ID or pass run_id;
+absence is an observable refusal, with no one-shot fallback send.
 
 Env:
   SCHEDULE_RELAY_CMD     full command to run; reminder text appended as last arg (overrides all)
@@ -32,7 +34,6 @@ from __future__ import annotations
 
 import os
 import shlex
-import subprocess
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -46,38 +47,56 @@ def _default_stream():
     return os.environ.get("SCHEDULE_RELAY_STREAM", "reminders")
 
 
-def _run(argv):
-    # encoding="utf-8": text=True otherwise decodes the child's stdout with the locale codepage
-    # (GBK on a zh-CN box); harmless here since only the return code is used, but keep it consistent.
-    r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
-    return r.returncode == 0
+def notify_event(event, text, **delivery_options):
+    """Receipt-aware owner API; requires an explicit Event/stream, with no default routing.
+
+    This returns a receipt, not a bool. The boolean notify shell uses the same producer and
+    refuses calls that cannot supply a stable owner occurrence identity.
+    """
+    from notification_receipts import deliver
+    return deliver(event, text, **delivery_options)
 
 
-def notify(text):
-    """Deliver `text` via the configured channel. Returns True on success, False on failure."""
+def notify_occurrence(run_id, text, *, phase='reminder', condition='due',
+                      db_path=None, retry_failed=False):
+    """Reminder-owner bridge preserving the explicit override and standalone DM policy."""
+    import notification_client as client
+    stream = _default_stream()
+    cmd = os.environ.get('SCHEDULE_RELAY_CMD')
+    if cmd:
+        options = {'command': client.command_policy(shlex.split(cmd, posix=(os.name != 'nt')))}
+    elif os.path.isfile(_default_relay_path()):
+        options = client.transport_options([sys.executable, _default_relay_path(), 'send',
+                                            '--stream', stream, '--text'], stream)
+    else:
+        # The legacy standalone DM is an explicit target, never a stream guessed by the client.
+        options = {'command': client.command_policy([sys.executable, os.path.join(_HERE, 'bigbrother.py')])}
+    return client.submit('schedule-reminder', run_id, phase, condition, stream, text,
+                         language='preserve', db_path=db_path, retry_failed=retry_failed, **options)
+
+
+def notify(text, *, run_id=None, phase='reminder', condition='due', retry_failed=False):
+    """Boolean compatibility shell. A stable owner identity is required for delivery."""
     try:
-        cmd_env = os.environ.get("SCHEDULE_RELAY_CMD")
-        if cmd_env:  # explicit override / test seam, always wins
-            return _run(shlex.split(cmd_env, posix=(os.name != "nt")) + [text])
-
-        relay_py = _default_relay_path()
-        if os.path.isfile(relay_py):  # Agent Center channel (the 2026-07-01 decision)
-            return _run([sys.executable, relay_py, "send",
-                         "--stream", _default_stream(), "--text", text])
-
-        # Standalone install without relay.py: deliver via the native Big Brother DM so a reminder
-        # is never dropped. (Replaces the old shell-out to the legacy DM notifier script.)
-        if _HERE not in sys.path:
-            sys.path.insert(0, _HERE)
-        import bigbrother  # noqa: E402  (local sibling module)
-        return bool(bigbrother.send_dm(text))
+        import notification_client as client
+        receipt = notify_occurrence(run_id, text, phase=phase, condition=condition,
+                                    retry_failed=retry_failed)
+        if receipt['state'] != 'sent':
+            sys.stderr.write('notify: ' + client.detail(receipt) + '\n')
+        return receipt['state'] == 'sent'
     except Exception as e:  # delivery failures are signalled by return value, not exceptions
-        sys.stderr.write("notify: %s\n" % e)
+        sys.stderr.write("notify: delivery failed (%s)\n" % type(e).__name__)
         return False
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        sys.stderr.write("usage: python notify.py <text>\n")
-        sys.exit(2)
-    sys.exit(0 if notify(sys.argv[1]) else 1)
+    import argparse
+    parser = argparse.ArgumentParser(description='Deliver one stable owner notification')
+    parser.add_argument('text')
+    parser.add_argument('--run-id')
+    parser.add_argument('--phase', default='reminder')
+    parser.add_argument('--condition', default='due')
+    parser.add_argument('--retry-failed', action='store_true')
+    args = parser.parse_args()
+    sys.exit(0 if notify(args.text, run_id=args.run_id, phase=args.phase,
+                         condition=args.condition, retry_failed=args.retry_failed) else 1)
