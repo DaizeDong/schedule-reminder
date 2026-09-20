@@ -1034,7 +1034,7 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
 
         # 被别人握着的那些,在**查询阶段**就被上面那条 `claimed_at <= stale` 排除掉了,
         # 所以它们根本走不到下面的 CAS,也就永远不会进 `skipped`。
-        # ⚠ CAS 旁边那句注释写的是「输给 CAS -> skipped」—— 那只对一个很窄的竞态成立
+        # ⚠ CAS 旁边那句注释写的是「输给 CAS -> skipped」，那只对一个很窄的竞态成立
         # (查询时还没被认领、查询与 UPDATE 之间被别人抢走)。常见的那条路上,
         # 一个正在被另一次 tick 处理的提醒**在输出里完全不可见**:
         # 它既不在 dispatched 也不在 skipped,只能从 undelivered 里间接看出来。
@@ -1062,7 +1062,7 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
             # atomic EXCLUSIVE claim: only an unclaimed-or-stale, not-yet-notified item is grabbed.
             # 这里输掉 CAS 只覆盖一个**很窄的竞态**:查询时还没被认领,查询与这条 UPDATE
             # 之间被另一次 tick 抢走。常见情形(查询时就已经被握着)在上面那条 SELECT 里
-            # 就被排除了,走不到这里 —— 那些统计在 `held` 里。
+            # 就被排除了,走不到这里。这些统计在 `held` 里。
             with _Tx(conn):
                 cur = conn.execute(
                     "UPDATE items SET claimed_at=? WHERE id=? AND notified_at IS NULL "

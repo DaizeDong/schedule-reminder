@@ -41,7 +41,7 @@ python reminder.py [--db PATH] [--actor NAME] <verb> [args...]
 | `tick` | dispatch due reminders (scheduler) | `--now`, `--lead`, `--dry-run` | `{dispatched[], retried[], blocked[], skipped[], now}` |
 | `events` | audit trail of an item | `--id` | `{events[]}` |
 | `health` | self-check | `--check-task` | `{health{...}}` |
-| `work-feed` | read-only work, result-summary and activity projection | `--limit` (1–10000; default 5000) | `{schemaVersion:1, available, observed_at, items[], events[], sources[], coverage, capabilities}` |
+| `work-feed` | read-only work, result-summary and activity projection | `--limit` (1 to 10000; default 5000) | `{schemaVersion:1, available, observed_at, items[], events[], sources[], coverage, capabilities}` |
 | `work-action` | reserve and submit an owner-issued action | JSON stdin, explicit `--db` | `{schemaVersion:1, ok, status, action, wakeup, dispatch?}` |
 | `work-action-stop` | stop the exact current Agent action | JSON stdin, explicit `--db` | same action receipt |
 | `work-action-result` | attach the Controller submission acknowledgement | JSON stdin, explicit `--db` | same action receipt |
