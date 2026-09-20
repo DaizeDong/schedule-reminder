@@ -41,8 +41,28 @@ python reminder.py [--db PATH] [--actor NAME] <verb> [args...]
 | `tick` | dispatch due reminders (scheduler) | `--now`, `--lead`, `--dry-run` | `{dispatched[], retried[], blocked[], skipped[], now}` |
 | `events` | audit trail of an item | `--id` | `{events[]}` |
 | `health` | self-check | `--check-task` | `{health{...}}` |
+| `work-feed` | read-only work, result-summary and activity projection | `--limit` (1–10000; default 5000) | `{schemaVersion:1, available, observed_at, items[], events[], sources[], coverage, capabilities}` |
 
 `--actor NAME` (global) records who acted in the audit stream, pass your skill name.
+
+### Work observations
+
+`work-feed` opens an existing absolute database in read-only mode. Unlike the legacy verbs,
+it never creates or migrates a database. An absent/incompatible source returns `available:false`
+and a reason, with no empty-success claim. Optional older-schema fields are reported in coverage.
+Each item keeps its owner ID, source, state, timestamps and a bounded summary; arbitrary extensions
+and message bodies are not forwarded. Events join only by item ID and omit signal-feed activity.
+
+Source roles are declared here by the owner: `agent-center:work` is `agent_work`; email-monitor,
+daily-hotspots, demand-mining and task-health publish `signal` inputs; other sources are
+`tracked_item` records with no asserted agent ownership. The source/state counts cover the database,
+while `returned`, `omitted` and `invalid` describe the response window. Work is ordered ahead of
+signal feeds so feed volume cannot crowd it out. Events expose a separate recent window.
+
+Execution states are persisted observations. Summaries do not establish live process status,
+independent review or executable validation. Human decisions and remediation have no connected
+contract yet and report unavailable. Failed or blocked work is never converted into an approval.
+Task relationships continue to require the existing reviewed linkage contract.
 
 ## Item fields
 

@@ -208,6 +208,11 @@ def cmd_health(a):
     return _emit({"health": store.health(db_path=a.db, check_task=a.check_task)})
 
 
+def cmd_work_feed(a):
+    from reminder_work_feed import read_work_feed
+    return _emit(read_work_feed(db_path=a.db, limit=a.limit))
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="reminder.py", description="schedule-reminder CLI contract")
     p.add_argument("--db", default=None, help="DB path (or SCHEDULE_DB_PATH env)")
@@ -215,6 +220,10 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init").set_defaults(fn=cmd_init)
+
+    s = sub.add_parser("work-feed", help="read-only work projection; never initializes or migrates")
+    s.set_defaults(fn=cmd_work_feed)
+    s.add_argument("--limit", type=int, default=5000)
 
     s = sub.add_parser("sweep"); s.set_defaults(fn=cmd_sweep)
     s.add_argument("--now", default=None)
@@ -300,7 +309,7 @@ def main(argv=None):
     a = p.parse_args(argv)
     # ensure DB exists for all but init (init creates it explicitly)
     try:
-        if a.cmd != "init":
+        if a.cmd not in ("init", "work-feed"):
             store.init_db(a.db)
         return a.fn(a)
     except store.SkillError as e:

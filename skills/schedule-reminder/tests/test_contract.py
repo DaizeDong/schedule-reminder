@@ -214,27 +214,26 @@ def test_e6_missed_fire(db, tmp_path):
     assert set(res["dispatched"]) == set(ids)  # all overdue caught up in one tick
 
 
-# --------------------------------------------------------------- E7 retry back-off -> blocked
-def test_e7_retry_backoff(db, tmp_path):
+# --------------------------------------------------------------- E7 uncertain delivery is not replayed
+def test_e7_uncertain_delivery_keeps_receipt_ownership(db, tmp_path):
     iid = jout(run(["add", "--title", "r", "--due-at", "2026-01-01T00:00:00Z"], db))["item"]["id"]
-    fail_stub, _ = make_stub(tmp_path, fail=True)
-    # 5 failing ticks at advancing clocks -> retry_count climbs, next_retry_at monotonic, then blocked
-    prev_retry = None
+    fail_stub, log = make_stub(tmp_path, fail=True)
+    # A relay exit after launch cannot prove that nothing was sent. The receipt owner
+    # retains uncertainty; the reminder tick must not build a second retry mechanism.
     for k in range(5):
         nowt = "2026-06-25T12:%02d:00Z" % (k * 10)
         run(["tick", "--now", nowt], db, {"SCHEDULE_RELAY_CMD": fail_stub})
         item = jout(run(["get", "--id", iid], db))["item"]
         assert item["notified_at"] is None  # never marked notified on failure
-        if item["state"] == "blocked":
-            assert item["block_reason"] == "notify channel failed"
-            break
-        assert item["next_retry_at"] is not None
-        if prev_retry is not None:
-            assert item["next_retry_at"] > prev_retry  # monotonic back-off
-        prev_retry = item["next_retry_at"]
-    else:
-        pytest.fail("item never blocked after max retries")
-    assert jout(run(["get", "--id", iid], db))["item"]["state"] == "blocked"
+        assert item["state"] == "pending"
+        assert item["next_retry_at"] is None and item["retry_count"] == 0
+        assert item["claimed_at"] is None
+    with open(log, encoding="utf-8") as stream:
+        assert len(stream.read().splitlines()) == 1
+    with sqlite3.connect(db) as conn:
+        receipts = [json.loads(row[0]) for row in conn.execute("SELECT receipt FROM notification_receipts")]
+    assert len(receipts) == 1
+    assert receipts[0]["state"] == "uncertain" and receipts[0]["retry_safe"] is False
 
 
 # --------------------------------------------------------------- E8 concurrent writes no corruption
