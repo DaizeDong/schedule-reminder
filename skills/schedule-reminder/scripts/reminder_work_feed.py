@@ -80,11 +80,18 @@ def read_work_feed(*, db_path=None, limit=5000, event_limit=250):
                 item["summary"] = _text(ext.get("x_agent_exec_note"), 2000) if item["role"] == "agent_work" else _text(row["description"], 1000) if item["role"] == "tracked_item" else None
                 item["execution"] = None
                 if item["role"] == "agent_work":
-                    item["execution"] = {"state": _text(ext.get("x_agent_exec_state"), 80),
+                    item['origin_item_id'] = _text(ext.get('x_console_origin_item'), 200)
+                    item["execution"] = {"state": 'stopped' if row['state'] == 'cancelled' else _text(ext.get("x_agent_exec_state"), 80),
                         "run_id": _text(ext.get("x_agent_exec_run_id"), 200),
                         "attempt_id": _text(ext.get("x_agent_exec_attempt_id"), 200),
                         "evidence": "summary_only"}
                 # ext is deliberately not forwarded: it includes message bodies and arbitrary links.
+                if item['role'] == 'tracked_item':
+                    from reminder_actions import project_item
+                    raw_item = dict(row)
+                    raw_item['ext'] = ext
+                    item['actions'] = project_item(conn, raw_item, db_path=str(path),
+                                                  workspace_root=os.environ.get('SCHEDULE_ACTION_WORKSPACE'))
                 items.append(item)
             events, event_total = [], None
             events_available = {"seq", "ts", "item_id", "actor", "event_type", "from_state", "to_state"} <= _columns(conn, "events")

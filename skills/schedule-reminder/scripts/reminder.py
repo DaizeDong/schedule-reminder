@@ -49,6 +49,7 @@ except Exception:
 # allow `import store` / `import notify` regardless of CWD
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import store  # noqa: E402
+from reminder_action_store import ActionError
 
 
 def _write(stream, text):
@@ -81,7 +82,9 @@ def _emit(payload):
 
 def _fail(err):
     body = {"api_version": store.API_VERSION, "ok": False}
-    if isinstance(err, store.SkillError):
+    if isinstance(err, ActionError):
+        body.update(error_code=err.code, message=err.code)
+    elif isinstance(err, store.SkillError):
         body.update(err.to_dict())
     else:
         # Unexpected error: surface only the exception *type*, not str(err), which can embed the db
@@ -213,6 +216,36 @@ def cmd_work_feed(a):
     return _emit(read_work_feed(db_path=a.db, limit=a.limit))
 
 
+def cmd_work_action(a):
+    import os
+    import reminder_actions
+    raw = sys.stdin.buffer.read(131073)
+    if len(raw) > 131072:
+        raise reminder_actions.ActionError('action_request_too_large')
+    payload = json.loads(raw.decode('utf-8'))
+    if not isinstance(payload, dict):
+        raise reminder_actions.ActionError('invalid_action_request')
+    if a.db:
+        os.environ['SCHEDULE_DB_PATH'] = a.db
+    database = a.db or os.environ.get('SCHEDULE_DB_PATH')
+    if not database:
+        raise reminder_actions.ActionError('action_database_unavailable')
+    workspace = os.environ.get('SCHEDULE_ACTION_WORKSPACE')
+    if a.cmd == 'work-action-result':
+        if set(payload) != {'action_id', 'result'}:
+            raise reminder_actions.ActionError('invalid_task_result')
+        return _emit(reminder_actions.record_result(payload['action_id'], payload['result'], db_path=database))
+    if a.cmd == 'work-action-stop':
+        return _emit(reminder_actions.stop(payload, db_path=database, workspace_root=workspace))
+    if 'request' in payload:
+        if set(payload) != {'request', 'context'} or not isinstance(payload['context'], str) or len(payload['context']) > 40000:
+            raise reminder_actions.ActionError('invalid_action_context')
+        request, context = payload['request'], payload['context']
+    else:
+        request, context = payload, None
+    return _emit(reminder_actions.start(request, db_path=database, workspace_root=workspace, context=context))
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="reminder.py", description="schedule-reminder CLI contract")
     p.add_argument("--db", default=None, help="DB path (or SCHEDULE_DB_PATH env)")
@@ -224,6 +257,9 @@ def build_parser():
     s = sub.add_parser("work-feed", help="read-only work projection; never initializes or migrates")
     s.set_defaults(fn=cmd_work_feed)
     s.add_argument("--limit", type=int, default=5000)
+
+    for verb in ('work-action', 'work-action-result', 'work-action-stop'):
+        sub.add_parser(verb).set_defaults(fn=cmd_work_action)
 
     s = sub.add_parser("sweep"); s.set_defaults(fn=cmd_sweep)
     s.add_argument("--now", default=None)
@@ -309,7 +345,7 @@ def main(argv=None):
     a = p.parse_args(argv)
     # ensure DB exists for all but init (init creates it explicitly)
     try:
-        if a.cmd not in ("init", "work-feed"):
+        if a.cmd not in ("init", "work-feed", "work-action", "work-action-result", "work-action-stop"):
             store.init_db(a.db)
         return a.fn(a)
     except store.SkillError as e:

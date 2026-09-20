@@ -221,8 +221,11 @@ def kill_tree(pid, pstart):
 
 
 # --------------------------------------------------------------------------- queue operations
-def enqueue(stream, request, workspace=None, msg_id=None, title=None):
+def enqueue(stream, request, workspace=None, msg_id=None, title=None, *,
+            idempotency_key=None, origin_item_id=None, evidence=None, work_id=None, db_path=None, action_id=None):
     """Create a queued work order. Returns the item dict, or {"_err": ...}."""
+    if idempotency_key and (not workspace or not os.path.isabs(workspace) or not os.path.isdir(workspace)):
+        return {"_err": "explicit workspace unavailable"}
     ws, note = resolve_workspace(workspace)
     ext = {
         EXT_V: EXT_VERSION,
@@ -235,12 +238,28 @@ def enqueue(stream, request, workspace=None, msg_id=None, title=None):
     }
     if note:
         ext[EXT_NOTE] = note
+    if origin_item_id:
+        ext['x_console_origin_item'] = origin_item_id
+    if evidence is not None:
+        if evidence not in ('git', 'artifacts'):
+            return {"_err": "invalid evidence mode"}
+        ext['x_agent_exec_evidence'] = evidence
     t = (title or request or "").strip().replace("\n", " ")
-    r = rem("add", "--title", ("执行:" + t)[:200], "--kind", "task",
-            "--source", WORK_SOURCE, "--ext", json.dumps(ext, ensure_ascii=False))
+    if idempotency_key:
+        r = {'item': store.add_item(("执行:" + t)[:200], kind='task', source=WORK_SOURCE,
+            ext=ext, actor=ACTOR, db_path=db_path, _id=work_id,
+            idempotency_key=idempotency_key, create_only=True)}
+    else:
+        r = rem("add", "--title", ("执行:" + t)[:200], "--kind", "task",
+                "--source", WORK_SOURCE, "--ext", json.dumps(ext, ensure_ascii=False))
     item = r.get("item")
     if not item:
         return r
+    if idempotency_key and (item['id'] != work_id or _ext(item).get('x_console_origin_item') != origin_item_id
+                           or _ext(item).get(EXT_WORKSPACE) != ws):
+        return {'_err': 'work identity conflict'}
+    if idempotency_key and exec_state(item) != 'preparing':
+        return item
     # The request is written to the run directory, never into ext: it is user text of unbounded
     # length and ext is argv-bound.
     d = run_dir(item, create=True)
@@ -248,7 +267,7 @@ def enqueue(stream, request, workspace=None, msg_id=None, title=None):
         f.write(request or "")
         f.flush()
         os.fsync(f.fileno())
-    item = store.publish_work(item["id"], actor=ACTOR)
+    item = store.publish_work(item["id"], actor=ACTOR, db_path=db_path, action_id=action_id)
     if not item:
         return {"_err": "work preparation cancelled or changed"}
     append_event(item, "enqueued", stream=stream, workspace=ws, note=note)

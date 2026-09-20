@@ -200,7 +200,7 @@ def test_v3_upgrade_preserves_existing_work_order_and_v1_item(sandbox, monkeypat
     receipts.store.init_db()
     receipts.store.init_db()
     with receipts._connection(None) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
         assert tuple(conn.execute("SELECT * FROM agent_operations").fetchone()) == before
         assert tuple(conn.execute("SELECT * FROM items").fetchone()) == item
     assert send()["state"] == "sent"

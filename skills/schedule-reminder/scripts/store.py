@@ -37,7 +37,7 @@ except Exception:  # pragma: no cover
 # Versions / contract constants
 # =================================================================================================
 API_VERSION = "1.0.0"          # external CLI/JSON contract version (decoupled from DB user_version)
-SCHEMA_USER_VERSION = 4        # PRAGMA user_version target (additive migrations only)
+SCHEMA_USER_VERSION = 5        # PRAGMA user_version target (additive migrations only)
 RECORD_SCHEMA_VERSION = 1      # per-row schema_version (tolerant forward parsing)
 RECOMMENDED_SQLITE = "3.51.3"  # < this => known WAL-reset multi-writer corruption bug (advisory)
 
@@ -312,6 +312,9 @@ def init_db(db_path=None):
                 if ver < 3:
                     _migrate_agent_operations(conn)
                     _migrate_work_evidence(conn)
+                if ver < 5:
+                    from reminder_action_store import migrate
+                    migrate(conn)
                 # Operation-only additions; item/event shapes stay v1.
                 conn.execute("PRAGMA user_version = %d" % SCHEMA_USER_VERSION)
         return path
@@ -427,7 +430,7 @@ def add_item(title, *, kind="task", due_at=None, state="pending", priority=0, pr
              description=None, scheduled_at=None, start_at=None, end_at=None, wait_until=None,
              tz=None, recurrence=None, rdate=None, exdate=None, tags=None, project=None,
              relations=None, alarms=None, source=None, idempotency_key=None, ext=None,
-             actor=None, db_path=None, _id=None):
+             actor=None, db_path=None, _id=None, create_only=False):
     """Create an item. Idempotent on idempotency_key (UPSERT). Returns the item dict."""
     if not title or not str(title).strip():
         raise SkillError("ERR_BAD_INPUT", "title is required")
@@ -463,6 +466,8 @@ def add_item(title, *, kind="task", due_at=None, state="pending", priority=0, pr
                     "SELECT * FROM items WHERE idempotency_key = ?", (idempotency_key,)
                 ).fetchone()
                 if existing is not None:
+                    if create_only:
+                        return _row_to_item(existing)
                     # idempotent replay: merge ext, refresh mutable fields, keep original id
                     merged_ext = _merge_ext(existing["ext"], ext)
                     # Re-arm when an already-notified row is pushed to a LATER due_at.
@@ -1425,11 +1430,15 @@ def claim_work(item_id, *, run_id=None, actor=None, db_path=None):
         conn.close()
 
 
-def publish_work(item_id, *, actor=None, db_path=None):
+def publish_work(item_id, *, actor=None, db_path=None, action_id=None):
     """Publish only after the full request is durable; cancellation during preparation wins."""
     conn = _connect(db_path)
     try:
         with _Tx(conn):
+            if action_id is not None:
+                receipt = conn.execute('SELECT state,work_item_id FROM work_actions WHERE id=?', (action_id,)).fetchone()
+                if not receipt or receipt['state'] != 'preparing' or receipt['work_item_id'] != item_id:
+                    return None
             row = _get_raw(conn, item_id)
             if not row or row["source"] != _WORK_SOURCE or row["state"] != "pending":
                 return None
@@ -1440,6 +1449,9 @@ def publish_work(item_id, *, actor=None, db_path=None):
             conn.execute("UPDATE items SET ext=?,updated_at=? WHERE id=?",
                          (_dump_json(ext), to_rfc3339(now_utc()), item_id))
             _append_event(conn, item_id, actor, "work_prepared")
+            if action_id is not None:
+                conn.execute("UPDATE work_actions SET state='queued',updated_at=? WHERE id=?",
+                             (to_rfc3339(now_utc()), action_id))
             return _row_to_item(_get_raw(conn, item_id))
     finally:
         conn.close()

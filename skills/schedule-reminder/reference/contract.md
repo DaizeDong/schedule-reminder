@@ -42,6 +42,9 @@ python reminder.py [--db PATH] [--actor NAME] <verb> [args...]
 | `events` | audit trail of an item | `--id` | `{events[]}` |
 | `health` | self-check | `--check-task` | `{health{...}}` |
 | `work-feed` | read-only work, result-summary and activity projection | `--limit` (1–10000; default 5000) | `{schemaVersion:1, available, observed_at, items[], events[], sources[], coverage, capabilities}` |
+| `work-action` | reserve and submit an owner-issued action | JSON stdin, explicit `--db` | `{schemaVersion:1, ok, status, action, wakeup, dispatch?}` |
+| `work-action-stop` | stop the exact current Agent action | JSON stdin, explicit `--db` | same action receipt |
+| `work-action-result` | attach the Controller submission acknowledgement | JSON stdin, explicit `--db` | same action receipt |
 
 `--actor NAME` (global) records who acted in the audit stream, pass your skill name.
 
@@ -63,6 +66,35 @@ Execution states are persisted observations. Summaries do not establish live pro
 independent review or executable validation. Human decisions and remediation have no connected
 contract yet and report unavailable. Failed or blocked work is never converted into an approval.
 Task relationships continue to require the existing reviewed linkage contract.
+
+### Todo actions
+
+Schema 5 adds durable action and stop receipts to the existing database. Only explicit `init`
+upgrades it. `work-feed` and all three action verbs never initialize or migrate a database.
+Tracked items carry `actions = {available, reason, revision, offers, links, current}`. Use the
+owner's offers; a source label or similar title cannot establish a session or executable task link.
+An Agent work item carries `origin_item_id` for navigation back to its todo.
+
+Submission and stop accept exactly `item_id`, `action_id`, `revision`, `request_id` strings.
+For submission, `action_id` identifies the offered action; for stop it identifies the current
+receipt. Keep the request ID and complete payload unchanged across uncertain replies.
+Same ID with a different payload is a conflict. Concurrent requests reuse active work. A terminal
+retry requires a new request ID and a freshly read revision. Task dispatch is emitted once only;
+the consumer must not replay a lost or uncertain Controller invocation.
+
+`work-action` also accepts `{request, context}`. Context is bounded source material selected by
+an exact recorded session ID, never additional execution authority. `work-action-result` accepts
+`{action_id, result}` where result has boolean `ok` and the Controller's status. `task_requested`
+means submission acknowledged, not payload success. `reconcile` preserves uncertain execution.
+Work completion never automatically completes the source todo.
+
+Set `SCHEDULE_ACTION_WORKSPACE` to an existing directory inside the private data directory resolved
+by the shared `fleet_guards.datadir` API for `schedule-reminder`. Each Agent action gets its own
+subdirectory; source requests and run logs use the existing `AGENT_CENTER_RUNS` directory. Both
+locations must live in the versioned private companion, whose visibility is checked at installation.
+There is no output fallback inside the public tool repository or the user's home directory.
+The existing runner selects bounded artifact snapshots only for these explicit non-code orders;
+other work retains Git evidence and independent review. All model work inherits llmcall policy.
 
 ## Item fields
 

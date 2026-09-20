@@ -78,7 +78,7 @@ def _llm(prompt, timeout, mode, *, workspace, cancel=None, actor_family=None):
     requirements = llmcall.ExecutionRequirements(
         workspace=workspace, access="workspace_write" if mode == "agent" else "read_only",
         replay="never_after_start" if mode == "agent" else "read_only")
-    return llmcall.call(prompt, mode=mode, timeout=float(timeout), cwd=workspace,
+    return llmcall.call(prompt, mode=mode, cwd=workspace,
                         requirements=requirements, cancel=cancel, avoid=actor_family,
                         log=lambda m: _log("llmcall: " + m))
 
@@ -360,7 +360,7 @@ _TAIL_SPEC = (
 
 def act_prompt(request, workspace, last_failure=None, fresh=False):
     parts = ["你要在这台机器上【真正执行】一个任务,不是给建议,不是写计划。",
-             "", "任务请求(来自用户在 Discord 频道里的一条回复):", request.strip(), "",
+             "", "用户提交的任务请求:", request.strip(), "",
              "工作目录: %s" % workspace,
              "你的文件写权限范围就是这个目录(及其子目录)。需要改这个范围之外的东西时,"
              "在 summary 里明确说出来,不要假装做到了。", ""]
@@ -411,6 +411,18 @@ def _write(path, text):
         os.fsync(f.fileno())
 
 
+def _capture_evidence(workspace):
+    operation = _OPERATION.get()
+    item = agent_task.get(operation[0]) if operation else None
+    if (item or {}).get('ext', {}).get('x_agent_exec_evidence') == 'artifacts':
+        from agent_artifacts import capture_artifacts, ArtifactEvidenceUnavailable
+        try:
+            return capture_artifacts(workspace)
+        except ArtifactEvidenceUnavailable as exc:
+            raise BaselineUnavailable(str(exc)) from exc
+    return capture_diff(workspace)
+
+
 def _initial_baseline(item_id, generation, workspace):
     op = agent_task.operation(item_id)
     workspace = os.path.normcase(os.path.realpath(workspace))
@@ -418,7 +430,7 @@ def _initial_baseline(item_id, generation, workspace):
         if op["checkpoint"] != "running":
             raise BaselineUnavailable("initial baseline missing after execution checkpoint")
         try:
-            before = capture_diff(workspace)
+            before = _capture_evidence(workspace)
         except CleanupUncertain:
             raise
         except (OSError, RuntimeError, UnicodeError) as exc:
@@ -540,7 +552,7 @@ def _run_approach_owned(item_id, stream, request, workspace, approach, post_repo
             if not result.effective_model or not result.model_family or before is None:
                 return stop("review_unavailable", "independent actor identity or baseline diff unavailable")
             try:
-                diff = capture_diff(workspace)
+                diff = _capture_evidence(workspace)
             except CleanupUncertain:
                 raise
             except (OSError, RuntimeError, UnicodeError) as exc:
@@ -571,7 +583,7 @@ def _run_approach_owned(item_id, stream, request, workspace, approach, post_repo
             decision = (reviewer.text or "").strip()
             if re.match(r"^DONE(?:\b|:)", decision, re.I):
                 # A changed workspace during review invalidates the evidence, not the work.
-                if capture_diff(workspace) != diff:
+                if _capture_evidence(workspace) != diff:
                     return stop("review_unavailable", "workspace changed during review")
                 if not agent_task.finish(item_id, True, summary[:200] or "done", generation=generation):
                     return {"outcome": "cancelled"}

@@ -3,6 +3,22 @@ import json
 import sqlite3
 
 
+def artifact_workspace(path, size=24):
+    """Generate a non-code workspace containing a synthetic report."""
+    path.mkdir(parents=True, exist_ok=True)
+    (path / 'report.txt').write_text(('Acme synthetic report.\n' * (size // 22 + 1))[:size], encoding='utf-8')
+    return path
+
+
+def action_database(path):
+    """Generate a full owner database and one actionable synthetic todo."""
+    import store
+    store.init_db(str(path))
+    item = store.add_item('整理 Acme 报告', description='整理合成资料，输出一份报告。',
+                          source='user', db_path=str(path))
+    return item
+
+
 def work_database(path):
     with sqlite3.connect(path) as conn:
         conn.executescript('''CREATE TABLE items(id TEXT PRIMARY KEY,title TEXT,state TEXT,source TEXT,
