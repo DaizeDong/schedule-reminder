@@ -9,7 +9,10 @@ permissions:
 
 jobs:
   suite:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     env:
       SCHEDULE_NOTIFICATION_LANGUAGE_POLICY: ${{ github.workspace }}/notification-policy/claude/scripts/notification_language.py
       PYTHONDONTWRITEBYTECODE: '1'
