@@ -17,9 +17,20 @@ features. Before changing anything, read [`PHILOSOPHY.md`](PHILOSOPHY.md).
 
 ## Run the suite
 
+Install the shared packages from the approved source revisions or wheel set before resolving
+`requirements.txt`. The linkage tests also use the sibling task-console checkout's generated
+fixtures. Set `SCHEDULE_NOTIFICATION_LANGUAGE_POLICY` to the maintained notification language
+module. Missing test dependencies are errors, not skipped tests.
+
 ```bash
+python -m pip install -r requirements.txt pytest
 python -m pytest skills/schedule-reminder/tests/ -q
 ```
+
+CI records the compatible dependency revisions in `.github/workflows/tests.yml`. Its private
+checkouts use separate read-only deploy keys. The notification policy checkout is sparse and
+contains only that module. Fork workflows without those keys fail with a dependency-access error;
+they do not receive credentials or run through `pull_request_target`.
 
 ## Conventions
 

@@ -1,3 +1,3 @@
-# The headless LLM chain (codex -> cc -> claude) is the shared llmcall package.
-llmcall @ git+https://github.com/DaizeDong/llmcall.git
+# Install the shared packages from the approved source revisions or wheel set.
+llmcall>=0.2.0
 fleet-guards>=0.1.0

@@ -189,8 +189,8 @@ def start(request, *, db_path, workspace_root=None, context=None):
         return _reply(db_path, row, wakeup=row['kind'] == 'agent' and row['state'] == 'queued')
     if row['kind'] == 'task':
         return _reply(db_path, row, dispatch=True)
-    import agent_task
     try:
+        import agent_task
         root = _workspace(workspace_root)
         if root is None:
             raise ActionError('action_workspace_unavailable')
@@ -273,8 +273,8 @@ def stop(request, *, db_path, workspace_root=None):
     finally:
         connection.close()
     if work:
-        import agent_tick
         try:
+            import agent_tick
             stopped = agent_tick.stop(row['work_item_id'], note='用户在待办工作台停止本次执行', post=False)
             if not any(record['id'] == row['work_item_id'] for record in stopped):
                 raise ActionError('stop_unconfirmed')

@@ -1,76 +1,88 @@
-# The skill's own acceptance suite, in CI.
-#
-# WHY THIS FILE EXISTS AT ALL
-# ---------------------------
-# Three workflows guarded this repo and not one of them ran the tests. The guards check prose,
-# secrets and data placement; the 99 tests that pin the frozen contract, the state machine, the
-# heartbeat's survival under pythonw and the anti-hallucination executor ran only when somebody
-# remembered to type the command from CONTRIBUTING.md. So the repo's most load-bearing checks were
-# also its only unenforced ones, which is the same shape as a vendored gate wired into nothing: a
-# reader sees a green badge row and reasonably concludes the suite is enforced.
-#
-# It became urgent with the execution tier. That code decides whether an agent with full authority
-# on the machine has finished, and its most important test is a NEGATIVE CONTROL: poison the check
-# command so it exits non-zero and prove the round refuses to close. A suite like that is worth
-# nothing if it only runs on the days someone thinks to run it.
-#
-# Tree only, no history: a test that failed last year and has since been fixed is not a live defect.
 name: tests
 
 on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   suite:
     runs-on: ubuntu-latest
+    env:
+      SCHEDULE_NOTIFICATION_LANGUAGE_POLICY: ${{ github.workspace }}/notification-policy/claude/scripts/notification_language.py
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v4
-        # The guards submodule holds datadir.py, which this repo's code resolves at runtime.
-        # Without this the directory is present and EMPTY, and the failure is not a missing
-        # checkout, it is whatever the code does when its resolver is absent.
         with:
+          path: schedule-reminder
           submodules: true
+          persist-credentials: false
+
+      - name: Require private dependency access
+        env:
+          LLMCALL_READ_KEY: ${{ secrets.LLMCALL_READ_KEY }}
+          POLICY_READ_KEY: ${{ secrets.NOTIFICATION_POLICY_READ_KEY }}
+          POLICY_REPOSITORY: ${{ vars.NOTIFICATION_POLICY_REPOSITORY }}
+        run: |
+          test -n "$LLMCALL_READ_KEY" || { echo "::error::LLMCALL_READ_KEY is required to test the real dependency"; exit 1; }
+          test -n "$POLICY_READ_KEY" || { echo "::error::NOTIFICATION_POLICY_READ_KEY is required to test the maintained language policy"; exit 1; }
+          test -n "$POLICY_REPOSITORY" || { echo "::error::NOTIFICATION_POLICY_REPOSITORY is required"; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          repository: DaizeDong/llmcall
+          ref: 39dd746958cc2443ed1878af9758569c136b5bea
+          path: llmcall
+          ssh-key: ${{ secrets.LLMCALL_READ_KEY }}
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.NOTIFICATION_POLICY_REPOSITORY }}
+          ref: 63993685e07e6d91030fb112605808e9ec897648
+          path: notification-policy
+          ssh-key: ${{ secrets.NOTIFICATION_POLICY_READ_KEY }}
+          persist-credentials: false
+          sparse-checkout: claude/scripts/notification_language.py
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: DaizeDong/task-console
+          ref: 8a65eb539c61eccac5859da34dbaa20a4989369f
+          path: task-console
+          persist-credentials: false
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
-      # requirements.txt, not just pytest. dispatch.py imports llmcall at module scope, so a runner
-      # without it cannot even COLLECT two of the test files. That was true since v0.4.0 and nobody
-      # saw it, because nothing ran the suite anywhere except one developer machine that happened to
-      # have the package installed. The first green-to-red transition after wiring this workflow up
-      # was exactly that, which is the argument for the workflow in one line.
-      #
-      # Installing the real dependency rather than stubbing around it is deliberate: CI should
-      # exercise the import path production uses, otherwise it certifies a configuration that does
-      # not exist anywhere.
-      - name: Install deps
+      - name: Install real shared dependencies
         run: |
-          test -f requirements.txt || { echo "::error::requirements.txt is MISSING"; exit 1; }
-          python -m pip install --quiet -r requirements.txt
-          python -m pip install --quiet pytest
-          python -c "import llmcall; print('llmcall ok')"
+          python -m pip install --quiet "git+https://github.com/DaizeDong/fleet-guards.git@3ad9b0ed38437ae4194eef9b462f53807d8124b7" ./llmcall ./task-console -r schedule-reminder/requirements.txt pytest
+          python -m pip check
+          python -c "from llmcall import ExecutionRequirements; from fleet_guards import datadir, filesystem"
+          test -f "$SCHEDULE_NOTIFICATION_LANGUAGE_POLICY"
 
-      # NOT wrapped in `if [ -d ... ]`, for the reason the pii-guard workflow spells out: a step
-      # that skips itself when its own subject is missing reports success for a run that examined
-      # nothing.
-      #
-      # `-p no:cacheprovider` is not cosmetic. A same-size edit to a source file inside the same
-      # second leaves a stale .pyc that Python considers valid, because the freshness check is
-      # (mtime seconds, size) and both can be unchanged. That really happened while this suite was
-      # being written: the tests ran against bytecode from a mutant that had already been reverted
-      # on disk. Disabling the cache removes the failure mode from CI entirely.
       - name: Acceptance suite
+        working-directory: schedule-reminder
         run: |
-          test -d skills/schedule-reminder/tests || { echo "::error::the test suite is MISSING -- an absent suite is not a passing suite"; exit 1; }
-          python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider
-          # (no `|| true`: every nonzero status here is a failure, including collection errors.)
+          test -d skills/schedule-reminder/tests || { echo "::error::the test suite is missing"; exit 1; }
+          python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider --junitxml=../test-results.xml
 
-      # Guards against the suite quietly shrinking to nothing, which would otherwise look exactly
-      # like a suite that passes. The floor is raised deliberately when tests are added, never
-      # lowered to make a red build green.
       - name: The suite must not have evaporated
+        working-directory: schedule-reminder
         run: |
-          n=$(python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider --collect-only 2>/dev/null | grep -c '::' || true)
+          n=$(python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider --collect-only | grep -c '::')
           echo "collected $n tests"
-          test "$n" -ge 156 || { echo "::error::only $n tests collected, expected at least 156 -- tests were removed or collection broke"; exit 1; }
+          test "$n" -ge 422 || { echo "::error::only $n tests collected, expected at least 422"; exit 1; }
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-results
+          path: test-results.xml
+          if-no-files-found: error

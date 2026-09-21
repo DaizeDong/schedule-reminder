@@ -184,3 +184,40 @@ def test_workspace_must_be_inside_owner_private_storage(case, tmp_path):
     actions = module()
     database, workspace, item = case
     assert actions._workspace(str(tmp_path.parent)) is None
+
+
+def test_missing_submit_dependency_records_failure_and_allows_explicit_retry(case, monkeypatch):
+    actions = module()
+    database, workspace, item = case
+    payload = request(actions, database, workspace, item)
+    with monkeypatch.context() as missing:
+        missing.setitem(sys.modules, 'agent_task', None)
+        with pytest.raises(actions.ActionError, match='work_submission_failed'):
+            actions.start(payload, db_path=str(database), workspace_root=str(workspace))
+    projection = actions.inspect_item(str(database), item['id'], workspace_root=str(workspace))
+    assert projection['current']['state'] == 'failed'
+    assert actions.start(payload, db_path=str(database), workspace_root=str(workspace))['status'] == 'failed'
+    retry = request(actions, database, workspace, item, 'synthetic-retry-after-import')
+    assert actions.start(retry, db_path=str(database), workspace_root=str(workspace))['status'] == 'queued'
+    with sqlite3.connect(database) as conn:
+        assert conn.execute("SELECT count(*) FROM items WHERE source='agent-center:work'").fetchone()[0] == 1
+
+
+def test_missing_stop_dependency_keeps_execution_unconfirmed_and_blocks_duplicate(case, monkeypatch):
+    actions = module()
+    database, workspace, item = case
+    started = actions.start(request(actions, database, workspace, item),
+                            db_path=str(database), workspace_root=str(workspace))
+    projection = actions.inspect_item(str(database), item['id'], workspace_root=str(workspace))
+    payload = {'item_id': item['id'], 'action_id': started['action']['id'],
+               'revision': projection['revision'], 'request_id': 'synthetic-stop-import-failure'}
+    with monkeypatch.context() as missing:
+        missing.setitem(sys.modules, 'agent_tick', None)
+        stopped = actions.stop(payload, db_path=str(database))
+    assert stopped['status'] == 'reconcile'
+    assert actions.stop(payload, db_path=str(database))['status'] == 'reconcile'
+    next_click = request(actions, database, workspace, item, 'synthetic-click-after-stop-failure')
+    reply = actions.start(next_click, db_path=str(database), workspace_root=str(workspace))
+    assert reply['action']['id'] == started['action']['id'] and reply['status'] == 'reconcile'
+    with sqlite3.connect(database) as conn:
+        assert conn.execute("SELECT count(*) FROM items WHERE source='agent-center:work'").fetchone()[0] == 1
