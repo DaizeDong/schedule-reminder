@@ -24,7 +24,7 @@ jobs:
         env:
           LLMCALL_READ_KEY: ${{ secrets.LLMCALL_READ_KEY }}
           POLICY_READ_KEY: ${{ secrets.NOTIFICATION_POLICY_READ_KEY }}
-          POLICY_REPOSITORY: ${{ vars.NOTIFICATION_POLICY_REPOSITORY }}
+          POLICY_REPOSITORY: ${{ secrets.NOTIFICATION_POLICY_REPOSITORY }}
         run: |
           test -n "$LLMCALL_READ_KEY" || { echo "::error::LLMCALL_READ_KEY is required to test the real dependency"; exit 1; }
           test -n "$POLICY_READ_KEY" || { echo "::error::NOTIFICATION_POLICY_READ_KEY is required to test the maintained language policy"; exit 1; }
@@ -40,7 +40,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          repository: ${{ vars.NOTIFICATION_POLICY_REPOSITORY }}
+          repository: ${{ secrets.NOTIFICATION_POLICY_REPOSITORY }}
           ref: 63993685e07e6d91030fb112605808e9ec897648
           path: notification-policy
           ssh-key: ${{ secrets.NOTIFICATION_POLICY_READ_KEY }}
