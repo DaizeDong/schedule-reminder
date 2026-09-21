@@ -14,12 +14,14 @@ def test_agent_call_inherits_policy_and_keeps_hard_requirements(monkeypatch, tmp
         seen.update(kwargs)
         return Result(error="unsupported", outcome="capability_unavailable")
     monkeypatch.setattr(llmcall, "call", call)
-    result = agent_run._llm("synthetic", timeout=3, mode="agent", workspace=str(tmp_path))
+    requirements = llmcall.ExecutionRequirements(workspace=str(tmp_path), access="workspace_write", replay="never_after_start")
+    result = agent_run._llm("synthetic", timeout=3, mode="agent", workspace=str(tmp_path), requirements=requirements)
     assert result.outcome == "capability_unavailable"
     assert not {"chain", "model", "effort", "env"}.intersection(seen)
     assert seen["requirements"].workspace == str(tmp_path)
     assert seen["requirements"].access == "workspace_write"
     assert seen["requirements"].replay == "never_after_start"
+    assert seen["requirements"] is requirements
 
 
 def test_review_prompt_contains_diff_output_and_actual_identity():

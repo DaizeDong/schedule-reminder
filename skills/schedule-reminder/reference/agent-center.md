@@ -311,11 +311,16 @@ python agent_task.py list           # the queue, no secrets
   enqueues or cancels. `agent` carries no item id, so the anti-hallucination rule simply does not
   apply to it; `stop` is checked against the orders that are actually running. The channel
   confirmation appends the dispatched ids itself, so a vague model summary cannot hide a live agent.
+- **Execution inherits the installed llmcall policy.** The working directory selects where the
+  agent starts; it does not establish filesystem isolation. Explicit hard requirements, when
+  supplied, are forwarded unchanged and may be refused by llmcall. Cancellation, publication
+  fences and the prohibition on replaying uncertain execution remain in force.
 - **A round is act, verify, review, decide.** The agent must return a command that exits non-zero
   when the job is NOT done; `agent_run` executes that command and records the real output. Only a
-  passing check reaches an independent reviewer, on a different provider, which answers DONE or
+  passing check reaches a reviewer with a verified different model family, which answers DONE or
   CONTINUE. A task that genuinely cannot be checked by a command falls back to review alone, and the
-  terminal report says so rather than looking like the stronger case.
+  terminal report says so rather than looking like the stronger case. If actual model identity
+  is unavailable, the output is retained for review and the order is not marked done.
 - **No progress rotates the approach, it does not stop the order.** Three rounds sharing one
   signature (normalized check output plus the content hashes of the changed files) mean the attempt
   is not moving. The next approach gets a fresh directory, a different provider, and the problem

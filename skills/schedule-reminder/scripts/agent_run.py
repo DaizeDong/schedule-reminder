@@ -70,17 +70,15 @@ def fence(text, limit=900):
 
 
 # --------------------------------------------------------------------------- llmcall
-def _llm(prompt, timeout, mode, *, workspace, cancel=None, actor_family=None):
-    """Preserve the installed llmcall policy and fail closed on explicit hard requirements."""
+def _llm(prompt, timeout, mode, *, workspace, cancel=None, actor_family=None, requirements=None):
+    """Use installed permissions by default; forward explicitly requested boundaries unchanged."""
     if mode not in ("judge", "research", "agent"):
         raise ValueError("invalid llmcall mode: %r" % mode)
     import llmcall
-    requirements = llmcall.ExecutionRequirements(
-        workspace=workspace, access="workspace_write" if mode == "agent" else "read_only",
-        replay="never_after_start" if mode == "agent" else "read_only")
+    options = {} if requirements is None else {"requirements": requirements}
     return llmcall.call(prompt, mode=mode, cwd=workspace,
-                        requirements=requirements, cancel=cancel, avoid=actor_family,
-                        log=lambda m: _log("llmcall: " + m))
+                        cancel=cancel, avoid=actor_family,
+                        log=lambda m: _log("llmcall: " + m), **options)
 
 
 def identity(result):

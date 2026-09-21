@@ -600,9 +600,9 @@ def test_actor_and_reviewer_use_common_policy_and_family_exclusion(monkeypatch, 
     agent_run._llm("p", 10, "agent", workspace=str(tmp_path))
     agent_run._llm("p", 10, "judge", workspace=str(tmp_path), actor_family="family-a")
     assert all("chain" not in kw and "model" not in kw and "timeout" not in kw for kw in seen)
-    assert seen[0]["requirements"].replay == "never_after_start"
+    assert all("requirements" not in kw and kw["cwd"] == str(tmp_path) for kw in seen)
     assert seen[1]["avoid"] == "family-a"
-    assert seen[1]["requirements"].access == "read_only"
+    assert [kw["mode"] for kw in seen] == ["agent", "judge"]
 
 
 def test_policy_is_resolved_per_call_not_at_import(monkeypatch, tmp_path):
