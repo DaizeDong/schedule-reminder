@@ -32,8 +32,8 @@ SQLite (WAL) single file          <- private storage, NEVER touched by downstrea
 
 The Agent Center bus is **two-way**: `relay.py`/`digest.py` push out; `ingest.py`/`commands.py`/
 `dispatch.py` pull user messages back in. A message matching a registered command is answered
-deterministically by that handler; everything else goes to the codex→cc→claude judge chain
-(`llm_chain.py`) and becomes pool mutations. Both halves are single points on purpose: one
+deterministically by that handler; everything else uses the current shared llmcall routing
+and becomes pool mutations. Both halves are single points on purpose: one
 enumeration of which channels are read, one egress for everything sent. See
 `reference/agent-center.md`.
 
@@ -46,9 +46,15 @@ up **all** missed reminders on the next run (idempotent, at-least-once + dedupe)
 
 ## Command cheat-sheet
 
+For a managed installation, resolve its current artifact runtime through the existing local
+launcher binding and use that runtime's Python and schedule-reminder resource. Verify that
+`ensure --help` is available. A linked source checkout may be older; do not fall back to its
+legacy `add` command when creation review is unavailable.
+
 ```bash
 python scripts/reminder.py init
-python scripts/reminder.py add --title "买牛奶" --due-at 2026-06-28T17:00:00Z --priority 1 \
+python scripts/reminder.py creation-preflight --title "买牛奶" --due-at 2026-06-28T17:00:00Z
+python scripts/reminder.py ensure --title "买牛奶" --due-at 2026-06-28T17:00:00Z --priority 1 \
        --source my-skill --idempotency-key my-skill:42 --ext '{"x_my_skill_id":"42"}'
 python scripts/reminder.py get  --id <ID>
 python scripts/reminder.py list --active --source my-skill --limit 50
@@ -76,15 +82,37 @@ table -> `reference/contract.md`.
 
 ## Hard rules
 
-1. **Downstream never reads the DB**, only `reminder.py <verb> --json`. (Lets the engine evolve.)
+1. **Downstream never reads the DB**, only `reminder.py <verb>`. Responses are always JSON.
 2. **DB stays on local NTFS**, never OneDrive/GDrive/network (WAL lock + sync = corruption).
 3. **State changes go through `transition`/`done`/`block`**, never `update` (state machine guarded).
 4. **Always pass `--source` + `--idempotency-key`** on writes (audit + safe retries).
 5. **Unknown fields are MUST-PRESERVE**, put extras in `--ext` as `x_<skill>_*`; the base round-trips
    them.
 6. **All time is UTC RFC3339**; due trigger is the interval `now >= due_at - lead`, never `==`.
+7. **Preflight across producers, then ensure.** Run `creation-preflight` with the proposed content,
+   dates, project and external identifiers. Inspect candidate content, not just titles or source.
+   Use `ensure` for new obligations: equivalent active records are reused inside one transaction.
+   For a semantic follow-up, pass the reviewed `--reuse-id`, `--expected-revision` and `--note`;
+   only the new note is appended. Preserve different orders, dates, recipients and alarm times.
+   A changed due date uses `snooze` or `update` on the existing ID. Read
+   `reference/integration.md` for `ERR_CREATION_REVIEW` and distinct occurrences.
+8. **Retry with the original identity and fields.** Preserve source request/action IDs. `ensure`
+   replays its recorded result without overwriting edits or reviving completed items. A new
+   message or another channel alone does not establish a new obligation. Keep legacy `add`
+   upserts for intentional producer state/heartbeat updates, not as a fallback after failed review.
 
 ## Progressive loading
+
+When reviewing duplicates, read content across all producers, including actionable email reminders.
+Keep one current obligation and link its earlier records with `x_console_consolidation.group_under`.
+Use `duplicate_of` only for reviewed superseded copies; cancel those copies through `transition`,
+preserving their source messages and original content. Preserve distinct orders, billing periods,
+appointments and reminder times. The current engine fires at the earliest alarm lead, so do not
+replace separate preparation/departure reminders with multiple alarms and assume both will fire.
+Group those reminders for display while retaining their independently scheduled records.
+
+Recurring background automation belongs to the `automation-management` skill and the existing
+task registration authority. Do not create a Windows task for every reminder or follow-up.
 
 This `SKILL.md` is the only always-loaded file. Load one shard on demand:
 
