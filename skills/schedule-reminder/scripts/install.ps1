@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Idempotent installer for schedule-reminder (T0 base).
   Creates the DB (WAL + schema), registers the PT5M heartbeat scheduled task, junctions the skill
