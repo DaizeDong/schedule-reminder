@@ -46,6 +46,7 @@ import json
 import os
 import re
 import sys
+import private_data
 import time
 import urllib.error
 import urllib.parse
@@ -70,12 +71,20 @@ CHANNEL_OF = {}
 # ids, because a command handler matches one message at a time: matching against the whole batch
 # would let an ordinary sentence that happens to contain a trigger word run a command.
 LAST_POLL_MSGS = {}
-_DEFAULT_REGISTRY = os.path.join(os.path.expanduser("~"), ".agent-center", "registry.json")
-_STATE_DIR = os.path.join(os.path.expanduser("~"), ".agent-center", "state")
+_STATE_DIR = None
+
+
+def state_dir():
+    return _STATE_DIR or str(private_data.data_dir()/"state")
+
+
+def prepare_state():
+    private_data.prove_private(state_dir())
+    os.makedirs(state_dir(), exist_ok=True)
 
 
 def registry_path():
-    return os.environ.get("AGENT_CENTER_CONFIG") or _DEFAULT_REGISTRY
+    return str(private_data.registry_path())
 
 
 def load_registry():
@@ -125,11 +134,11 @@ def _is_user(m, owner=None):
 
 def _last_file(channel_id):
     """The cursor, keyed on the channel id. See the STATE note in the module docstring."""
-    return os.path.join(_STATE_DIR, "%s.last" % channel_id)
+    return os.path.join(state_dir(), "%s.last" % channel_id)
 
 
 def _inbox_file(stream):
-    return os.path.join(_STATE_DIR, "%s.inbox" % stream)
+    return os.path.join(state_dir(), "%s.inbox" % stream)
 
 
 _SAFE_KEY = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -148,7 +157,7 @@ def _streams(reg):
     """Registered, pollable streams: {name: channel_id}. The registry half of channels()."""
     out = {}
     for name, s in (reg.get("streams") or {}).items():
-        if s.get("channel_id") and s.get("inbound", True):
+        if s.get("channel_id") and s.get("inbound", True) and s.get("listen", True):
             out[name] = s["channel_id"]
     return out
 
@@ -156,7 +165,7 @@ def _streams(reg):
 def _opted_out(reg):
     """Channel ids the owner has explicitly excluded, so discovery cannot add them back."""
     return {str(s["channel_id"]) for s in (reg.get("streams") or {}).values()
-            if s.get("channel_id") and not s.get("inbound", True)}
+            if s.get("channel_id") and (not s.get("inbound", True) or not s.get("listen", True))}
 
 
 def discovered_channels(reg, token, log=None):
@@ -250,8 +259,8 @@ def _adopt_cursor(channel_id, stream):
     if os.path.exists(target):
         return None, None
     found = []
-    for cand in (os.path.join(_STATE_DIR, "%s.last" % stream) if stream else None,
-                 os.path.join(_STATE_DIR, "gradient.%s.last" % channel_id)):
+    for cand in (os.path.join(state_dir(), "%s.last" % stream) if stream else None,
+                 os.path.join(state_dir(), "gradient.%s.last" % channel_id)):
         if not cand or not os.path.exists(cand):
             continue
         try:
@@ -265,7 +274,7 @@ def _adopt_cursor(channel_id, stream):
         return None, None
     best = max(found, key=int)
     behind = min(found, key=int) if len(found) > 1 and min(found, key=int) != best else None
-    os.makedirs(_STATE_DIR, exist_ok=True)
+    prepare_state()
     with open(target, "w") as f:
         f.write(best)
     return best, behind
@@ -289,7 +298,8 @@ def _record_migration_gap(stream, channel_id, token, behind, adopted, log=None):
         return
     if not missed:
         return
-    path = os.path.join(_STATE_DIR, "%s.migrated.inbox" % _key(stream, channel_id))
+    path = os.path.join(state_dir(), "%s.migrated.inbox" % _key(stream, channel_id))
+    private_data.prepare_parent(path)
     with open(path, "w", encoding="utf-8") as f:
         f.write("(游标迁移:以下 %d 条消息位于两个旧游标之间,已记录但未自动执行,请人工过目)\n---\n"
                 % len(missed))
@@ -307,7 +317,7 @@ def poll_stream(stream, channel_id, token, owner=None, log=None):
     message is consumed and dropped. A reader that skips what it does not recognise, and advances
     anyway, makes the message disappear with no error and no record; that is the bug this bus was
     reorganised around, and it is why the cursor write and the inbox write live in one function."""
-    os.makedirs(_STATE_DIR, exist_ok=True)
+    prepare_state()
     adopted, behind = _adopt_cursor(channel_id, stream)
     if behind:
         _record_migration_gap(stream, channel_id, token, behind, adopted, log=log)
@@ -437,11 +447,11 @@ def _reactors(channel_id, msg_id, api_ref, token, limit=100):
 
 
 def _reactions_inbox_file(stream):
-    return os.path.join(_STATE_DIR, "%s.reactions.inbox" % stream)
+    return os.path.join(state_dir(), "%s.reactions.inbox" % stream)
 
 
 def _seen_file(stream):
-    return os.path.join(_STATE_DIR, "%s.reactions.seen" % stream)
+    return os.path.join(state_dir(), "%s.reactions.seen" % stream)
 
 
 def _load_seen(stream):
@@ -453,11 +463,9 @@ def _load_seen(stream):
 
 
 def _save_seen(stream, seen):
-    try:
-        with open(_seen_file(stream), "w", encoding="utf-8") as f:
-            json.dump(sorted(seen), f)
-    except Exception:
-        pass
+    prepare_state()
+    with open(_seen_file(stream), "w", encoding="utf-8") as f:
+        json.dump(sorted(seen), f)
 
 
 def _snippet(text, n=280):
@@ -490,7 +498,7 @@ def reaction_events(channel_id, token, owner, msgs):
 
 def poll_reactions_stream(stream, channel_id, token, owner, limit=50):
     """New owner reactions on recent messages -> write synthesized inbox; return new events."""
-    os.makedirs(_STATE_DIR, exist_ok=True)
+    prepare_state()
     stream = _key(stream, channel_id)
     msgs = _fetch(channel_id, token, limit=limit)  # recent, newest first
     if not msgs:
@@ -638,7 +646,7 @@ def main():
         return 0
     if a.cmd == "arm":
         tok = bot_token(reg)
-        os.makedirs(_STATE_DIR, exist_ok=True)
+        prepare_state()
         n = 0
         for stream, ch in channels(reg, tok):
             latest = _fetch(ch, tok, limit=1)

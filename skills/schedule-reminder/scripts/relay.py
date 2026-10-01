@@ -59,6 +59,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import private_data
 import sys
 import urllib.request
 
@@ -72,7 +73,6 @@ for _s in (sys.stdout, sys.stderr):
 # Discord 403s the default urllib UA, a real User-Agent is mandatory.
 _UA = "AgentCenter-Relay/1.0 (+https://discord.com)"
 _API = "https://discord.com/api/v10"
-_DEFAULT_REGISTRY = os.path.join(os.path.expanduser("~"), ".agent-center", "registry.json")
 
 # Discord rejects a single message whose `content` exceeds 2000 characters with HTTP 400,
 # and the whole message is then lost. _CHUNK_BUDGET leaves room for the "(n/m)" marker that
@@ -130,7 +130,7 @@ def split_for_discord(text: str, budget: int = _CHUNK_BUDGET) -> list[str]:
 
 
 def registry_path() -> str:
-    return os.environ.get("AGENT_CENTER_CONFIG") or _DEFAULT_REGISTRY
+    return str(private_data.registry_path())
 
 
 def load_registry() -> dict:
@@ -262,6 +262,48 @@ def _big_brother(text: str) -> bool:
     except Exception as e:
         sys.stderr.write("relay: big-brother fallback failed (%s)\n" % e)
         return False
+
+
+def deliver(stream, content):
+    """Deliver through the configured stream and retain confirmed Discord message IDs."""
+    from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+    import uuid
+    reg = load_registry()
+    target = (reg.get('streams') or {}).get(stream) or {}
+    webhook = target.get('webhook')
+    token = bot_token(reg)
+    channel = target.get('channel_id')
+    if not webhook and not (channel and token):
+        return relay(stream, content)
+    if os.environ.get('AGENT_CENTER_RELAY_DRYRUN'):
+        return {'kind': 'synthetic-local', 'receipt_id': str(uuid.uuid4()),
+                'delivered': True, 'exit_code': 0}
+    receipts = []
+    for part in split_for_discord(content):
+        payload = {'content': part, 'flags': 4}
+        headers = {'Content-Type': 'application/json', 'User-Agent': _UA}
+        if webhook:
+            parsed = urlsplit(webhook)
+            query = dict(parse_qsl(parsed.query))
+            query['wait'] = 'true'
+            url = urlunsplit(parsed._replace(query=urlencode(query)))
+            if target.get('username'):
+                payload['username'] = target['username']
+        else:
+            url = '%s/channels/%s/messages' % (_API, channel)
+            headers['Authorization'] = 'Bot '+token
+        request = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'),
+                                         headers=headers, method='POST')
+        with urllib.request.urlopen(request, timeout=30) as response:
+            if response.status != 200:
+                raise ValueError('delivery response did not confirm a message')
+            message = json.loads(response.read().decode('utf-8'))
+        receipt = message.get('id') if isinstance(message, dict) else None
+        if not isinstance(receipt, str) or not receipt.strip():
+            raise ValueError('delivery response lacked a message ID')
+        receipts.append(receipt)
+    return {'kind': 'discord-message', 'receipt_id': ','.join(receipts),
+            'delivered': True, 'exit_code': 0}
 
 
 def relay(stream: str, content: str, username: str | None = None) -> bool:

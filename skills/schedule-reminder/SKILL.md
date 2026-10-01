@@ -32,8 +32,8 @@ SQLite (WAL) single file          <- private storage, NEVER touched by downstrea
 
 The Agent Center bus is **two-way**: `relay.py`/`digest.py` push out; `ingest.py`/`commands.py`/
 `dispatch.py` pull user messages back in. A message matching a registered command is answered
-deterministically by that handler; everything else goes to the codex→cc→claude judge chain
-(`llm_chain.py`) and becomes pool mutations. Both halves are single points on purpose: one
+deterministically by that handler; everything else uses the installed `llmcall.call` judge policy
+and becomes pool mutations or an idempotent work order. Both halves are single points on purpose: one
 enumeration of which channels are read, one egress for everything sent. See
 `reference/agent-center.md`.
 
@@ -43,6 +43,26 @@ check which could have failed. Details in the same shard.
 
 The OS task is only a heartbeat; `tick` reconciles the local table, so a slept/off machine catches
 up **all** missed reminders on the next run (idempotent, at-least-once + dedupe).
+
+## Installation and measured readiness
+
+Initialize a PRIVATE versioned companion and set `SCHEDULE_REMINDER_CONFIG` to its root before writes.
+`SCHEDULE_REMINDER_DATA_DIR` optionally selects DATA inside another proven PRIVATE repository.
+An explicit `--db` takes precedence over `SCHEDULE_DB_PATH`. Missing storage is an empty read,
+but writes fail until the PRIVATE database is explicitly initialized.
+
+`scripts/install.ps1 -Capabilities store,remind -Plan` emits four capability rows without effects.
+Omitting selection chooses store plus remind; explicit empty selection is a no-op. Ingest and work
+are optional, with their own tasks and llmcall dependency. The installer fails when selected
+readiness is incomplete, including after successful task registration.
+
+`health` keeps its report-success JSON and exit zero. Inspect `health.readiness.ready` for readiness.
+Selection uses `SCHEDULE_CAPABILITIES` or `health --capabilities`. Readiness requires PRIVATE store,
+actual task readback, imports under the selected interpreter, and recent identity-bound worker
+receipts. A path, static file, process exit, or synthetic receipt cannot prove external delivery.
+The reminder worker writes normal private evidence after a confirmed relay delivery; health only
+reads it. Selected ingest/work remain unmeasured until their own success evidence is available.
+See `reference/deployment.md` for the task and evidence contract.
 
 ## Command cheat-sheet
 

@@ -23,7 +23,10 @@ import os
 import threading
 import time
 import uuid as _uuid
+from pathlib import Path
 from datetime import datetime, timezone
+
+import private_data
 
 # --- SQLite backend selection: prefer a bundled-newer pysqlite3 if present, else stdlib ----------
 try:  # pragma: no cover - depends on host
@@ -168,22 +171,36 @@ def uuid7():
 # DB path / connection / pragmas
 # =================================================================================================
 def default_db_path():
-    return os.environ.get(
-        "SCHEDULE_DB_PATH",
-        os.path.join(os.path.expanduser("~"), ".claude", "schedule-reminder", "db.sqlite3"),
-    )
+    return os.environ.get("SCHEDULE_DB_PATH") or str(private_data.data_dir()/"db.sqlite3")
 
 
-def _connect(db_path=None):
+def _connect(db_path=None, *, readonly=False, create=False, immutable=False):
     """Open a connection in autocommit mode (isolation_level=None) so WE control BEGIN IMMEDIATE."""
     path = db_path or default_db_path()
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    conn = sqlite3.connect(path, isolation_level=None, timeout=10.0)
+    if not readonly:
+        try:
+            private_data.prove_private(path)
+        except PermissionError as error:
+            raise SkillError("ERR_PERMISSION", str(error)) from error
+        except ValueError as error:
+            raise SkillError("ERR_DATA_POLICY", str(error)) from error
+    if not os.path.isfile(path) and not create:
+        raise SkillError("ERR_UNINITIALIZED", "initialize the PRIVATE database with init")
+    target = Path(path).resolve().as_uri()+"?mode=ro" if readonly else path
+    if readonly and immutable:
+        target += '&immutable=1'
+    try:
+        if create:
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        conn = sqlite3.connect(target, uri=readonly, isolation_level=None, timeout=10.0)
+    except PermissionError as error:
+        raise SkillError('ERR_PERMISSION', str(error)) from error
     conn.row_factory = sqlite3.Row
     # Connection-level pragmas (busy_timeout is NOT persistent, must be set per connection).
     conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA synchronous = NORMAL")
+    if not readonly:
+        conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
 
@@ -274,8 +291,7 @@ CREATE TABLE IF NOT EXISTS meta (
 def init_db(db_path=None):
     """Create schema, enable WAL (durable per-file property), set user_version. Idempotent."""
     path = db_path or default_db_path()
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    conn = _connect(path)
+    conn = _connect(path, create=True)
     try:
         conn.execute("PRAGMA journal_mode = WAL")  # persists for the file; set once
         conn.executescript(_DDL)
@@ -396,7 +412,7 @@ def _enforce_terminal_fields(fields, to_state, now):
 def add_item(title, *, kind="task", due_at=None, state="pending", priority=0, progress=0,
              description=None, scheduled_at=None, start_at=None, end_at=None, wait_until=None,
              tz=None, recurrence=None, rdate=None, exdate=None, tags=None, project=None,
-             relations=None, alarms=None, source=None, idempotency_key=None, ext=None,
+             relations=None, alarms=None, source=None, idempotency_key=None, ext=None, if_exists="update",
              actor=None, db_path=None, _id=None):
     """Create an item. Idempotent on idempotency_key (UPSERT). Returns the item dict."""
     if not title or not str(title).strip():
@@ -433,6 +449,8 @@ def add_item(title, *, kind="task", due_at=None, state="pending", priority=0, pr
                     "SELECT * FROM items WHERE idempotency_key = ?", (idempotency_key,)
                 ).fetchone()
                 if existing is not None:
+                    if if_exists == "return":
+                        return _row_to_item(existing)
                     # idempotent replay: merge ext, refresh mutable fields, keep original id
                     merged_ext = _merge_ext(existing["ext"], ext)
                     # Re-arm when an already-notified row is pushed to a LATER due_at.
@@ -664,7 +682,9 @@ def snooze(item_id, until, *, actor=None, db_path=None):
 # Public API, read ops (no transaction; WAL gives consistent snapshot reads)
 # =================================================================================================
 def get_item(item_id, *, db_path=None):
-    conn = _connect(db_path)
+    if not os.path.isfile(db_path or default_db_path()):
+        return None
+    conn = _connect(db_path, readonly=True)
     try:
         return _row_to_item(_get_raw(conn, item_id))
     finally:
@@ -680,7 +700,9 @@ def list_items(*, state=None, source=None, kind=None, due_before=None, active_on
     any active view.  Both the email digest and Agent Center build their actionable lists through
     this shared query, so applying the rule in SQL also keeps pagination correct for every caller.
     """
-    conn = _connect(db_path)
+    if not os.path.isfile(db_path or default_db_path()):
+        return {"items": [], "next_cursor": None}
+    conn = _connect(db_path, readonly=True)
     try:
         where, params = [], []
         if state:
@@ -726,7 +748,9 @@ def due_items(*, now=None, lead=0, db_path=None):
     """
     now_s = resolve_now(now)
     now_dt = parse_dt(now_s)
-    conn = _connect(db_path)
+    if not os.path.isfile(db_path or default_db_path()):
+        return []
+    conn = _connect(db_path, readonly=True)
     try:
         rows = conn.execute(
             "SELECT * FROM items WHERE due_at IS NOT NULL "
@@ -942,14 +966,14 @@ def _next_due(due_dt, recurrence, after_dt, exdate=None):
 def _default_notify(item):
     """Bridge to notify.notify; imported lazily to keep store decoupled."""
     try:
-        from notify import notify  # type: ignore
+        from notify import deliver as notify  # type: ignore
     except Exception:
         import importlib.util
         here = os.path.dirname(os.path.abspath(__file__))
         spec = importlib.util.spec_from_file_location("notify", os.path.join(here, "notify.py"))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)  # type: ignore
-        notify = mod.notify
+        notify = mod.deliver
     title = item.get("title", "(no title)")
     due = item.get("due_at", "")
     text = "[reminder] %s%s" % (title, ("  (due %s)" % due if due else ""))
@@ -973,7 +997,7 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
     now_dt = parse_dt(now_s)
     notify_fn = notify_fn or _default_notify
     conn = _connect(db_path)
-    dispatched, retried, blocked, skipped = [], [], [], []
+    dispatched, retried, blocked, skipped, receipts = [], [], [], [], []
     try:
         from datetime import timedelta
         stale = to_rfc3339(now_dt - timedelta(seconds=_CLAIM_TTL))
@@ -1030,7 +1054,9 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
                 continue
 
             try:
-                ok = bool(notify_fn(item))
+                delivered = notify_fn(item)
+                ok = (delivered.get("delivered") is True and type(delivered.get("exit_code")) is int and delivered.get("exit_code") == 0
+                      if isinstance(delivered, dict) else bool(delivered))
             except Exception as e:  # notify must never crash the tick loop
                 ok = False
                 _record_notify_failure(conn, item_id, now_s, str(e), blocked, retried, actor)
@@ -1060,6 +1086,8 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
                         _append_event(conn, item_id, actor, "notified",
                                       payload={"channel": "discord"})
                 dispatched.append(item_id)
+                if isinstance(delivered, dict) and delivered.get("receipt_id") and delivered.get("kind"):
+                    receipts.append(delivered)
             else:
                 _record_notify_failure(conn, item_id, now_s, "notify returned falsey",
                                        blocked, retried, actor)
@@ -1076,6 +1104,7 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
         # the tick is not already awake for.
         swept = sweep_lapsed(now=now_s, dry_run=dry_run, db_path=db_path, actor=actor)
         return {"dispatched": dispatched, "retried": retried, "blocked": blocked,
+                "delivery_receipts": receipts,
                 "skipped": skipped,
                 # 被另一次 tick 握着的条目。新增键,不动 skipped 的语义:
                 # skipped 一直是「走到认领这一步才输掉」,而这是「压根没被选中」。
@@ -1186,7 +1215,9 @@ def _record_notify_failure(conn, item_id, now_s, detail, blocked, retried, actor
 # events / health
 # =================================================================================================
 def get_events(item_id, *, limit=200, db_path=None):
-    conn = _connect(db_path)
+    if not os.path.isfile(db_path or default_db_path()):
+        return []
+    conn = _connect(db_path, readonly=True)
     try:
         rows = conn.execute(
             "SELECT * FROM events WHERE item_id=? ORDER BY seq ASC LIMIT ?",
@@ -1201,7 +1232,7 @@ def _ver_tuple(s):
     return tuple(int(x) for x in s.split("."))
 
 
-def health(*, db_path=None, check_task=False):
+def health(*, db_path=None, check_task=False, capabilities=None):
     path = db_path or default_db_path()
     out = {
         "api_version": API_VERSION,
@@ -1216,12 +1247,21 @@ def health(*, db_path=None, check_task=False):
         "warnings": [],
     }
     try:
-        conn = _connect(path)
+        # Immutable inspection creates no WAL/SHM sidecars. A live WAL cannot be
+        # safely included by this read-only probe, so report that limit explicitly.
+        wal = Path(str(path)+'-wal')
+        if wal.exists() and wal.stat().st_size > 32:
+            raise ValueError('active WAL prevents a nonmutating health snapshot; retry after workers close')
+        conn = _connect(path, readonly=True, immutable=True)
         try:
             out["db_ok"] = True
             out["schema_user_version"] = conn.execute("PRAGMA user_version").fetchone()[0]
-            jm = conn.execute("PRAGMA journal_mode").fetchone()[0]
-            out["wal_ok"] = (str(jm).lower() == "wal")
+            with open(path, 'rb') as database:
+                header = database.read(20)
+            out["wal_ok"] = header[18:20] == b'\x02\x02'
+            conn.execute('SELECT id, idempotency_key, ext FROM items LIMIT 0')
+            conn.execute('SELECT key, value FROM meta LIMIT 0')
+            conn.execute('SELECT event_type FROM events LIMIT 0')
             ic = conn.execute("PRAGMA quick_check").fetchone()[0]
             out["integrity_ok"] = (str(ic).lower() == "ok")
         finally:
@@ -1243,12 +1283,9 @@ def health(*, db_path=None, check_task=False):
     if not out["relay_ok"]:
         out["warnings"].append("relay not found: relay.py missing and no SCHEDULE_RELAY_CMD set")
 
+    from capabilities import readiness
+    out["readiness"] = readiness(out, capabilities)
     if check_task:
-        try:
-            import subprocess
-            r = subprocess.run(["schtasks", "/Query", "/TN", "ScheduleReminderTick"],
-                               capture_output=True, text=True)
-            out["task_ok"] = (r.returncode == 0)
-        except Exception:
-            out["task_ok"] = False
+        out["task_ok"] = all(row['status'] == 'ready' for name, row in out['readiness']['capabilities'].items()
+                             if row['selected'] and name != 'store')
     return out

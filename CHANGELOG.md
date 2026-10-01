@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0] - 2026-09-24
+
+- Add store/remind/ingest/work selection and a no-effect installation plan. Task registration is
+  followed by independent readback and measured readiness; incomplete selections fail installation.
+- Keep health report success separate from readiness. The reminder worker writes PRIVATE delivery
+  evidence from confirmed message receipts, with current task/config identity and freshness checks.
+  Synthetic receipts and unmeasured ingest/work do not establish external readiness.
+- Prove the nearest governing repository PRIVATE before DATA writes, including explicit database
+  paths and linked repositories. Preserve read-only uninitialized health and empty reads.
+- Use installed llmcall policy, preserve inbound message IDs for work-order deduplication, and keep
+  notification-only channels out of registry polling and guild discovery.
+
 All notable changes to this project are documented here (Keep a Changelog style).
 
 ## [0.6.0] - 2026-08-12

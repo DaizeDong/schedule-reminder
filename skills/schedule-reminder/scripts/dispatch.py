@@ -3,7 +3,7 @@
 
 For a user reply in a stream channel, this:
   1. Gathers the stream's current actionable STATE (active pool items) as (id, title).
-  2. Asks the cost-ordered LLM chain (codex -> cc -> claude, read-only) for a JSON ACTION PLAN.
+  2. Asks the installed llmcall judge policy for a JSON ACTION PLAN.
   3. Executes the plan DETERMINISTICALLY via reminder.py, validating every id against the state
      (the model can only touch items it was shown -- no hallucinated ids).
   4. Posts a Chinese confirmation back to the stream channel via relay.py.
@@ -20,7 +20,7 @@ allowlist discipline as done/snooze.
 
 CLI:  dispatch.py --stream mail            # reads mail.inbox from the Agent Center state dir
       dispatch.py --stream mail --reply "..."   # explicit reply text
-Stdlib + the shared `llmcall` pip package (call_chain, str|None) + the sibling relay module.
+Stdlib + the shared `llmcall` package (call, Result-like object) + the sibling relay module.
 """
 import argparse
 import hashlib
@@ -33,7 +33,12 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
-from llmcall import call_chain  # noqa: E402  (patched in tests as dispatch.call_chain)
+def call_chain(prompt, log=None):
+    """Compatibility seam returning text; policy belongs to installed llmcall."""
+    import llmcall
+    result = llmcall.call(prompt, mode="judge", log=log)
+    return result.text if result and not getattr(result, "error", None) else None
+
 import agent_task  # noqa: E402
 import agent_tick  # noqa: E402
 import relay       # noqa: E402
@@ -45,7 +50,8 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 REMINDER = os.path.join(_HERE, "reminder.py")
-_STATE_DIR = os.path.join(os.path.expanduser("~"), ".agent-center", "state")
+import private_data
+_STATE_DIR = None
 
 # kind: pool = email-monitor task pool | reminder = any active reminder | generic = create/ack only
 STREAMS = {
@@ -181,7 +187,7 @@ def _thread_key(title):
     return "manual:%s-%s" % (slug, h) if slug else "manual:%s" % h
 
 
-def execute(stream, cfg, plan, items, log=None, work=None):
+def execute(stream, cfg, plan, items, log=None, work=None, msg_id=None):
     allowed = {it["id"] for it in items}
     running_ids = {it["id"] for it in (work or [])}
     done = snoozed = created = 0
@@ -195,7 +201,7 @@ def execute(stream, cfg, plan, items, log=None, work=None):
             if not request:
                 skipped.append("agent?empty")
                 continue
-            item = agent_task.enqueue(stream, request, workspace=act.get("workspace"))
+            item = agent_task.enqueue(stream, request, workspace=act.get("workspace"), msg_id=msg_id)
             if item.get("_err"):
                 skipped.append("agent?%s" % str(item["_err"])[:24])
             else:
@@ -267,13 +273,12 @@ def _post(stream, text, post, log, channel_id=None):
         relay.relay(stream, text)
 
 
-def dispatch(stream, reply, chain=None, providers=None, timeout=180, log=None, post=True,
-             channel_id=None):
+def dispatch(stream, reply, log=None, post=True, channel_id=None, msg_id=None):
     cfg = STREAMS.get(stream, _DEFAULT_CFG)
     items = get_state(cfg)
     work = get_work()
     prompt = build_prompt(stream, cfg, reply, items, work)
-    raw = call_chain(prompt, chain=chain, providers=providers, timeout=timeout, log=log)
+    raw = call_chain(prompt, log=log)
     plan = _extract_json(raw)
     if not plan:
         _post(stream, "收到你的回复,但自动解析失败,已留待人工处理。原文:%s" % reply.strip()[:200],
@@ -281,7 +286,7 @@ def dispatch(stream, reply, chain=None, providers=None, timeout=180, log=None, p
         if log:
             log("dispatch[%s]: chain/plan failed -> passthrough" % stream)
         return False
-    res = execute(stream, cfg, plan, items, log=log, work=work)
+    res = execute(stream, cfg, plan, items, log=log, work=work, msg_id=msg_id)
     confirm = (plan.get("confirm") or "").strip() or (
         "收到:完成%d、推迟%d、新建%d。" % (res["done"], res["snoozed"], res["created"]))
     # The model writes the summary, but what was DISPATCHED is appended deterministically. A vague
@@ -300,25 +305,26 @@ def main():
     ap = argparse.ArgumentParser(prog="dispatch.py")
     ap.add_argument("--stream", required=True)
     ap.add_argument("--reply", default=None, help="reply text; default reads state/<stream>.inbox")
-    ap.add_argument("--chain", default=None)
-    ap.add_argument("--timeout", type=int, default=180)
-    ap.add_argument("--codex-model", default="gpt-5.6-sol", help="(ignored; model resolves from ~/.codex/config.toml)")
-    ap.add_argument("--codex-reasoning", default="max", help="(ignored; effort resolves from ~/.codex/config.toml)")
-    ap.add_argument("--claude-model", default="claude-opus-4-8")
     ap.add_argument("--no-post", dest="post", action="store_false", help="dry run: print confirm, do not relay")
     a = ap.parse_args()
     reply = a.reply
     if reply is None:
-        p = os.path.join(_STATE_DIR, "%s.inbox" % a.stream)
+        p = os.path.join(_STATE_DIR or str(private_data.data_dir()/"state"), "%s.inbox" % a.stream)
         reply = open(p, encoding="utf-8").read() if os.path.exists(p) else ""
     if not reply.strip():
         print(json.dumps({"ok": False, "reason": "empty reply"}))
         return 1
-    providers = {"codex": {"model": a.codex_model, "reasoning": a.codex_reasoning},
-                 "cc": {"model": a.claude_model}, "claude": {"model": a.claude_model}}
-    chain = [c.strip() for c in a.chain.split(",")] if a.chain else None
-    ok = dispatch(a.stream, reply, chain, providers, a.timeout,
-                  log=lambda m: print(m, file=sys.stderr), post=a.post)
+    try:
+        ok = dispatch(a.stream, reply, log=lambda m: print(m, file=sys.stderr), post=a.post)
+    except ModuleNotFoundError as error:
+        if error.name != 'llmcall':
+            raise
+        print(json.dumps({
+            'ok': False, 'status': 'unavailable', 'error_code': 'ERR_LLM_UNAVAILABLE',
+            'message': 'The llmcall package is unavailable in the dispatch interpreter.',
+            'action': 'Install llmcall in the interpreter running dispatch.py, then retry this reply.',
+        }))
+        return 1
     print(json.dumps({"ok": ok}))
     return 0 if ok else 1
 

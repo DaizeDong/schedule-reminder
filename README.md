@@ -46,12 +46,19 @@ Or clone manually:
 git clone https://github.com/DaizeDong/schedule-reminder.git ~/.claude/plugins/schedule-reminder
 ```
 
-Then run the idempotent installer (creates the DB, registers the PT5M heartbeat task, junctions the
-skill, runs health):
+Set `SCHEDULE_REMINDER_CONFIG` to an initialized PRIVATE versioned companion repository before
+writing runtime data. Preview the selected capabilities, then run the idempotent installer:
 
 ```powershell
-pwsh -File skills/schedule-reminder/scripts/install.ps1
+pwsh -File skills/schedule-reminder/scripts/install.ps1 -Capabilities store,remind -Plan
+pwsh -File skills/schedule-reminder/scripts/install.ps1 -Capabilities store,remind
 ```
+
+The default selection is store plus remind. Empty selection is a no-op; ingest and work are
+optional. Installation returns nonzero until selected readiness is measured, even after successful
+task registration. `health` still returns a successful JSON report when readiness is incomplete;
+inspect `health.readiness.ready`. See [deployment](skills/schedule-reminder/reference/deployment.md)
+for PRIVATE storage, task readback, worker receipts, and the unmeasured ingest/work boundary.
 
 ## Quick start
 
@@ -111,8 +118,14 @@ digest, heartbeat survival, notify routing, and the two-way ingest/dispatch. E8/
 merge-blocking red lines.
 
 ```bash
-python -m pytest skills/schedule-reminder/tests/ -q   # 93 passed
+python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider
 ```
+
+The existing notification-route checks also need the canonical `notification_language.py` code.
+Set `SCHEDULE_TEST_LANGUAGE_RULE` to that file when running them. The test harness copies the code
+unchanged into its synthetic profile; it does not load the operator's configuration or credentials.
+Without the dependency, those checks report its absence. Live scheduled-task checks remain separate
+from offline capability tests.
 
 ## Limitations
 

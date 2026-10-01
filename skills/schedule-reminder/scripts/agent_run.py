@@ -1,43 +1,10 @@
 #!/usr/bin/env python3
-"""schedule-reminder - Agent Center WORK ORDER RUNNER: the half of the bus that acts.
+"""Run a work order through act, verify, review, and bounded stalled-attempt rotation.
 
-Runs ONE work order to a terminal state, in its own detached process, for as long as it takes.
-
-    agent_run.py --id <work order id>
-
-THE ROUND is act, verify, review, decide.
-
-  act     the agent is told the request, the workspace, and (from round 2) the previous round's
-          verification failure VERBATIM. It must return a JSON tail carrying `verify`, a command
-          that exits non-zero when the job is NOT done.
-  verify  this module runs that command itself and records the real return code and output. The
-          agent never reports on its own verification; that is the entire point.
-  review  only if verification passed. An independent read-only reviewer on a DIFFERENT provider
-          gets the request, the diff, the command and its actual output, and answers DONE or
-          CONTINUE.
-  decide  a failing check or a CONTINUE verdict starts another round carrying the failure text.
-
-STALL. After each round a signature is taken over the normalized check output and the content of the
-changed files. Three identical signatures in a row mean the round is not moving, whatever the model
-says about its effort. That does not stop the order: it ROTATES THE APPROACH, a fresh run directory,
-a different provider, and a prompt with the problem and the current state of the world but NOT the
-failed reasoning, told that the earlier framing may itself be wrong. Two rotations that both stall
-end the order as stalled. There is no round ceiling and no wall-clock ceiling; evidence ends a run,
-not a timer.
-
-THREE DELIBERATE DEVIATIONS FROM llmcall DEFAULTS, each a measured hazard rather than a preference:
-
-  1. LLMCALL_AGENT_RUNNER is pointed at the shim BEFORE llmcall is imported. llmcall freezes that
-     path at import time. Left alone on this machine it resolves to the full machine runner, which
-     internally retries cc, then codex, then claude direct; the cc leg of an agentic call therefore
-     runs codex a SECOND time and every file edit happens twice.
-  2. The acting chain is a SINGLE provider. One provider means the reported provider is the true one
-     and the side effects happen once. A cost ladder is right for judgement and wrong for actions.
-  3. schema=/extract= are never used with mode="agent". On a parse miss llmcall retries the SAME
-     provider with a nudge, and for an agentic call "retry" means doing the work again. The JSON
-     tail is parsed here, and a missing tail degrades to the review-only path instead.
-
-Stdlib plus llmcall plus the sibling relay/agent_task modules.
+Model and agent calls inherit installed llmcall policy. Attempts vary their prompts;
+this module never rewrites provider, model, runner, fallback, or model timeout settings.
+Executable verification remains a separate local check with a bounded timeout.
+Requests, prompts, answers, and verification evidence persist in PRIVATE versioned DATA.
 """
 import argparse
 import json
@@ -51,12 +18,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-# Set BEFORE importing llmcall: it snapshots this into a module constant at import time, so setting
-# it afterwards is a silent no-op. The shim forwards -DirectOnly -NoCodex, which is what keeps the
-# delegate from running codex a second time. See deviation 1 in the module docstring.
-_SHIM = os.environ.get("AGENT_EXEC_LLMCALL_RUNNER") or os.path.join(
-    os.path.expanduser("~"), ".llmcall", "agent-runner.ps1")
-os.environ["LLMCALL_AGENT_RUNNER"] = _SHIM
+import private_data
 
 import agent_task  # noqa: E402
 import relay       # noqa: E402
@@ -67,33 +29,10 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-# One approach per available provider, in llmcall's order. Rotating the PROVIDER as well as the
-# prompt is what makes a rotation a genuinely different attempt rather than the same model rephrasing
-# itself, and each approach acts on a SINGLE provider so the reported provider is the true one and
-# the side effects happen once.
-#
-# Derived from llmcall.active_chain() rather than hardcoded, so excluding a provider there (an
-# outage, a quota, a suspended account) also stops this tier from opening every work order against
-# a dead endpoint. Falls back to the literal ladder when llmcall cannot be imported at all, which is
-# a broken install rather than a routing decision.
-def _approach_chains():
-    try:
-        import llmcall
-        names = [n for n in llmcall.active_chain() if n]
-    except Exception:
-        names = ["codex", "cc", "claude"]
-    return tuple([n] for n in names) or (["codex"],)
-
-
-APPROACH_CHAINS = _approach_chains()
-# The reviewer must not be the actor, so the review chain is the acting order rotated by one: the
-# first approach's provider ends up LAST here and is reached only if nothing else answers. The report
-# always names who reviewed, so a review that fell back to the same family is visible rather than
-# assumed.
-REVIEW_CHAIN = [c[0] for c in APPROACH_CHAINS[1:]] + [c[0] for c in APPROACH_CHAINS[:1]]
-
-ACT_TIMEOUT = int(os.environ.get("AGENT_EXEC_ACT_TIMEOUT") or 1800)
-REVIEW_TIMEOUT = int(os.environ.get("AGENT_EXEC_REVIEW_TIMEOUT") or 420)
+# Attempts vary the prompt. Provider, model, deadline and fallback remain llmcall policy.
+APPROACH_CHAINS = (("inspect evidence",), ("test a smaller hypothesis",), ("revisit assumptions",))
+REVIEW_CHAIN = None
+ACT_TIMEOUT = REVIEW_TIMEOUT = None
 VERIFY_TIMEOUT = int(os.environ.get("AGENT_EXEC_VERIFY_TIMEOUT") or 600)
 STALL_ROUNDS = int(os.environ.get("AGENT_EXEC_STALL_ROUNDS") or 3)
 MAX_APPROACHES = len(APPROACH_CHAINS)
@@ -140,7 +79,7 @@ def _llm(prompt, chain, timeout, mode):
         import llmcall
     except Exception as e:
         return "", None, "llmcall unavailable: %s" % e
-    r = llmcall.call(prompt, chain=list(chain), mode=mode, timeout=float(timeout),
+    r = llmcall.call(prompt, mode=mode,
                      log=lambda m: _log("llmcall: " + m))
     return (r.text or ""), r.provider, (None if r else (r.error or "chain failed"))
 
@@ -265,7 +204,9 @@ def run_verify(cmd, workspace):
     script = None
     try:
         if sys.platform == "win32":
-            fd, script = tempfile.mkstemp(prefix="agent_verify_", suffix=".ps1")
+            directory = private_data.data_dir()/'verify'
+            private_data.prepare_parent(directory/'probe.ps1')
+            fd, script = tempfile.mkstemp(prefix="agent_verify_", suffix=".ps1", dir=directory)
             os.close(fd)
             with open(script, "w", encoding="utf-8-sig", newline="\r\n") as f:
                 f.write(_PS_WRAPPER % cmd)
@@ -351,12 +292,9 @@ def review_prompt(request, summary, changed, changed_via, cmd, rc, out):
 
 # --------------------------------------------------------------------------- the run
 def _write(path, text):
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(text if isinstance(text, str) else str(text))
-    except OSError:
-        pass
+    private_data.prepare_parent(path)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text if isinstance(text, str) else str(text))
 
 
 def run_order(item_id, post_reports=True):
@@ -380,8 +318,6 @@ def run_order(item_id, post_reports=True):
     # passes one. Without this chdir the agent would be sandboxed to wherever the scheduler happened
     # to start the tick, and its edits would silently go nowhere.
     os.chdir(workspace)
-    if not os.path.isfile(_SHIM):
-        _log("warning: llmcall agent shim not found at %s; only the codex leg can act" % _SHIM)
 
     approach = 0
     while approach < MAX_APPROACHES:
@@ -440,14 +376,14 @@ def _run_approach(item_id, stream, request, workspace, approach, chain, post_rep
         agent_task.set_progress(item_id, min(90, 10 + rnd * 10))
 
         prompt = act_prompt(request, workspace, last_failure, fresh=(approach > 0 and rnd == 1))
+        prompt += '\nApproach: '+chain[0]
         _write(os.path.join(rdir, "prompt.txt"), prompt)
         _log("approach %d round %d: acting via %s" % (approach, rnd, chain))
         text, provider, err = _llm(prompt, chain, ACT_TIMEOUT, "agent")
         _write(os.path.join(rdir, "answer.txt"), text or ("(no answer) " + str(err)))
         if not text:
-            # The provider itself is unavailable, which is different from work that failed its
-            # check. Rotating to another provider is the right response, so this ends the approach
-            # rather than the order.
+            # Preserve the unavailable result and end this attempt. Any later attempt
+            # uses a different prompt while routing remains owned by llmcall.
             agent_task.append_event(item, "act_failed", approach=approach, round=rnd, error=str(err))
             _log("act failed: %s" % err)
             _write(os.path.join(adir, "last.json"),

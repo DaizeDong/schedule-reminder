@@ -24,6 +24,7 @@ import io
 import os
 import re
 import sys
+import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.join(os.path.dirname(HERE), "scripts")
@@ -36,8 +37,9 @@ import store  # noqa: E402
 # ---------- 1. the heartbeat must repeat forever ----------
 
 def _install_xml():
-    with open(os.path.join(SCRIPTS, "install.ps1"), "r", encoding="utf-8-sig") as f:
-        return f.read()
+    import capabilities
+    import installer
+    return installer.task_xml(capabilities.plan("remind")["capabilities"]["remind"])
 
 
 def test_heartbeat_repetition_is_unbounded():

@@ -33,6 +33,7 @@ import os
 import re
 import subprocess
 import sys
+import private_data
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REMINDER = os.path.join(_HERE, "reminder.py")
@@ -111,29 +112,24 @@ def runs_root():
     private companion that already holds every other piece of bus state. Assembled with os.path.join
     rather than written as a literal path, matching the rest of the bus. There is no in-repo
     fallback: if this cannot be created the runner fails loudly instead of writing into the repo."""
-    return os.environ.get("AGENT_CENTER_RUNS") or os.path.join(
-        os.path.expanduser("~"), ".agent-center", "agent-runs")
+    return os.environ.get("AGENT_CENTER_RUNS") or str(private_data.data_dir()/"agent-runs")
 
 
 def run_dir(item, create=False):
     name = _ext(item).get(EXT_DIR) or item["id"]
     p = os.path.join(runs_root(), name)
     if create:
+        private_data.prove_private(p)
         os.makedirs(p, exist_ok=True)
     return p
 
 
 def append_event(item, kind, **fields):
-    """Append one line to the order's event log. Best effort: a log write must never be able to fail
-    a run that actually happened."""
-    try:
-        d = run_dir(item, create=True)
-        rec = {"ts": _utcnow(), "event": kind}
-        rec.update(fields)
-        with open(os.path.join(d, "events.jsonl"), "a", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
+    """Persist an event; a missing or unwritable PRIVATE record is an explicit failure."""
+    d = run_dir(item, create=True)
+    rec = {"ts": _utcnow(), "event": kind, **fields}
+    with open(os.path.join(d, "events.jsonl"), "a", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
 # --------------------------------------------------------------------------- workspace
@@ -211,6 +207,7 @@ def kill_tree(pid, pstart):
 # --------------------------------------------------------------------------- queue operations
 def enqueue(stream, request, workspace=None, msg_id=None, title=None):
     """Create a queued work order. Returns the item dict, or {"_err": ...}."""
+    private_data.prove_private(runs_root())
     ws, note = resolve_workspace(workspace)
     ext = {
         EXT_V: EXT_VERSION,
@@ -224,7 +221,11 @@ def enqueue(stream, request, workspace=None, msg_id=None, title=None):
     if note:
         ext[EXT_NOTE] = note
     t = (title or request or "").strip().replace("\n", " ")
-    r = rem("add", "--title", ("执行:" + t)[:200], "--kind", "task",
+    replay = []
+    if msg_id is not None:
+        key = hashlib.sha256(json.dumps([stream, str(msg_id)], ensure_ascii=False).encode("utf-8")).hexdigest()
+        replay = ["--idempotency-key", "inbound:"+key, "--if-exists", "return"]
+    r = rem("add", *replay, "--title", ("执行:" + t)[:200], "--kind", "task",
             "--source", WORK_SOURCE, "--ext", json.dumps(ext, ensure_ascii=False))
     item = r.get("item")
     if not item:
@@ -232,9 +233,13 @@ def enqueue(stream, request, workspace=None, msg_id=None, title=None):
     # The request is written to the run directory, never into ext: it is user text of unbounded
     # length and ext is argv-bound.
     d = run_dir(item, create=True)
-    with open(os.path.join(d, "request.txt"), "w", encoding="utf-8", newline="\n") as f:
-        f.write(request or "")
-    append_event(item, "enqueued", stream=stream, workspace=ws, note=note)
+    with private_data.file_lock(os.path.join(d, ".enqueue.lock")):
+        request_path = os.path.join(d, "request.txt")
+        if not os.path.exists(request_path):
+            with open(request_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(request or "")
+        if not os.path.exists(os.path.join(d, "events.jsonl")):
+            append_event(item, "enqueued", stream=stream, workspace=ws, note=note)
     return item
 
 

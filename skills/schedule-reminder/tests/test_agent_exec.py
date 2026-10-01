@@ -576,41 +576,26 @@ def test_report_is_chunked_below_the_discord_limit(monkeypatch):
     assert len(sent) == 3 and all(len(s) <= agent_run._DISCORD_MAX for s in sent)
 
 
-def test_runner_points_llmcall_at_the_shim():
-    """Left at its machine default, the delegate retries cc then CODEX then claude, so the cc leg of
-    an agentic call runs codex a second time and every edit happens twice."""
-    assert os.environ.get("LLMCALL_AGENT_RUNNER") == agent_run._SHIM
+def test_runner_does_not_install_a_runner_policy(monkeypatch):
+    import importlib
+    monkeypatch.delenv("LLMCALL_AGENT_RUNNER", raising=False)
+    importlib.reload(agent_run)
+    assert "LLMCALL_AGENT_RUNNER" not in os.environ
 
 
-def test_every_approach_acts_on_exactly_one_provider():
-    """A cost ladder is right for judgement and wrong for actions: falling through mid-session would
-    hand the same job to a second agent on top of the first one's half-finished edits."""
-    assert agent_run.APPROACH_CHAINS, "there must be at least one way to act"
-    for chain in agent_run.APPROACH_CHAINS:
-        assert len(chain) == 1, "acting must not fall through providers: %r" % (chain,)
+def test_approaches_vary_prompts_without_provider_selection():
+    assert len(set(chain[0] for chain in agent_run.APPROACH_CHAINS)) == agent_run.MAX_APPROACHES
+    assert agent_run.ACT_TIMEOUT is None and agent_run.REVIEW_TIMEOUT is None
+    assert agent_run.REVIEW_CHAIN is None
 
 
-def test_the_reviewer_is_never_the_actor():
-    assert agent_run.REVIEW_CHAIN[0] != agent_run.APPROACH_CHAINS[0][0]
-    assert sorted(agent_run.REVIEW_CHAIN) == sorted(c[0] for c in agent_run.APPROACH_CHAINS), \
-        "the review chain must be a rotation of the acting order, not an independent list that can " \
-        "drift and keep naming a provider the fleet has routed around"
-
-
-def test_the_acting_order_follows_llmcall_routing(monkeypatch):
-    """Excluding a provider fleet-wide must also stop this tier from opening every work order
-    against it. Hardcoding the ladder here is how a switch ends up half thrown."""
-    monkeypatch.setenv("LLMCALL_CHAIN", "cc,claude")
-    assert agent_run._approach_chains() == (["cc"], ["claude"])
-    monkeypatch.setenv("LLMCALL_CHAIN", "claude")
-    assert agent_run._approach_chains() == (["claude"],)
-    monkeypatch.delenv("LLMCALL_CHAIN", raising=False)
-    # The default ladder is llmcall's to decide, so read it from there rather than restating it.
-    # This assertion used to spell out ("codex", "cc", "claude") and went red the day llmcall put
-    # codexg in front, which is the same mistake the docstring warns about, made one level up:
-    # a test that restates the ladder is another place the switch has to be thrown.
-    # It can still fail: were _approach_chains to answer from its own list, it would stop matching.
+def test_actor_and_reviewer_keep_installed_routing(monkeypatch):
+    from types import SimpleNamespace
     import llmcall
-    expected = tuple([n] for n in llmcall.active_chain() if n)
-    assert agent_run._approach_chains() == expected
-    assert len(expected) >= 2, "a one rung ladder would make this test unable to catch a wrong order"
+    calls = []
+    monkeypatch.setattr(llmcall, "call", lambda prompt, **kw:
+                        calls.append(kw) or SimpleNamespace(text="", provider=None, error=None))
+    for mode in ("agent", "judge"):
+        agent_run._llm("", None, None, mode)
+    assert [call["mode"] for call in calls] == ["agent", "judge"]
+    assert all(not ({"chain", "providers", "model", "timeout", "fallback"} & call.keys()) for call in calls)

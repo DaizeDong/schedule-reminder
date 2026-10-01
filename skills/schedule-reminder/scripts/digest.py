@@ -34,6 +34,7 @@ import os
 import shlex
 import subprocess
 import sys
+import private_data
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -41,11 +42,10 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-_DEFAULT = os.path.join(os.path.expanduser("~"), ".agent-center", "digest.json")
 
 
 def _path() -> str:
-    return os.environ.get("AGENT_CENTER_DIGEST") or _DEFAULT
+    return os.environ.get("AGENT_CENTER_DIGEST") or str(private_data.data_dir()/"digest.json")
 
 
 def _load() -> dict:
@@ -64,7 +64,7 @@ def _load() -> dict:
 
 
 def _save(d: dict) -> None:
-    os.makedirs(os.path.dirname(_path()), exist_ok=True)
+    private_data.prepare_parent(_path())
     tmp = _path() + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(d, fh, ensure_ascii=False, indent=2)

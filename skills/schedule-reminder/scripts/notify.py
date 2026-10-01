@@ -31,6 +31,7 @@ logs, or echoes any of them.
 from __future__ import annotations
 
 import os
+import json
 import shlex
 import subprocess
 import sys
@@ -74,6 +75,30 @@ def notify(text):
     except Exception as e:  # delivery failures are signalled by return value, not exceptions
         sys.stderr.write("notify: %s\n" % e)
         return False
+
+
+def deliver(text):
+    """Return a downstream receipt when available, retaining legacy bool delivery.
+
+    A successful legacy process has no receipt and cannot establish readiness.
+    """
+    command = os.environ.get('SCHEDULE_RELAY_CMD')
+    if not command:
+        if os.path.abspath(_default_relay_path()) == os.path.join(_HERE, 'relay.py'):
+            import relay
+            return relay.deliver(_default_stream(), text)
+        argv = [sys.executable, _default_relay_path(), 'send', '--stream', _default_stream(), '--text', text]
+    else:
+        argv = shlex.split(command, posix=(os.name != 'nt')) + [text]
+    result = subprocess.run(argv,
+                            capture_output=True, text=True, encoding='utf-8', timeout=30)
+    if result.returncode:
+        return False
+    try:
+        receipt = json.loads(result.stdout.strip())
+    except (ValueError, TypeError):
+        return True
+    return receipt if isinstance(receipt, dict) else False
 
 
 if __name__ == "__main__":

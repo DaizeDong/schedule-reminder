@@ -5,8 +5,7 @@ Scheduled entrypoint (Task Scheduler: AgentCenterIngestTick, ~every 10 min). The
 the outbound relay:
   1. ingest.poll_all()  advances each stream's cursor and writes <stream>.inbox for streams that got
      a NEW user reply this tick (returns {stream: n_new}).
-  2. For each such stream, dispatch.dispatch() judges the reply with the cost-ordered LLM chain
-     (codex -> cc -> claude, read-only), executes deterministically via reminder.py, and confirms
+  2. For each such stream, dispatch.dispatch() judges the reply with the installed llmcall judge policy, executes deterministically via reminder.py, and confirms
      back to that channel via relay.py.
 
 CLI: ingest_tick.py                 # poll + dispatch all, JSON summary
@@ -19,6 +18,7 @@ import datetime
 import json
 import os
 import sys
+import private_data
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -33,9 +33,7 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-_LOG = os.path.join(os.path.expanduser("~"), ".agent-center", "state", "ingest_tick.log")
-_PROVIDERS = {"codex": {"model": "gpt-5.6-sol", "reasoning": "max"},
-              "cc": {"model": "claude-opus-4-8"}, "claude": {"model": "claude-opus-4-8"}}
+_LOG = None
 
 
 def _log(msg):
@@ -45,12 +43,11 @@ def _log(msg):
         stamp = "?"
     line = "%s %s" % (stamp, msg)
     print(line, file=sys.stderr)
-    try:
-        os.makedirs(os.path.dirname(_LOG), exist_ok=True)
-        with open(_LOG, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except Exception:
-        pass
+    path = _LOG or str(private_data.data_dir()/"state"/"ingest_tick.log")
+    private_data.prepare_parent(path)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
 
 
 def _read_inbox(stream):
@@ -63,7 +60,7 @@ def _read_reactions_inbox(stream):
     return open(fp, encoding="utf-8").read() if os.path.exists(fp) else ""
 
 
-def run(only_stream=None, post=True, timeout=180):
+def run(only_stream=None, post=True):
     text_result = ingest.poll_all(log=_log)                 # {stream: n_new text replies}
     rx_result = {}                                          # {stream: n_new emoji reactions}
     try:
@@ -103,7 +100,7 @@ def run(only_stream=None, post=True, timeout=180):
         if only_stream and stream not in active:
             _log("tick: stream %s had no new replies/reactions this poll -> skip" % stream)
             continue
-        parts = []
+        pending = []
         if stream in text_result:
             # Deterministic command handlers get first refusal, per message. What they claim is
             # already answered in the channel and must not also be judged by the chain; what they
@@ -111,6 +108,7 @@ def run(only_stream=None, post=True, timeout=180):
             # batch either way, so nothing the bus read is missing from the record.
             ch, msgs = ingest.LAST_POLL_MSGS.get(stream, (None, []))
             t = ""
+            remaining = msgs
             if msgs and ch:
                 try:
                     claimed, remaining, results = commands.route(msgs, stream, ch, reg,
@@ -124,20 +122,24 @@ def run(only_stream=None, post=True, timeout=180):
                     t = _read_inbox(stream)
             else:
                 t = _read_inbox(stream)
-            if t.strip():
-                parts.append(t)
+            if remaining:
+                pending.extend((ingest.format_messages([message]), message.get("id"))
+                               for message in remaining)
+            elif t.strip():
+                pending.append((t, None))
         if stream in rx_result:
             r = _read_reactions_inbox(stream)
             if r.strip():
-                parts.append(r)
-        reply = "\n".join(parts).strip()
-        if not reply:
+                pending.append((r, None))
+        if not pending:
             continue
         try:
-            ok = dispatch.dispatch(stream, reply, providers=_PROVIDERS, timeout=timeout,
-                                   log=_log, post=post,
-                                   channel_id=ingest.CHANNEL_OF.get(stream))
-            handled[stream] = "ok" if ok else "passthrough"
+            outcomes = []
+            for reply, msg_id in pending:
+                identity = {"msg_id": msg_id} if msg_id is not None else {}
+                outcomes.append(dispatch.dispatch(stream, reply, log=_log, post=post,
+                                channel_id=ingest.CHANNEL_OF.get(stream), **identity))
+            handled[stream] = "ok" if all(outcomes) else "passthrough"
         except Exception as e:
             handled[stream] = "error:%s" % type(e).__name__
             _log("tick: dispatch[%s] crashed: %s" % (stream, type(e).__name__))
@@ -159,9 +161,8 @@ def main():
     ap = argparse.ArgumentParser(prog="ingest_tick.py")
     ap.add_argument("--stream", default=None, help="only dispatch this stream")
     ap.add_argument("--no-post", dest="post", action="store_false", help="skip channel confirmations")
-    ap.add_argument("--timeout", type=int, default=180)
     a = ap.parse_args()
-    out = run(only_stream=a.stream, post=a.post, timeout=a.timeout)
+    out = run(only_stream=a.stream, post=a.post)
     print(json.dumps(out, ensure_ascii=False))
     return 0
 

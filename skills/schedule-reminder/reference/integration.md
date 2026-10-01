@@ -55,11 +55,14 @@ Non-zero exit = structured JSON on stderr with `error_code`. Handle at least:
 - `ERR_ILLEGAL_TRANSITION`, your state move is not allowed; read `allowed[]`.
 - `ERR_DEPENDENCY_UNMET`, finish the `unmet[]` items first.
 - `ERR_BUSY`, transient; retry with back-off (rare; the base already retries internally).
+- `ERR_DATA_POLICY`, the selected output is not governed by a proven PRIVATE repository.
+- `ERR_UNINITIALIZED`, explicitly initialize the PRIVATE database before writing.
+- `ERR_PERMISSION`, storage access was denied; this is distinct from DATA policy refusal.
 
 ## Python helper pattern
 
 ```python
-import json, subprocess, sys
+import json, os, subprocess, sys
 
 def call(*args, db=None):
     env = dict(os.environ)

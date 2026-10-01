@@ -14,6 +14,7 @@ import argparse
 import base64
 import json
 import os
+import private_data
 import subprocess
 import sys
 import tempfile
@@ -55,6 +56,7 @@ def _load_registry(path: str) -> dict:
 
 def _write_registry(path: str, reg: dict) -> None:
     """Crash-safe same-directory replacement; the secret never leaves its config directory."""
+    private_data.prepare_parent(path)
     directory = os.path.dirname(os.path.abspath(path))
     fd, temp_path = tempfile.mkstemp(prefix="registry.", suffix=".tmp", dir=directory)
     try:

@@ -18,6 +18,12 @@ import dispatch  # noqa: E402
 import ingest    # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def isolate_owner_dm(monkeypatch):
+    """Individual DM cases supply their own response; other unit cases stay offline."""
+    monkeypatch.setattr(ingest, 'owner_dm_channel', lambda reg, token: None)
+
+
 # --------------------------------------------------------------------------- _extract_json
 @pytest.mark.parametrize("text,expect", [
     ('{"actions":[],"confirm":"x"}', {"actions": [], "confirm": "x"}),
