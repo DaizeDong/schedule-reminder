@@ -1,16 +1,5 @@
 # -*- coding: utf-8 -*-
-"""An overdue list only works if being on it is rare, and the sweep must not tidy away a message
-nobody received.
-
-Measured 2026-09-05: 72 items were overdue at once, the oldest from mid-July, and among them sat a
-confirmation due that same day. Seventy-two red flags is the same signal as none -- the one that
-mattered was indistinguishable from a car wash nobody did two months earlier. So the sweep exists.
-
-Its whole risk is in the other direction. Closing an item that was never DELIVERED is not tidying,
-it is deleting a message the person never got, and this store already contains proof that delivery
-fails: an item titled "task-health digest UNDELIVERED (relay rc=1)". Every test below that says
-"must NOT be touched" is guarding a way of losing something, not a style preference.
-"""
+"""Synthetic controls for delivered-only reminder expiry, grace windows and preserved active work."""
 import os
 import sqlite3
 import sys

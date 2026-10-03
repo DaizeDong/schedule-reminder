@@ -7,13 +7,15 @@ import json
 import os
 import subprocess
 import sys
-import uuid
+import argparse
+import tempfile
+import private_data
 from pathlib import Path
 
 
 HERE = Path(__file__).resolve().parent
 REMINDER = HERE / "reminder.py"
-NOW = "2026-08-29T12:00:00Z"
+NOW = "2031-04-12T14:00:00Z"
 
 
 def run(db: str, *args: str) -> dict:
@@ -61,53 +63,27 @@ def paged_active(db: str, *extra: str) -> list[dict]:
             return items
 
 
-def main() -> int:
-    # Keep the subprocess-visible fixture directly inside this skill's writable workspace.  Some
-    # managed Windows sandboxes give the parent access to a new directory but deny it to children.
-    db_path = HERE / (".verify-expired-email-%s.sqlite3" % uuid.uuid4().hex)
-    db = str(db_path)
-    try:
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--data-dir", help="PRIVATE companion directory for synthetic verification output")
+    args = parser.parse_args(argv)
+    destination = Path(args.data_dir).expanduser() if args.data_dir else private_data.data_dir() / "verification"
+    private_data.prove_private(destination)
+    os.makedirs(destination, exist_ok=True)
+    sys.path.insert(0, str(HERE.parents[2] / "tools"))
+    from make_fixtures import expired_email_cases
+    case = expired_email_cases()
+    with tempfile.TemporaryDirectory(prefix="expired-email-synthetic-", dir=destination) as directory:
+        db = str(Path(directory) / "verification.sqlite3")
         run(db, "init")
-
-        add(db, "需回复:已过期", "2026-08-29T11:59:59Z", "email-monitor", "verify:expired")
-        add(db, "需回复:正好到期", NOW, "email-monitor", "verify:boundary")
-        add(db, "需回复:尚未到期", "2026-08-29T12:00:01Z", "email-monitor", "verify:future")
-        add(db, "待查看:虽过期仍保留", "2026-08-29T11:00:00Z", "email-monitor", "verify:review")
-        add(db, "需回复:其他来源", "2026-08-29T11:00:00Z", "other-source", "verify:other")
-        add(db, "需回复:没有期限", None, "email-monitor", "verify:undated")
-
-        all_active = {item["title"] for item in paged_active(db)}
-        assert all_active == {
-            "需回复:尚未到期",
-            "待查看:虽过期仍保留",
-            "需回复:其他来源",
-            "需回复:没有期限",
-        }, all_active
-
-        email_active = {
-            item["title"] for item in paged_active(db, "--source", "email-monitor")
-        }
-        assert email_active == {
-            "需回复:尚未到期",
-            "待查看:虽过期仍保留",
-            "需回复:没有期限",
-        }, email_active
-
-        # Filtering is view-only: retain expired rows for history and the due/tick workflow.
-        email_history = run(
-            db, "list", "--source", "email-monitor", "--limit", "20"
-        )["items"]
-        assert len(email_history) == 5
-        due_titles = {item["title"] for item in run(db, "due", "--now", NOW)["items"]}
-        assert "需回复:已过期" in due_titles
-        assert "需回复:正好到期" in due_titles
-    finally:
-        for suffix in ("", "-wal", "-shm"):
-            try:
-                Path(db + suffix).unlink()
-            except FileNotFoundError:
-                pass
-
+        for title, due_at, source, key in case["rows"]:
+            add(db, title, due_at, source, key)
+        assert {item["title"] for item in paged_active(db)} == set(case["active"])
+        assert {item["title"] for item in paged_active(db, "--source", "email-monitor")} == set(case["email_active"])
+        assert len(run(db, "list", "--source", "email-monitor", "--limit", "20")["items"]) == 5
+        due_titles = {item["title"] for item in run(db, "due", "--now", case["now"])["items"]}
+        assert set(case["overdue"]) <= due_titles
     print("expired email reply active-list filtering: ok")
     return 0
 

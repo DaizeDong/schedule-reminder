@@ -21,9 +21,6 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: read
-
 jobs:
   suite:
     runs-on: ubuntu-latest
@@ -48,21 +45,7 @@ jobs:
       # exercise the import path production uses, otherwise it certifies a configuration that does
       # not exist anywhere.
       - name: Install deps
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          LLMCALL_DEPLOY_KEY: ${{ secrets.LLMCALL_DEPLOY_KEY }}
         run: |
-          test -n "$LLMCALL_DEPLOY_KEY" || { echo "::error::LLMCALL_DEPLOY_KEY is required to read the private dependency"; exit 1; }
-          install -d -m 700 "$HOME/.ssh"
-          gh api meta --jq '.ssh_keys[] | "github.com " + .' >> "$HOME/.ssh/known_hosts"
-          eval "$(ssh-agent -s)"
-          trap 'ssh-agent -k' EXIT
-          printf '%s\n' "$LLMCALL_DEPLOY_KEY" | tr -d '\r' | ssh-add -
-          export GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=yes'
-          export GIT_CONFIG_COUNT=1
-          export GIT_CONFIG_KEY_0=url.ssh://git@github.com/DaizeDong/llmcall.git.insteadOf
-          export GIT_CONFIG_VALUE_0=https://github.com/DaizeDong/llmcall.git
           test -f requirements.txt || { echo "::error::requirements.txt is MISSING"; exit 1; }
           python -m pip install --quiet -r requirements.txt
           python -m pip install --quiet pytest
@@ -77,6 +60,13 @@ jobs:
       # (mtime seconds, size) and both can be unchanged. That really happened while this suite was
       # being written: the tests ran against bytecode from a mutant that had already been reverted
       # on disk. Disabling the cache removes the failure mode from CI entirely.
+      - name: Prepare canonical notification language dependency
+        env:
+          SCHEDULE_LANGUAGE_RULE_B64: ${{ secrets.SCHEDULE_LANGUAGE_RULE_B64 }}
+        run: |
+          python -B tools/prepare_test_dependency.py --out "$RUNNER_TEMP/schedule-test-dependencies/notification_language.py"
+          echo "SCHEDULE_TEST_LANGUAGE_RULE=$RUNNER_TEMP/schedule-test-dependencies/notification_language.py" >> "$GITHUB_ENV"
+
       - name: Acceptance suite
         run: |
           test -d skills/schedule-reminder/tests || { echo "::error::the test suite is MISSING -- an absent suite is not a passing suite"; exit 1; }

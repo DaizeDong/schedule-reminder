@@ -1,43 +1,10 @@
 #!/usr/bin/env python3
-"""schedule-reminder - Agent Center WORK ORDER RUNNER: the half of the bus that acts.
+"""Run a work order through act, verify, review, and bounded stalled-attempt rotation.
 
-Runs ONE work order to a terminal state, in its own detached process, for as long as it takes.
-
-    agent_run.py --id <work order id>
-
-THE ROUND is act, verify, review, decide.
-
-  act     the agent is told the request, the workspace, and (from round 2) the previous round's
-          verification failure VERBATIM. It must return a JSON tail carrying `verify`, a command
-          that exits non-zero when the job is NOT done.
-  verify  this module runs that command itself and records the real return code and output. The
-          agent never reports on its own verification; that is the entire point.
-  review  only if verification passed. An independent read-only reviewer on a DIFFERENT provider
-          gets the request, the diff, the command and its actual output, and answers DONE or
-          CONTINUE.
-  decide  a failing check or a CONTINUE verdict starts another round carrying the failure text.
-
-STALL. After each round a signature is taken over the normalized check output and the content of the
-changed files. Three identical signatures in a row mean the round is not moving, whatever the model
-says about its effort. That does not stop the order: it ROTATES THE APPROACH, a fresh run directory,
-a different provider, and a prompt with the problem and the current state of the world but NOT the
-failed reasoning, told that the earlier framing may itself be wrong. Two rotations that both stall
-end the order as stalled. There is no round ceiling and no wall-clock ceiling; evidence ends a run,
-not a timer.
-
-THREE DELIBERATE DEVIATIONS FROM llmcall DEFAULTS, each a measured hazard rather than a preference:
-
-  1. LLMCALL_AGENT_RUNNER is pointed at the shim BEFORE llmcall is imported. llmcall freezes that
-     path at import time. Left alone on this machine it resolves to the full machine runner, which
-     internally retries cc, then codex, then claude direct; the cc leg of an agentic call therefore
-     runs codex a SECOND time and every file edit happens twice.
-  2. The acting chain is a SINGLE provider. One provider means the reported provider is the true one
-     and the side effects happen once. A cost ladder is right for judgement and wrong for actions.
-  3. schema=/extract= are never used with mode="agent". On a parse miss llmcall retries the SAME
-     provider with a nudge, and for an agentic call "retry" means doing the work again. The JSON
-     tail is parsed here, and a missing tail degrades to the review-only path instead.
-
-Stdlib plus llmcall plus the sibling relay/agent_task modules.
+Model and agent calls inherit installed llmcall policy. Attempts vary their prompts;
+this module never rewrites provider, model, runner, fallback, or model timeout settings.
+Executable verification remains a separate local check with a bounded timeout.
+Requests, prompts, answers, and verification evidence persist in PRIVATE versioned DATA.
 """
 import argparse
 import json
@@ -51,12 +18,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-# Set BEFORE importing llmcall: it snapshots this into a module constant at import time, so setting
-# it afterwards is a silent no-op. The shim forwards -DirectOnly -NoCodex, which is what keeps the
-# delegate from running codex a second time. See deviation 1 in the module docstring.
-_SHIM = os.environ.get("AGENT_EXEC_LLMCALL_RUNNER") or os.path.join(
-    os.path.expanduser("~"), ".llmcall", "agent-runner.ps1")
-os.environ["LLMCALL_AGENT_RUNNER"] = _SHIM
+import private_data
 
 import agent_task  # noqa: E402
 import relay       # noqa: E402
@@ -67,33 +29,10 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-# One approach per available provider, in llmcall's order. Rotating the PROVIDER as well as the
-# prompt is what makes a rotation a genuinely different attempt rather than the same model rephrasing
-# itself, and each approach acts on a SINGLE provider so the reported provider is the true one and
-# the side effects happen once.
-#
-# Derived from llmcall.active_chain() rather than hardcoded, so excluding a provider there (an
-# outage, a quota, a suspended account) also stops this tier from opening every work order against
-# a dead endpoint. Falls back to the literal ladder when llmcall cannot be imported at all, which is
-# a broken install rather than a routing decision.
-def _approach_chains():
-    try:
-        import llmcall
-        names = [n for n in llmcall.active_chain() if n]
-    except Exception:
-        names = ["codex", "cc", "claude"]
-    return tuple([n] for n in names) or (["codex"],)
-
-
-APPROACH_CHAINS = _approach_chains()
-# The reviewer must not be the actor, so the review chain is the acting order rotated by one: the
-# first approach's provider ends up LAST here and is reached only if nothing else answers. The report
-# always names who reviewed, so a review that fell back to the same family is visible rather than
-# assumed.
-REVIEW_CHAIN = [c[0] for c in APPROACH_CHAINS[1:]] + [c[0] for c in APPROACH_CHAINS[:1]]
-
-ACT_TIMEOUT = int(os.environ.get("AGENT_EXEC_ACT_TIMEOUT") or 1800)
-REVIEW_TIMEOUT = int(os.environ.get("AGENT_EXEC_REVIEW_TIMEOUT") or 420)
+# Attempts vary the prompt. Provider, model, deadline and fallback remain llmcall policy.
+APPROACH_CHAINS = (("inspect evidence",), ("test a smaller hypothesis",), ("revisit assumptions",))
+REVIEW_CHAIN = None
+ACT_TIMEOUT = REVIEW_TIMEOUT = None
 VERIFY_TIMEOUT = int(os.environ.get("AGENT_EXEC_VERIFY_TIMEOUT") or 600)
 STALL_ROUNDS = int(os.environ.get("AGENT_EXEC_STALL_ROUNDS") or 3)
 MAX_APPROACHES = len(APPROACH_CHAINS)
@@ -140,106 +79,92 @@ def _llm(prompt, chain, timeout, mode):
         import llmcall
     except Exception as e:
         return "", None, "llmcall unavailable: %s" % e
-    r = llmcall.call(prompt, chain=list(chain), mode=mode, timeout=float(timeout),
+    r = llmcall.call(prompt, mode=mode,
                      log=lambda m: _log("llmcall: " + m))
     return (r.text or ""), r.provider, (None if r else (r.error or "chain failed"))
 
 
 # --------------------------------------------------------------------------- the JSON tail
-_TAIL = re.compile(r"\{[^{}]*\"verify\"\s*:.*?\}", re.S)
+def _object_end(body, start, decoder):
+    """Skip one malformed object without promoting any nested object to a new candidate."""
+    depth, position = 1, start + 1
+    while position < len(body) and depth:
+        if body[position] == '"':
+            try:
+                _, position = decoder.raw_decode(body, position)
+            except json.JSONDecodeError:
+                return len(body)  # An invalid string leaves the enclosing boundary unproven.
+            continue
+        if body[position] == '{':
+            depth += 1
+        elif body[position] == '}':
+            depth -= 1
+        position += 1
+    return position
 
 
 def parse_tail(text):
-    """Pull the {verify, changed, summary} object out of the agent's answer.
+    """Decode the final object without treating braces inside JSON strings as delimiters.
 
-    Scans candidates from the END: the agent is asked to put the tail last, and an earlier brace
-    group is usually an example it quoted from the instructions. A missing or unparseable tail is
-    NOT retried (deviation 3); it degrades to the review-only path."""
+    Advance past each decoded object so its nested objects cannot replace the outer contract.
+    A malformed later candidate invalidates any earlier example; the runner validates the fields.
+    """
     if not text:
         return {}
     body = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
-    cands = []
-    for m in re.finditer(r"\{", body):
-        depth, start = 0, m.start()
-        for i in range(start, len(body)):
-            if body[i] == "{":
-                depth += 1
-            elif body[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    cands.append(body[start:i + 1])
-                    break
-    for raw in reversed(cands):
+    decoder = json.JSONDecoder()
+    result, position = {}, 0
+    while (start := body.find("{", position)) != -1:
         try:
-            obj = json.loads(raw)
-        except Exception:
+            obj, position = decoder.raw_decode(body, start)
+        except json.JSONDecodeError:
+            result, position = {}, _object_end(body, start, decoder)
             continue
-        if isinstance(obj, dict) and ("verify" in obj or "summary" in obj):
-            return obj
-    return {}
+        result = obj
+    return result
 
 
 # --------------------------------------------------------------------------- the world
+class GitInspectionError(RuntimeError):
+    """The working tree could not be inspected; this is never evidence of a clean tree."""
+
+
 def _git(workspace, *args):
     try:
-        p = subprocess.run(["git", *args], cwd=workspace, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=60, **_NOWINDOW)
-        return p.stdout if p.returncode == 0 else ""
-    except Exception as e:
-        # Empty output is read downstream as "the working tree is clean". A git that timed out or
-        # never ran says nothing about the tree, so it must not look like a clean one.
-        _log("git %s did not complete in %s (%s); treating output as empty"
-             % (" ".join(args), workspace, type(e).__name__))
-        return ""
+        result = subprocess.run(["git", *args], cwd=workspace, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=60,
+                                env=dict(os.environ, GIT_OPTIONAL_LOCKS="0"), **_NOWINDOW)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise GitInspectionError("git inspection unavailable: " + type(error).__name__) from error
+    if result.returncode != 0:
+        raise GitInspectionError("git inspection unavailable: exit %s" % result.returncode)
+    return result.stdout
 
 
 def is_repo(workspace):
-    return bool(workspace) and os.path.isdir(os.path.join(workspace, ".git"))
+    if not workspace:
+        return False
+    from pathlib import Path
+    path = Path(workspace)
+    return any((root/".git").exists() for root in (path, *path.parents))
 
 
 def detect_changes(workspace, claimed):
-    """What actually changed, preferring the working tree over the agent's account of it.
-
-    In a repo the porcelain status is ground truth and an omission cannot hide a change. Outside a
-    repo there is nothing to diff against, so the agent's own list is all there is; the terminal
-    report says which of the two it used, because a self-reported change list is a materially weaker
-    piece of evidence and should not look like the strong one."""
+    """Return observed files and explicit provenance, including any inspection failure."""
+    reported = sorted({str(c).strip() for c in (claimed or []) if str(c).strip()})
     if is_repo(workspace):
-        out = _git(workspace, "status", "--porcelain")
-        files = [ln[3:].strip().strip('"') for ln in out.splitlines() if len(ln) > 3]
+        try:
+            out = _git(workspace, "status", "--porcelain")
+        except GitInspectionError as error:
+            return reported, "self-reported; " + str(error)
+        files = [line[3:].strip().strip('"') for line in out.splitlines() if len(line) > 3]
         return sorted(set(files)), "git"
-    return sorted({str(c).strip() for c in (claimed or []) if str(c).strip()}), "self-reported"
+    return reported, "self-reported"
 
 
-# The check runs in POWERSHELL on Windows, not cmd. Measured, in that order of discovery:
-#
-#   subprocess shell=True is cmd.exe, and the first real run produced a PowerShell check that cmd
-#   answered with "& was unexpected at this time." A correct fix was recorded as a failure. The
-#   direction was safe (nothing was wrongly declared done) but it burns a round every time and can
-#   burn all of them, so the shell must be stated rather than guessed.
-#
-#   Exit codes do not survive `powershell -Command` naively: `python -c "sys.exit(3)"` comes back as
-#   1, because PowerShell collapses any native nonzero. Re-raising $LASTEXITCODE fixes natives, but
-#   a pure cmdlet failure then returns 0, which is the DANGEROUS direction (a failing check read as
-#   passing). Checking $? does not help: it reports on the script block invocation, not on what ran
-#   inside it. $Error.Count after a Clear does, and native stderr does not pollute it (verified with
-#   a noisy native exiting 0, and with a real pytest run).
-#
-#   The command goes into a temp .ps1 rather than -Command, because real checks carry nested quotes
-#   that no argv escaping survives intact. UTF-8 with BOM: PowerShell 5.1 decodes a BOM-less file as
-#   ANSI and would mangle a Chinese check. The console encoding lines are the same ones the machine
-#   agent runner carries; without them Chinese in the check OUTPUT comes back mojibake, and that
-#   output is quoted verbatim into the channel report.
-#
-# RESULTING PRECEDENCE, in the order it is decided: an explicit `exit N` inside the check wins and
-# short circuits everything after it (measured: `& { exit 0 }` ends the session immediately, so the
-# $Error net below is never consulted, which is correct because the check asserted its own verdict);
-# then a native exit code; then any error record; then 0. One consequence worth knowing: a check
-# that swallows an error with try/catch and does NOT exit explicitly is judged FAILED, because a
-# caught terminating error still lands in $Error. That is the safe direction (it costs a round, it
-# cannot manufacture a success) and an explicit exit overrides it. $Error.Clear() is load bearing
-# for the same reason: the UTF-8 header runs inside a try/catch, and without the clear a header
-# failure would make every later check return 1 (measured both ways).
+# Windows checks use PowerShell 5.1 and a UTF-8 script. An explicit exit wins;
+# otherwise preserve a nonzero native exit, then fail on error records.
+# Redirected native stderr requires Continue rather than Stop.
 _PS_WRAPPER = (
     'try { $u = New-Object System.Text.UTF8Encoding $false; '
     '[Console]::OutputEncoding = $u; $OutputEncoding = $u } catch { }\n'
@@ -265,9 +190,11 @@ def run_verify(cmd, workspace):
     script = None
     try:
         if sys.platform == "win32":
-            fd, script = tempfile.mkstemp(prefix="agent_verify_", suffix=".ps1")
+            directory = private_data.data_dir()/'verify'
+            private_data.prepare_parent(directory/'probe.ps1')
+            fd, script = tempfile.mkstemp(prefix="agent_verify_", suffix=".ps1", dir=directory)
             os.close(fd)
-            with open(script, "w", encoding="utf-8-sig", newline="\r\n") as f:
+            with private_data.open_for_write(script, "w", encoding="utf-8-sig", newline="\r\n") as f:
                 f.write(_PS_WRAPPER % cmd)
             argv = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script]
             p = subprocess.run(argv, cwd=workspace, capture_output=True, text=True,
@@ -335,13 +262,10 @@ def review_prompt(request, summary, changed, changed_via, cmd, rc, out):
         "判 DONE 要严格,同时看两件事:",
         "(1) 原始请求是否【确实被满足】。验证命令通过并不等于请求被满足 - 一条弱到无法失败的"
         "验证命令,或者一条验证了别的东西的命令,都应该判 CONTINUE 并指出来。",
-        # Added after a live run: the agent was asked to remove a hardcoded default and also deleted
-        # an unrelated lookup table, changing behaviour well outside the request. The check it wrote
-        # passed, and a reviewer that only asked "was the request satisfied" said DONE. Scope is a
-        # second question and has to be asked as one.
+        # Review request satisfaction and unrelated changes as separate questions.
         "(2) 有没有【顺手改坏请求之外的东西】。删掉了请求没让删的功能、改变了无关行为、"
         "为了让检查通过而绕开问题,都判 CONTINUE 并指出具体是哪一处。请求之外的东西应当保持原样。",
-        "", "原始请求:", (request or "").strip()[:2000],
+        "", "原始请求:", (request or "").strip(),
         "", "执行者的自述:", (summary or "(无)")[:1000],
         "", "实际改动的文件(来源: %s):" % changed_via, ", ".join(changed[:40]) or "(无)",
         "", "系统亲自执行的验证命令:", str(cmd),
@@ -351,12 +275,9 @@ def review_prompt(request, summary, changed, changed_via, cmd, rc, out):
 
 # --------------------------------------------------------------------------- the run
 def _write(path, text):
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(text if isinstance(text, str) else str(text))
-    except OSError:
-        pass
+    private_data.prepare_parent(path)
+    with private_data.open_for_write(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text if isinstance(text, str) else str(text))
 
 
 def run_order(item_id, post_reports=True):
@@ -380,8 +301,6 @@ def run_order(item_id, post_reports=True):
     # passes one. Without this chdir the agent would be sandboxed to wherever the scheduler happened
     # to start the tick, and its edits would silently go nowhere.
     os.chdir(workspace)
-    if not os.path.isfile(_SHIM):
-        _log("warning: llmcall agent shim not found at %s; only the codex leg can act" % _SHIM)
 
     approach = 0
     while approach < MAX_APPROACHES:
@@ -409,6 +328,7 @@ def run_order(item_id, post_reports=True):
             "请求:%s" % request.strip().replace("\n", " ")[:150],
             "最后一次验证 `%s` 返回 %s,输出:" % (last.get("cmd"), last.get("rc")),
             fence(last.get("out"), 700),
+            "Change inspection: %s" % last.get("changed_via", "unavailable"),
             "它最后的自述:%s" % (last.get("summary") or "(无)")[:200],
             "完整记录:`%s`" % agent_task.run_dir(item),
         ]))
@@ -440,14 +360,14 @@ def _run_approach(item_id, stream, request, workspace, approach, chain, post_rep
         agent_task.set_progress(item_id, min(90, 10 + rnd * 10))
 
         prompt = act_prompt(request, workspace, last_failure, fresh=(approach > 0 and rnd == 1))
+        prompt += '\nApproach: '+chain[0]
         _write(os.path.join(rdir, "prompt.txt"), prompt)
         _log("approach %d round %d: acting via %s" % (approach, rnd, chain))
         text, provider, err = _llm(prompt, chain, ACT_TIMEOUT, "agent")
         _write(os.path.join(rdir, "answer.txt"), text or ("(no answer) " + str(err)))
         if not text:
-            # The provider itself is unavailable, which is different from work that failed its
-            # check. Rotating to another provider is the right response, so this ends the approach
-            # rather than the order.
+            # Preserve the unavailable result and end this attempt. Any later attempt
+            # uses a different prompt while routing remains owned by llmcall.
             agent_task.append_event(item, "act_failed", approach=approach, round=rnd, error=str(err))
             _log("act failed: %s" % err)
             _write(os.path.join(adir, "last.json"),
@@ -457,33 +377,42 @@ def _run_approach(item_id, stream, request, workspace, approach, chain, post_rep
 
         tail = parse_tail(text)
         cmd = tail.get("verify")
-        summary = (tail.get("summary") or "").strip()
+        summary = tail.get("summary")
+        contract_valid = ("verify" in tail and isinstance(summary, str) and bool(summary.strip())
+                          and (cmd is None or isinstance(cmd, str) and bool(cmd.strip())))
+        summary = summary.strip() if isinstance(summary, str) else ""
         changed, changed_via = detect_changes(workspace, tail.get("changed"))
 
-        if cmd:
-            rc, out = run_verify(str(cmd), workspace)
+        if not contract_valid:
+            rc, out = 1, "Invalid final JSON contract: require verify as a nonblank command or explicit null, and an explanatory summary."
+        elif cmd:
+            rc, out = run_verify(cmd, workspace)
         else:
             rc, out = None, "(执行者未给出可执行的验证命令)"
         _write(os.path.join(rdir, "verify.txt"),
                "cmd: %s\nrc: %s\n\n%s" % (cmd, rc, out))
         _write(os.path.join(adir, "last.json"),
-               json.dumps({"cmd": cmd, "rc": rc, "out": out, "summary": summary},
+               json.dumps({"cmd": cmd, "rc": rc, "out": out, "summary": summary,
+                            "changed": changed, "changed_via": changed_via},
                           ensure_ascii=False))
         agent_task.append_event(item, "round", approach=approach, round=rnd, provider=provider,
                                 verify_rc=rc, changed=len(changed), changed_via=changed_via)
 
-        if cmd and rc != 0:
+        if not contract_valid or cmd and rc != 0:
             last_failure = "命令: %s\n返回码: %s\n输出:\n%s" % (cmd, rc, out)
         else:
-            # Verification passed, or there was none to run. Either way an independent reviewer
-            # decides, and when there was no check the terminal report says so.
+            # Review a passed check or an explicitly explained null verifier.
+            # The terminal report preserves the absence of executable verification.
             rev, rprov, rerr = _llm(
                 review_prompt(request, summary, changed, changed_via, cmd, rc, out),
                 REVIEW_CHAIN, REVIEW_TIMEOUT, "judge")
             _write(os.path.join(rdir, "review.txt"), "provider: %s\n%s" % (rprov, rev or rerr))
             decision = (rev or "").strip()
             if decision.upper().startswith("DONE"):
-                agent_task.finish(item_id, True, summary[:200] or "done")
+                finalized = agent_task.finish(item_id, True, summary[:200] or "done")
+                if finalized.get("_err"):
+                    agent_task.append_event(item, "finalization_rejected", error=finalized["_err"])
+                    return {"outcome": "failed"}
                 if post_reports:
                     post(stream, _done_report(short, request, summary, changed, changed_via,
                                               cmd, rc, out, rprov, decision, approach, rnd,

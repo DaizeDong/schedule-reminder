@@ -14,6 +14,7 @@ import argparse
 import base64
 import json
 import os
+import private_data
 import subprocess
 import sys
 import tempfile
@@ -55,6 +56,7 @@ def _load_registry(path: str) -> dict:
 
 def _write_registry(path: str, reg: dict) -> None:
     """Crash-safe same-directory replacement; the secret never leaves its config directory."""
+    private_data.prepare_parent(path)
     directory = os.path.dirname(os.path.abspath(path))
     fd, temp_path = tempfile.mkstemp(prefix="registry.", suffix=".tmp", dir=directory)
     try:
@@ -132,7 +134,7 @@ def _one_named(channels: list[dict], name: str, kind: int, label: str) -> dict |
 
 
 def _safe_entry(entry: dict) -> dict:
-    return {key: value for key, value in entry.items() if key != "webhook"}
+    return relay.safe_stream_entry(entry)
 
 
 def _default_sender(registry_path: str, stream: str, text: str) -> bool:
@@ -156,6 +158,7 @@ def ensure_notification(registry_path: str, stream: str, category_name: str,
                         channel_name: str, skill: str, description: str,
                         username: str | None = None, test_text: str | None = None,
                         client=None, sender=None) -> dict:
+    private_data.prove_private(registry_path)
     reg = _load_registry(registry_path)
     api = client or DiscordAPI(reg["reader"]["bot_token"])
     channels = api.list_channels(str(reg["guild_id"]))

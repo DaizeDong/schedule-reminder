@@ -21,6 +21,9 @@ features. Before changing anything, read [`PHILOSOPHY.md`](PHILOSOPHY.md).
 python -m pytest skills/schedule-reminder/tests/ -q
 ```
 
+Test source roots are derived from the test files. Synthetic filesystem fixtures create and
+clean up their own temporary workspaces; no author-specific workspace setting is required.
+
 ## Conventions
 
 - Stdlib-first; optional deps (`dateutil`, `pysqlite3`) degrade gracefully.
@@ -29,19 +32,19 @@ python -m pytest skills/schedule-reminder/tests/ -q
 
 ## Version sync
 
-`plugin.json.version` == README/README_CN Roadmap badge == `ROADMAP.md` "Current:" ==
-`CHANGELOG.md` latest entry. Keep all four in lock-step on every bump.
+Update `.claude-plugin/plugin.json.version` for a release. Keep any explicit current-version claims
+in README and README_CN consistent with that release. Their Roadmap badges and ROADMAP.md are
+intentionally versionless, and CHANGELOG.md preserves historical entries; do not rewrite history
+or add a release claim before that release is made.
 
 License: MIT (see [LICENSE](LICENSE)).
 
-## CI dependency access
 
-The acceptance suite installs the private `llmcall` dependency declared in
-`requirements.txt`. Set `LLMCALL_DEPLOY_KEY` to a dedicated SSH key registered
-as a read-only deploy key on that dependency repository. Each consumer needs
-its own key. The workflow loads it into a temporary SSH agent and trusts the
-GitHub host keys returned by the HTTPS metadata API.
+## Canonical test dependency
 
-Fork pull requests do not receive this secret and cannot run the dependency
-check. After reviewing a contribution, a maintainer must test the exact changes
-on a trusted repository branch. A missing credential remains a failed check.
+The route tests execute the canonical code-only notification language rule. Prepare the exact artifact using the hash and size in tools/test_dependencies.json:
+
+    python tools/prepare_test_dependency.py --source /path/to/notification_language.py --out /tmp/schedule-tests/notification_language.py
+    export SCHEDULE_TEST_LANGUAGE_RULE=/tmp/schedule-tests/notification_language.py
+
+CI uses the same validator and receives the artifact through SCHEDULE_LANGUAGE_RULE_B64. An absent secret or a hash mismatch is a dependency failure before test collection. Fork CI needs the dependency provisioned by a trusted runner; it must not skip language assertions or reduce the acceptance floor.

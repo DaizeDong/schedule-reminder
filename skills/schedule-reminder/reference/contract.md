@@ -33,8 +33,8 @@ python reminder.py [--db PATH] [--actor NAME] <verb> [args...]
 | `get` | fetch by id | `--id` | `{item}` |
 | `list` / `query` | filter + keyset page | `--state`, `--source`, `--kind`, `--due-before`, `--active`, `--limit`, `--cursor` | `{items[], next_cursor}` |
 | `update` | patch fields (not state) | `--id`, `--set field=value` (repeatable), `--ext JSON`, `--idempotency-key` | `{item}` |
-| `transition` | state move (state machine + CAS) | `--id`, `--to`, `--expect`, `--reason`, `--progress` | `{item}` or error |
-| `done` | mark complete | `--id` | `{item}` (`end_at` set, `progress=100`) |
+| `transition` | state move (state machine + CAS) | `--id`, `--to`, `--expect`, `--reason`, `--progress`, `--ext JSON` | `{item}` or error |
+| `done` | mark complete | `--id`, `--ext JSON` | `{item}` (`end_at` set, `progress=100`) |
 | `block` | mark blocked | `--id`, `--blocker-id`, `--reason` | `{item}` |
 | `snooze` | suppress reminders until T | `--id`, `--until` | `{item}` |
 | `due` | read items due now (read-only) | `--now`, `--lead` | `{items[], now}` |
@@ -83,6 +83,8 @@ Every `item` object has exactly these keys (additive-only within `api_version 1.
 Write-time invariants (enforced at the store, not the caller): `done` requires all `depends-on`
 targets done and sets `end_at`+`progress=100`; `cancelled` sets `end_at`; `blocked` needs an unmet
 blocker or a `reason`; state changes go through `transition`/`done`/`block` (never `update`).
+`block --blocker-id` commits the dependency relation and blocked state together. A rejected state
+change or failed audit-event write leaves both the item and its prior events unchanged.
 
 ## Error codes
 
@@ -135,3 +137,9 @@ it rewrites other fields, this is what keeps the base safely extensible.
 skills (#2 email-monitor, #4 daily-hotspots, #6 demand-mining, #7 promotion-assistant) integrate
 against it; the regression suite (E11) golden-compares verbs + item fields + state enum on every
 change.
+
+## Atomic finalization and delivery recovery
+
+`transition` and `done` accept optional `--ext JSON`. State and metadata commit together; errors roll both back. Calls without `--ext` retain same-state no-op behavior. Unknown ext fields remain preserved.
+
+Exhausted delivery is excluded from later ticks until rearmed, independently of an ordinary task's blocked state. Explicit `snooze` resets retry bookkeeping, and moving an idempotent reminder's due time forward rearms exhausted delivery. A dry-run tick makes no persistent item, event or watchdog changes. These are repaired recovery rules, not evidence that earlier versions implemented them. See [operations.md](operations.md).

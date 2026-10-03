@@ -1,15 +1,5 @@
 # -*- coding: utf-8 -*-
-"""A fixed-key heartbeat must be able to fire more than once in its lifetime.
-
-The failure this pins down: tick() selects on `notified_at IS NULL` and only a recurrence clears
-that flag, so a producer that upserts one fixed idempotency key every run (pushing due_at forward
-so its own SILENCE becomes the alarm) got exactly ONE notification, ever. Every later upsert wrote
-a due_at onto a row tick would never look at again: an update that could not have an effect.
-
-That is how a backstop channel stops speaking without anyone noticing. Measured before the fix:
-a delivery-failure reminder had notified_at pinned weeks in the past while its due_at kept
-advancing, and it was overdue by days without a single new notification.
-"""
+"""Synthetic controls for rearming a fixed-key heartbeat after its previous delivery."""
 import os
 import sqlite3
 import sys

@@ -1,8 +1,6 @@
 # Design Brief, schedule-reminder
 
-> Step 0 (research-first) was completed in the planning phase. Full rationale and 6-sub-study source
-> coverage live in `CodesResearch/_skill-builds/03-schedule-reminder/ARCHITECTURE.md` (ARCH v1.0).
-> This brief is the auditable digest.
+> The shipped CLI contract defines state behavior; the operations reference covers recovery.
 
 ## Best references (match-or-beat)
 

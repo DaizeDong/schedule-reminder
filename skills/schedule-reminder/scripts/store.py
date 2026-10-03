@@ -23,7 +23,10 @@ import os
 import threading
 import time
 import uuid as _uuid
+from pathlib import Path
 from datetime import datetime, timezone
+
+import private_data
 
 # --- SQLite backend selection: prefer a bundled-newer pysqlite3 if present, else stdlib ----------
 try:  # pragma: no cover - depends on host
@@ -45,8 +48,7 @@ STATES = ("pending", "doing", "done", "blocked", "cancelled")
 ACTIVE_STATES = ("pending", "doing", "blocked")
 TERMINAL_STATES = ("done", "cancelled")
 
-# Legal state-machine transitions (see docs/design-brief.md §2.3; full ARCHITECTURE lives in the
-# CodesResearch build notes). Reopen from terminal allowed.
+# Legal transitions follow the shipped contract. Reopening a terminal item is allowed.
 TRANSITIONS = {
     "pending":   {"doing", "blocked", "done", "cancelled"},
     "doing":     {"done", "blocked", "pending", "cancelled"},
@@ -168,22 +170,41 @@ def uuid7():
 # DB path / connection / pragmas
 # =================================================================================================
 def default_db_path():
-    return os.environ.get(
-        "SCHEDULE_DB_PATH",
-        os.path.join(os.path.expanduser("~"), ".claude", "schedule-reminder", "db.sqlite3"),
-    )
+    return os.environ.get("SCHEDULE_DB_PATH") or str(private_data.data_dir()/"db.sqlite3")
 
 
-def _connect(db_path=None):
+def _connect(db_path=None, *, readonly=False, create=False, immutable=False):
     """Open a connection in autocommit mode (isolation_level=None) so WE control BEGIN IMMEDIATE."""
     path = db_path or default_db_path()
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    conn = sqlite3.connect(path, isolation_level=None, timeout=10.0)
+    if not readonly:
+        try:
+            private_data.assert_sqlite_paths(path)
+            private_data.prove_private(path)
+        except PermissionError as error:
+            raise SkillError("ERR_PERMISSION", str(error)) from error
+        except ValueError as error:
+            raise SkillError("ERR_DATA_POLICY", str(error)) from error
+    if not os.path.isfile(path) and not create:
+        raise SkillError("ERR_UNINITIALIZED", "initialize the PRIVATE database with init")
+    target = Path(path).resolve().as_uri()+"?mode=ro" if readonly else path
+    if readonly and immutable:
+        target += '&immutable=1'
+    try:
+        if create:
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        if not readonly:
+            private_data.assert_sqlite_paths(path)
+        conn = sqlite3.connect(target, uri=readonly, isolation_level=None, timeout=10.0)
+    except PermissionError as error:
+        raise SkillError('ERR_PERMISSION', str(error)) from error
+    except ValueError as error:
+        raise SkillError('ERR_DATA_POLICY', str(error)) from error
     conn.row_factory = sqlite3.Row
     # Connection-level pragmas (busy_timeout is NOT persistent, must be set per connection).
     conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA synchronous = NORMAL")
+    if not readonly:
+        conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
 
@@ -211,7 +232,11 @@ class _Tx:
 
     def __enter__(self):
         _WRITE_LOCK.acquire()
-        _busy_retry(lambda: self.conn.execute("BEGIN IMMEDIATE"))
+        try:
+            _busy_retry(lambda: self.conn.execute("BEGIN IMMEDIATE"))
+        except BaseException:
+            _WRITE_LOCK.release()
+            raise
         return self.conn
 
     def __exit__(self, exc_type, exc, tb):
@@ -274,8 +299,7 @@ CREATE TABLE IF NOT EXISTS meta (
 def init_db(db_path=None):
     """Create schema, enable WAL (durable per-file property), set user_version. Idempotent."""
     path = db_path or default_db_path()
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    conn = _connect(path)
+    conn = _connect(path, create=True)
     try:
         conn.execute("PRAGMA journal_mode = WAL")  # persists for the file; set once
         conn.executescript(_DDL)
@@ -352,6 +376,9 @@ def _validate_progress(progress):
     """progress is a 0-100 percentage; reject out-of-range so the invariant holds on every write."""
     if progress is None:
         return None
+    if isinstance(progress, bool) or not isinstance(progress, (int, str)):
+        raise SkillError("ERR_BAD_PROGRESS", "progress must be an integer 0-100",
+                         progress=progress)
     try:
         p = int(progress)
     except (TypeError, ValueError):
@@ -362,6 +389,19 @@ def _validate_progress(progress):
                          "progress must be in [%d, %d]" % (PROGRESS_MIN, PROGRESS_MAX),
                          progress=p)
     return p
+
+
+def _validate_priority(value):
+    """Normalize integer CLI values and enforce the iCalendar priority range."""
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise SkillError("ERR_BAD_PRIORITY", "priority must be an integer 0-9")
+    try:
+        priority = int(value)
+    except (TypeError, ValueError):
+        raise SkillError("ERR_BAD_PRIORITY", "priority must be an integer 0-9") from None
+    if not 0 <= priority <= 9:
+        raise SkillError("ERR_BAD_PRIORITY", "priority must be an integer 0-9")
+    return priority
 
 
 def _deps_satisfied(conn, relations):
@@ -377,6 +417,26 @@ def _deps_satisfied(conn, relations):
                 unmet.append(tgt)
     return (len(unmet) == 0), unmet
 
+
+
+def _validate_complete_item(conn, fields):
+    """Check the complete proposed row before insertion or a generic patch."""
+    if not isinstance(fields["title"], str) or not fields["title"].strip():
+        raise SkillError("ERR_BAD_INPUT", "title is required")
+    _validate_kind(fields["kind"])
+    _validate_state(fields["state"])
+    _validate_priority(fields["priority"])
+    progress = _validate_progress(fields["progress"])
+    if progress is None or (fields["state"] == "done" and progress != 100):
+        raise SkillError("ERR_BAD_PROGRESS", "done requires progress=100; progress cannot be null")
+    if fields["state"] in TERMINAL_STATES and not fields["end_at"]:
+        raise SkillError("ERR_BAD_INPUT", "terminal items require end_at")
+    relations = json.loads(fields["relations"]) if fields["relations"] else None
+    satisfied, unmet = _deps_satisfied(conn, relations)
+    if fields["state"] == "done" and not satisfied:
+        raise SkillError("ERR_DEPENDENCY_UNMET", "depends-on not done", unmet=unmet)
+    if fields["state"] == "blocked" and not unmet and not str(fields["block_reason"] or "").strip():
+        raise SkillError("ERR_BLOCK_REASON_REQUIRED", "blocked requires an unmet blocker or a reason")
 
 def _enforce_terminal_fields(fields, to_state, now):
     """done/cancelled MUST have end_at; done forces progress=100 (see docs/design-brief.md §2.3)."""
@@ -396,13 +456,14 @@ def _enforce_terminal_fields(fields, to_state, now):
 def add_item(title, *, kind="task", due_at=None, state="pending", priority=0, progress=0,
              description=None, scheduled_at=None, start_at=None, end_at=None, wait_until=None,
              tz=None, recurrence=None, rdate=None, exdate=None, tags=None, project=None,
-             relations=None, alarms=None, source=None, idempotency_key=None, ext=None,
+             relations=None, alarms=None, source=None, idempotency_key=None, ext=None, if_exists="update",
              actor=None, db_path=None, _id=None):
     """Create an item. Idempotent on idempotency_key (UPSERT). Returns the item dict."""
     if not title or not str(title).strip():
         raise SkillError("ERR_BAD_INPUT", "title is required")
     _validate_kind(kind)
     _validate_state(state)
+    priority = _validate_priority(priority)
     progress = _validate_progress(progress)
     now = to_rfc3339(now_utc())
     item_id = _id or uuid7()
@@ -433,6 +494,8 @@ def add_item(title, *, kind="task", due_at=None, state="pending", priority=0, pr
                     "SELECT * FROM items WHERE idempotency_key = ?", (idempotency_key,)
                 ).fetchone()
                 if existing is not None:
+                    if if_exists == "return":
+                        return _row_to_item(existing)
                     # idempotent replay: merge ext, refresh mutable fields, keep original id
                     merged_ext = _merge_ext(existing["ext"], ext)
                     # Re-arm when an already-notified row is pushed to a LATER due_at.
@@ -456,7 +519,8 @@ def add_item(title, *, kind="task", due_at=None, state="pending", priority=0, pr
                     # done or cancelled row is excluded by tick's own state filter, so clearing
                     # the flag here cannot revive something that was deliberately closed.
                     rearm = (
-                        existing["notified_at"] is not None
+                        (existing["notified_at"] is not None
+                         or (existing["retry_count"] or 0) >= _NOTIFY_MAX_RETRIES)
                         and fields["due_at"] is not None
                         and existing["due_at"] is not None
                         and str(fields["due_at"]) > str(existing["due_at"])
@@ -480,6 +544,7 @@ def add_item(title, *, kind="task", due_at=None, state="pending", priority=0, pr
                         )
                         _append_event(conn, existing["id"], actor or source, "idempotent_replay")
                     return _row_to_item(_get_raw(conn, existing["id"]))
+            _validate_complete_item(conn, fields)
             cols = ", ".join(ITEM_COLUMNS)
             ph = ", ".join("?" for _ in ITEM_COLUMNS)
             conn.execute("INSERT INTO items(%s) VALUES(%s)" % (cols, ph),
@@ -519,7 +584,7 @@ _TIME_FIELDS = {"due_at", "scheduled_at", "start_at", "end_at", "wait_until"}
 
 
 def update_item(item_id, *, idempotency_key=None, actor=None, ext=None, db_path=None, **fields):
-    """Patch mutable fields. ext is deep-merged (unknown keys preserved). State is NOT changed here."""
+    """Patch mutable fields. ext uses a shallow merge preserving unknown top-level keys. State is unchanged."""
     conn = _connect(db_path)
     try:
         with _Tx(conn):
@@ -531,6 +596,7 @@ def update_item(item_id, *, idempotency_key=None, actor=None, ext=None, db_path=
                                  "state changes must go through transition()/done/block",
                                  id=item_id)
             sets, vals = [], []
+            proposed = dict(row)
             for k, v in fields.items():
                 if k not in _UPDATABLE:
                     raise SkillError("ERR_BAD_FIELD", "field not updatable: %s" % k, field=k)
@@ -538,10 +604,14 @@ def update_item(item_id, *, idempotency_key=None, actor=None, ext=None, db_path=
                     v = to_rfc3339(parse_dt(v)) if v else None
                 elif k == "progress":
                     v = _validate_progress(v)
+                elif k == "priority":
+                    v = _validate_priority(v)
                 elif k in _JSON_COLS:
                     v = _dump_json(v)
+                proposed[k] = v
                 sets.append("%s=?" % k)
                 vals.append(v)
+            _validate_complete_item(conn, proposed)
             merged_ext = _merge_ext(row["ext"], ext)
             sets.append("ext=?"); vals.append(merged_ext)
             now = to_rfc3339(now_utc())
@@ -556,8 +626,8 @@ def update_item(item_id, *, idempotency_key=None, actor=None, ext=None, db_path=
 
 
 def transition(item_id, to_state, *, expect_state=None, reason=None, actor=None,
-               progress=None, db_path=None):
-    """Move item to to_state with state-machine + invariant enforcement and optimistic CAS."""
+               progress=None, ext=None, blocker_id=None, db_path=None):
+    """Atomically change state and optional ext fields with invariants and optimistic CAS."""
     _validate_state(to_state)
     conn = _connect(db_path)
     try:
@@ -570,11 +640,11 @@ def transition(item_id, to_state, *, expect_state=None, reason=None, actor=None,
                 raise SkillError("ERR_STATE_CONFLICT",
                                  "expected state %s but found %s" % (expect_state, cur_state),
                                  id=item_id, current=cur_state, expected=expect_state)
-            if to_state == cur_state:
-                # no-op transition is allowed and idempotent
+            if to_state == cur_state and ext is None and not blocker_id:
+                # Preserve the existing no-op contract when no metadata patch was requested.
                 return _row_to_item(row)
             allowed = TRANSITIONS.get(cur_state, set())
-            if to_state not in allowed:
+            if to_state != cur_state and to_state not in allowed:
                 raise SkillError("ERR_ILLEGAL_TRANSITION",
                                  "cannot move %s -> %s" % (cur_state, to_state),
                                  id=item_id, current=cur_state, to=to_state,
@@ -583,6 +653,14 @@ def transition(item_id, to_state, *, expect_state=None, reason=None, actor=None,
             relations = json.loads(row["relations"]) if row["relations"] else None
 
             new_fields = {"state": to_state, "updated_at": now}
+            if blocker_id:
+                relations = list(relations or [])
+                relations.append({"type": "depends-on", "target_id": blocker_id})
+                new_fields["relations"] = _dump_json(relations)
+            if ext is not None:
+                if not isinstance(ext, dict):
+                    raise SkillError("ERR_BAD_JSON", "ext must be a JSON object")
+                new_fields["ext"] = _merge_ext(row["ext"], ext)
             if progress is not None:
                 new_fields["progress"] = _validate_progress(progress)
 
@@ -597,7 +675,8 @@ def transition(item_id, to_state, *, expect_state=None, reason=None, actor=None,
                 new_fields["end_at"] = now
             elif to_state == "blocked":
                 _, unmet = _deps_satisfied(conn, relations)
-                if not unmet and not reason and not row["block_reason"]:
+                reason = str(reason).strip() if reason is not None else None
+                if not unmet and not reason and not str(row["block_reason"] or "").strip():
                     raise SkillError("ERR_BLOCK_REASON_REQUIRED",
                                      "blocked requires an unmet blocker or a reason", id=item_id)
                 if reason:
@@ -617,26 +696,25 @@ def transition(item_id, to_state, *, expect_state=None, reason=None, actor=None,
                 fresh = _get_raw(conn, item_id)
                 raise SkillError("ERR_STATE_CONFLICT", "state changed concurrently",
                                  id=item_id, current=fresh["state"] if fresh else None)
-            _append_event(conn, item_id, actor, "status_change",
-                          from_state=cur_state, to_state=to_state,
-                          payload={"reason": reason} if reason else None)
+            if blocker_id:
+                _append_event(conn, item_id, actor, "updated", payload={"fields": ["relations"]})
+            if to_state != cur_state or ext is not None:
+                _append_event(conn, item_id, actor, "status_change",
+                              from_state=cur_state, to_state=to_state,
+                              payload={"reason": reason} if reason else None)
             return _row_to_item(_get_raw(conn, item_id))
     finally:
         conn.close()
 
 
-def done(item_id, *, actor=None, db_path=None):
-    return transition(item_id, "done", actor=actor, db_path=db_path)
+def done(item_id, *, actor=None, ext=None, db_path=None):
+    return transition(item_id, "done", actor=actor, ext=ext, db_path=db_path)
 
 
 def block(item_id, *, blocker_id=None, reason=None, actor=None, db_path=None):
-    """Block an item; optionally record a depends-on blocker relation first."""
-    if blocker_id:
-        cur = get_item(item_id, db_path=db_path)
-        rels = cur.get("relations") or [] if cur else []
-        rels.append({"type": "depends-on", "target_id": blocker_id})
-        update_item(item_id, relations=rels, actor=actor, db_path=db_path)
-    return transition(item_id, "blocked", reason=reason, actor=actor, db_path=db_path)
+    """Atomically block an item and optionally record its depends-on relation."""
+    return transition(item_id, "blocked", blocker_id=blocker_id, reason=reason,
+                      actor=actor, db_path=db_path)
 
 
 def snooze(item_id, until, *, actor=None, db_path=None):
@@ -651,7 +729,7 @@ def snooze(item_id, until, *, actor=None, db_path=None):
             now = to_rfc3339(now_utc())
             conn.execute(
                 "UPDATE items SET wait_until=?, notified_at=NULL, next_retry_at=NULL, "
-                "claimed_at=NULL, updated_at=? WHERE id=?",
+                "claimed_at=NULL, retry_count=0, updated_at=? WHERE id=?",
                 (until_s, now, item_id),
             )
             _append_event(conn, item_id, actor, "snoozed", payload={"until": until_s})
@@ -664,7 +742,9 @@ def snooze(item_id, until, *, actor=None, db_path=None):
 # Public API, read ops (no transaction; WAL gives consistent snapshot reads)
 # =================================================================================================
 def get_item(item_id, *, db_path=None):
-    conn = _connect(db_path)
+    if not os.path.isfile(db_path or default_db_path()):
+        return None
+    conn = _connect(db_path, readonly=True)
     try:
         return _row_to_item(_get_raw(conn, item_id))
     finally:
@@ -680,7 +760,9 @@ def list_items(*, state=None, source=None, kind=None, due_before=None, active_on
     any active view.  Both the email digest and Agent Center build their actionable lists through
     this shared query, so applying the rule in SQL also keeps pagination correct for every caller.
     """
-    conn = _connect(db_path)
+    if not os.path.isfile(db_path or default_db_path()):
+        return {"items": [], "next_cursor": None}
+    conn = _connect(db_path, readonly=True)
     try:
         where, params = [], []
         if state:
@@ -726,7 +808,9 @@ def due_items(*, now=None, lead=0, db_path=None):
     """
     now_s = resolve_now(now)
     now_dt = parse_dt(now_s)
-    conn = _connect(db_path)
+    if not os.path.isfile(db_path or default_db_path()):
+        return []
+    conn = _connect(db_path, readonly=True)
     try:
         rows = conn.execute(
             "SELECT * FROM items WHERE due_at IS NOT NULL "
@@ -940,21 +1024,54 @@ def _next_due(due_dt, recurrence, after_dt, exdate=None):
 # tick, due dispatch reconciliation (at-least-once + idempotent dedupe + back-off retry)
 # =================================================================================================
 def _default_notify(item):
-    """Bridge to notify.notify; imported lazily to keep store decoupled."""
+    """Bridge to receipt-aware notify.deliver; bool fallbacks do not prove readiness."""
     try:
-        from notify import notify  # type: ignore
+        from notify import deliver as notify  # type: ignore
     except Exception:
         import importlib.util
         here = os.path.dirname(os.path.abspath(__file__))
         spec = importlib.util.spec_from_file_location("notify", os.path.join(here, "notify.py"))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)  # type: ignore
-        notify = mod.notify
+        notify = mod.deliver
     title = item.get("title", "(no title)")
     due = item.get("due_at", "")
     text = "[reminder] %s%s" % (title, ("  (due %s)" % due if due else ""))
     return notify(text)
 
+
+
+_NOTIFICATION_SELECT = (
+    "SELECT items.*, (SELECT COALESCE(MAX(seq),0) FROM events "
+    "WHERE item_id=items.id) AS _event_revision FROM items "
+)
+
+
+def _notification_row(conn, item_id):
+    row = conn.execute(_NOTIFICATION_SELECT + "WHERE id=?", (item_id,)).fetchone()
+    return dict(row) if row is not None else None
+
+
+def _notification_eligible(row, now_s, stale, now_dt, lead):
+    return bool(
+        row and row["state"] not in TERMINAL_STATES and row["due_at"]
+        and not row["notified_at"]
+        and (row["retry_count"] or 0) < _NOTIFY_MAX_RETRIES
+        and (not row["next_retry_at"] or row["next_retry_at"] <= now_s)
+        and (not row["wait_until"] or row["wait_until"] <= now_s)
+        and (not row["claimed_at"] or row["claimed_at"] <= stale)
+        and _due_reached(_row_to_item(row), now_dt, lead)
+    )
+
+
+def _release_notification_claim(conn, snapshot):
+    """Clear only this claim, even when a later user edit superseded its row."""
+    conn.execute(
+        "UPDATE items SET claimed_at=NULL WHERE id=? AND claimed_at=? "
+        "AND (SELECT MAX(seq) FROM events WHERE item_id=? "
+        "AND event_type='notification_claimed')=?",
+        (snapshot["id"], snapshot["claimed_at"], snapshot["id"], snapshot["_event_revision"]),
+    )
 
 def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor="tick"):
     """Reconcile due items: claim -> notify (outside tx) -> mark notified | back-off retry.
@@ -972,19 +1089,19 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
     now_s = resolve_now(now)
     now_dt = parse_dt(now_s)
     notify_fn = notify_fn or _default_notify
-    conn = _connect(db_path)
-    dispatched, retried, blocked, skipped = [], [], [], []
+    conn = _connect(db_path, readonly=dry_run)
+    dispatched, retried, blocked, skipped, receipts = [], [], [], [], []
     try:
         from datetime import timedelta
         stale = to_rfc3339(now_dt - timedelta(seconds=_CLAIM_TTL))
         rows = conn.execute(
-            "SELECT * FROM items WHERE due_at IS NOT NULL "
+            _NOTIFICATION_SELECT + "WHERE due_at IS NOT NULL "
             "AND state NOT IN ('done','cancelled') "
-            "AND notified_at IS NULL "
+            "AND notified_at IS NULL AND COALESCE(retry_count,0) < ? "
             "AND (next_retry_at IS NULL OR next_retry_at <= ?) "
             "AND (wait_until IS NULL OR wait_until <= ?) "
             "AND (claimed_at IS NULL OR claimed_at <= ?) ORDER BY due_at ASC",
-            (now_s, now_s, stale),
+            (_NOTIFY_MAX_RETRIES, now_s, now_s, stale),
         ).fetchall()
 
         # 被别人握着的那些,在**查询阶段**就被上面那条 `claimed_at <= stale` 排除掉了,
@@ -997,15 +1114,16 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
         held = [r["id"] for r in conn.execute(
             "SELECT id FROM items WHERE due_at IS NOT NULL "
             "AND state NOT IN ('done','cancelled') "
-            "AND notified_at IS NULL "
+            "AND notified_at IS NULL AND COALESCE(retry_count,0) < ? "
             "AND (next_retry_at IS NULL OR next_retry_at <= ?) "
             "AND (wait_until IS NULL OR wait_until <= ?) "
             "AND claimed_at IS NOT NULL AND claimed_at > ? ORDER BY due_at ASC",
-            (now_s, now_s, stale)).fetchall()]
+            (_NOTIFY_MAX_RETRIES, now_s, now_s, stale)).fetchall()]
 
         for row in rows:
+            row = dict(row)
             item_id = row["id"]
-            item = _row_to_item(row)
+            item = _row_to_item({key: row[key] for key in ITEM_COLUMNS})
             # alarm-aware interval rule: only items actually due (accounting for per-alarm lead)
             if not _due_reached(item, now_dt, lead):
                 continue
@@ -1014,68 +1132,79 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
                 dispatched.append(item_id)
                 continue
 
-            # atomic EXCLUSIVE claim: only an unclaimed-or-stale, not-yet-notified item is grabbed.
-            # 这里输掉 CAS 只覆盖一个**很窄的竞态**:查询时还没被认领,查询与这条 UPDATE
-            # 之间被另一次 tick 抢走。常见情形(查询时就已经被握着)在上面那条 SELECT 里
-            # 就被排除了,走不到这里, 那些统计在 `held` 里。
+            # The SELECT is only a candidate list. Recheck the full row and its
+            # audit revision while holding the database write transaction.
             with _Tx(conn):
-                cur = conn.execute(
-                    "UPDATE items SET claimed_at=? WHERE id=? AND notified_at IS NULL "
-                    "AND (claimed_at IS NULL OR claimed_at <= ?)",
-                    (now_s, item_id, stale),
-                )
-                claimed = cur.rowcount > 0
+                fresh = _notification_row(conn, item_id)
+                claimed = fresh == row and _notification_eligible(
+                    fresh, now_s, stale, now_dt, lead)
+                if claimed:
+                    conn.execute("UPDATE items SET claimed_at=? WHERE id=?", (now_s, item_id))
+                    _append_event(conn, item_id, actor, "notification_claimed")
+                    claim = _notification_row(conn, item_id)
             if not claimed:
                 skipped.append(item_id)
                 continue
 
+            # User actions between claim commit and delivery invalidate the snapshot.
+            if _notification_row(conn, item_id) != claim:
+                with _Tx(conn):
+                    _release_notification_claim(conn, claim)
+                skipped.append(item_id)
+                continue
+
             try:
-                ok = bool(notify_fn(item))
+                delivered = notify_fn(item)
+                ok = (delivered.get("delivered") is True and type(delivered.get("exit_code")) is int and delivered.get("exit_code") == 0
+                      if isinstance(delivered, dict) else bool(delivered))
             except Exception as e:  # notify must never crash the tick loop
                 ok = False
-                _record_notify_failure(conn, item_id, now_s, str(e), blocked, retried, actor)
+                _record_notify_failure(conn, item_id, now_s, str(e), blocked, retried, actor, claim)
                 continue
 
             if ok:
                 next_due = _next_due(parse_dt(row["due_at"]), row["recurrence"], now_dt,
                                      exdate=row["exdate"]) if row["recurrence"] else None
                 with _Tx(conn):
-                    if next_due is not None:
-                        # recurring: roll to next occurrence and re-arm (clear delivery bookkeeping)
-                        conn.execute(
-                            "UPDATE items SET due_at=?, notified_at=NULL, claimed_at=NULL, "
-                            "next_retry_at=NULL, retry_count=0, updated_at=? "
-                            "WHERE id=? AND notified_at IS NULL",
-                            (to_rfc3339(next_due), now_s, item_id),
-                        )
-                        _append_event(conn, item_id, actor, "notified",
-                                      payload={"channel": "discord",
-                                               "rolled_to": to_rfc3339(next_due)})
+                    if _notification_row(conn, item_id) != claim:
+                        _release_notification_claim(conn, claim)
                     else:
-                        conn.execute(
-                            "UPDATE items SET notified_at=?, next_retry_at=NULL, updated_at=? "
-                            "WHERE id=? AND notified_at IS NULL",
-                            (now_s, now_s, item_id),
-                        )
-                        _append_event(conn, item_id, actor, "notified",
-                                      payload={"channel": "discord"})
+                        payload = {"channel": "discord"}
+                        if next_due is not None:
+                            conn.execute(
+                                "UPDATE items SET due_at=?, notified_at=NULL, claimed_at=NULL, "
+                                "next_retry_at=NULL, retry_count=0, updated_at=? WHERE id=?",
+                                (to_rfc3339(next_due), now_s, item_id),
+                            )
+                            payload["rolled_to"] = to_rfc3339(next_due)
+                        else:
+                            conn.execute(
+                                "UPDATE items SET notified_at=?, claimed_at=NULL, "
+                                "next_retry_at=NULL, updated_at=? WHERE id=?",
+                                (now_s, now_s, item_id),
+                            )
+                        _append_event(conn, item_id, actor, "notified", payload=payload)
                 dispatched.append(item_id)
+                if isinstance(delivered, dict) and delivered.get("receipt_id") and delivered.get("kind"):
+                    receipts.append(delivered)
             else:
                 _record_notify_failure(conn, item_id, now_s, "notify returned falsey",
-                                       blocked, retried, actor)
+                                       blocked, retried, actor, claim)
 
-        # watchdog / self-monitor
-        with _Tx(conn):
-            conn.execute("INSERT INTO meta(key,value) VALUES('last_tick_at',?) "
-                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (now_s,))
-            conn.execute(
-                "INSERT INTO meta(key,value) VALUES('tick_count','1') "
-                "ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)")
+        # A preview cannot replace the real worker heartbeat.
+        if not dry_run:
+            with _Tx(conn):
+                conn.execute("INSERT INTO meta(key,value) VALUES('last_tick_at',?) "
+                             "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (now_s,))
+                conn.execute(
+                    "INSERT INTO meta(key,value) VALUES('tick_count','1') "
+                    "ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)")
         # The sweep rides the tick rather than getting its own schedule: a separate task is a
         # fourth thing to register, monitor and back up, and this one has nothing to do that
         # the tick is not already awake for.
         swept = sweep_lapsed(now=now_s, dry_run=dry_run, db_path=db_path, actor=actor)
         return {"dispatched": dispatched, "retried": retried, "blocked": blocked,
+                "delivery_receipts": receipts,
                 "skipped": skipped,
                 # 被另一次 tick 握着的条目。新增键,不动 skipped 的语义:
                 # skipped 一直是「走到认领这一步才输掉」,而这是「压根没被选中」。
@@ -1094,36 +1223,15 @@ _LAPSE_GRACE_DAYS = int(os.environ.get("SCHEDULE_LAPSE_GRACE_DAYS", "7"))
 
 
 def sweep_lapsed(*, now=None, grace_days=None, dry_run=False, db_path=None, actor="sweep"):
-    """Close reminders whose moment came and went, and REPORT the ones that never arrived.
-
-    WHY THIS EXISTS. Measured 2026-09-05: 72 overdue items were open at once, the oldest from
-    mid-July. Among them sat a confirmation due that same day. Seventy-two things flagged red is
-    the same signal as none flagged at all -- the one that mattered was indistinguishable from a
-    car wash nobody did in July. An overdue list only works if being on it is rare.
-
-    THE LINE THIS SWEEP WILL NOT CROSS. It closes only what was actually DELIVERED. An item with
-    no notified_at was never put in front of anyone, and closing it would not be tidying, it would
-    be deleting a message the person never received. That is not hypothetical: this store already
-    holds an item titled "task-health digest UNDELIVERED (relay rc=1)", which is what a delivery
-    failure looks like from the inside. Those are returned under `undelivered` for the caller to
-    surface, and left exactly where they are.
-
-    Also left alone, each for its own reason:
-      * `doing`   -- somebody picked it up; lapsing it would erase work in progress.
-      * `blocked` -- parked on purpose, with a reason; the sweep is not the thing to un-park it.
-      * recurring -- these re-arm rather than expire, so a past due_at is a normal intermediate
-                     state, not an expiry.
-
-    Terminal state is `cancelled`, not `done`. `done` would assert the task was completed, which
-    nobody checked and which is usually false. `cancelled` says only what happened: the reminder
-    lapsed. It is also the reopen-able terminal state, so a mistake here costs one command.
-    """
+    """Cancel delivered one-shot reminders after the configured grace period.
+    
+    Undelivered, doing, blocked and recurring items remain open. Undelivered items are reported separately. Eligibility is rechecked inside the transaction; dry-run reports without mutating."""
     from datetime import timedelta
 
     grace = _LAPSE_GRACE_DAYS if grace_days is None else int(grace_days)
     now_s = resolve_now(now)
     cutoff = to_rfc3339(parse_dt(now_s) - timedelta(days=grace))
-    conn = _connect(db_path)
+    conn = _connect(db_path, readonly=dry_run)
     lapsed, undelivered = [], []
     try:
         rows = conn.execute(
@@ -1140,10 +1248,21 @@ def sweep_lapsed(*, now=None, grace_days=None, dry_run=False, db_path=None, acto
                 lapsed.append({"id": r["id"], "title": r["title"], "due_at": r["due_at"]})
                 continue
             try:
-                transition(r["id"], "cancelled", db_path=db_path, actor=actor,
-                           reason="lapsed: due %s, more than %d day(s) ago, and it was delivered"
-                                  % (r["due_at"][:10], grace))
-                lapsed.append({"id": r["id"], "title": r["title"], "due_at": r["due_at"]})
+                with _Tx(conn):
+                    fresh = _get_raw(conn, r["id"])
+                    if not (fresh and fresh["state"] == "pending" and fresh["due_at"]
+                            and fresh["due_at"] < cutoff and not fresh["recurrence"]
+                            and fresh["notified_at"]):
+                        continue
+                    reason = "lapsed: due %s, more than %d day(s) ago, and it was delivered" % (
+                        fresh["due_at"][:10], grace)
+                    conn.execute(
+                        "UPDATE items SET state='cancelled', end_at=?, claimed_at=NULL, "
+                        "updated_at=? WHERE id=?", (now_s, now_s, r["id"]))
+                    _append_event(conn, r["id"], actor, "status_change",
+                                  from_state="pending", to_state="cancelled",
+                                  payload={"reason": reason})
+                    lapsed.append({"id": fresh["id"], "title": fresh["title"], "due_at": fresh["due_at"]})
             except Exception as e:
                 # One stubborn row must not stop the sweep, and must not vanish either.
                 undelivered.append({"id": r["id"], "title": r["title"], "due_at": r["due_at"],
@@ -1154,15 +1273,19 @@ def sweep_lapsed(*, now=None, grace_days=None, dry_run=False, db_path=None, acto
             "grace_days": grace, "cutoff": cutoff, "dry_run": bool(dry_run)}
 
 
-def _record_notify_failure(conn, item_id, now_s, detail, blocked, retried, actor):
+def _record_notify_failure(conn, item_id, now_s, detail, blocked, retried, actor, claim):
     from datetime import timedelta
     with _Tx(conn):
-        row = _get_raw(conn, item_id)
+        row = _notification_row(conn, item_id)
+        if row != claim:
+            _release_notification_claim(conn, claim)
+            return
         rc = (row["retry_count"] or 0) + 1
         if rc >= _NOTIFY_MAX_RETRIES:
             conn.execute(
                 "UPDATE items SET retry_count=?, state='blocked', "
-                "block_reason='notify channel failed', claimed_at=NULL, updated_at=? WHERE id=?",
+                "block_reason=COALESCE(block_reason,'notify channel failed'), "
+                "next_retry_at=NULL, claimed_at=NULL, updated_at=? WHERE id=?",
                 (rc, now_s, item_id),
             )
             _append_event(conn, item_id, actor, "notify_failed_blocked",
@@ -1186,7 +1309,9 @@ def _record_notify_failure(conn, item_id, now_s, detail, blocked, retried, actor
 # events / health
 # =================================================================================================
 def get_events(item_id, *, limit=200, db_path=None):
-    conn = _connect(db_path)
+    if not os.path.isfile(db_path or default_db_path()):
+        return []
+    conn = _connect(db_path, readonly=True)
     try:
         rows = conn.execute(
             "SELECT * FROM events WHERE item_id=? ORDER BY seq ASC LIMIT ?",
@@ -1201,7 +1326,7 @@ def _ver_tuple(s):
     return tuple(int(x) for x in s.split("."))
 
 
-def health(*, db_path=None, check_task=False):
+def health(*, db_path=None, check_task=False, capabilities=None):
     path = db_path or default_db_path()
     out = {
         "api_version": API_VERSION,
@@ -1216,12 +1341,21 @@ def health(*, db_path=None, check_task=False):
         "warnings": [],
     }
     try:
-        conn = _connect(path)
+        # Immutable inspection creates no WAL/SHM sidecars. A live WAL cannot be
+        # safely included by this read-only probe, so report that limit explicitly.
+        wal = Path(str(path)+'-wal')
+        if wal.exists() and wal.stat().st_size > 32:
+            raise ValueError('active WAL prevents a nonmutating health snapshot; retry after workers close')
+        conn = _connect(path, readonly=True, immutable=True)
         try:
             out["db_ok"] = True
             out["schema_user_version"] = conn.execute("PRAGMA user_version").fetchone()[0]
-            jm = conn.execute("PRAGMA journal_mode").fetchone()[0]
-            out["wal_ok"] = (str(jm).lower() == "wal")
+            with open(path, 'rb') as database:
+                header = database.read(20)
+            out["wal_ok"] = header[18:20] == b'\x02\x02'
+            conn.execute('SELECT id, idempotency_key, ext FROM items LIMIT 0')
+            conn.execute('SELECT key, value FROM meta LIMIT 0')
+            conn.execute('SELECT event_type FROM events LIMIT 0')
             ic = conn.execute("PRAGMA quick_check").fetchone()[0]
             out["integrity_ok"] = (str(ic).lower() == "ok")
         finally:
@@ -1243,12 +1377,9 @@ def health(*, db_path=None, check_task=False):
     if not out["relay_ok"]:
         out["warnings"].append("relay not found: relay.py missing and no SCHEDULE_RELAY_CMD set")
 
+    from capabilities import readiness
+    out["readiness"] = readiness(out, capabilities)
     if check_task:
-        try:
-            import subprocess
-            r = subprocess.run(["schtasks", "/Query", "/TN", "ScheduleReminderTick"],
-                               capture_output=True, text=True)
-            out["task_ok"] = (r.returncode == 0)
-        except Exception:
-            out["task_ok"] = False
+        out["task_ok"] = all(row['status'] == 'ready' for name, row in out['readiness']['capabilities'].items()
+                             if row['selected'] and name != 'store')
     return out

@@ -24,6 +24,8 @@ import sys
 
 import pytest
 
+from make_fixtures import schedule10_review_cases, schedule11_query_cases
+
 _SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
 if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
@@ -86,7 +88,7 @@ def test_confirm_names_the_enqueued_order(monkeypatch):
 def test_stop_only_targets_running_orders(monkeypatch):
     stopped = []
     monkeypatch.setattr(agent_tick, "stop",
-                        lambda iid, note="", **k: stopped.append(iid) or [{"id": iid}])
+                        lambda iid, note="", **k: stopped.append(iid) or [{"id": iid, "stopped": True}])
     work = [{"id": "live-1", "title": "t"}]
     res = dispatch.execute("crypto", dispatch.STREAMS["crypto"],
                            {"actions": [{"op": "stop", "id": "ghost-9"}]}, [], work=work)
@@ -107,19 +109,19 @@ def test_stop_wildcard_is_allowed_without_an_id(monkeypatch):
 
 
 def test_stop_cancels_before_killing(monkeypatch):
-    """Killing first would let the reaper see a dead process under a still-running order and report
-    a crash for something the user deliberately stopped."""
+    """Persist stop intent before killing; only proven termination permits cancellation."""
     order = []
     item = {"id": "wo-9", "title": "x",
             "ext": {agent_task.EXT_PID: 4242, agent_task.EXT_PSTART: 7,
                     agent_task.EXT_STREAM: "crypto", agent_task.EXT_STATE: agent_task.STATE_RUNNING}}
     monkeypatch.setattr(agent_task, "orders", lambda active_only=True: [item])
+    monkeypatch.setattr(agent_task, "request_stop", lambda i, n="": order.append("intent") or {})
     monkeypatch.setattr(agent_task, "cancel", lambda i, n="": order.append("cancel") or {})
     monkeypatch.setattr(agent_task, "kill_tree", lambda p, s: order.append("kill") or True)
     monkeypatch.setattr(agent_task, "append_event", lambda *a, **k: None)
     monkeypatch.setattr(agent_tick, "_post", lambda *a, **k: None)
     agent_tick.stop("wo-9")
-    assert order == ["cancel", "kill"]
+    assert order == ["intent", "kill", "cancel"]
 
 
 # --------------------------------------------------------------------------- claim / race
@@ -133,7 +135,7 @@ def _order(oid, state=agent_task.STATE_QUEUED, **ext):
 def test_claim_uses_compare_and_swap_on_pending(monkeypatch):
     seen = {}
     monkeypatch.setattr(agent_task, "rem",
-                        lambda *a: seen.update(args=a) or {"item": {"state": "doing"}})
+                        lambda *a: seen.update(args=a) or schedule11_query_cases()["found"])
     monkeypatch.setattr(agent_task, "patch_ext", lambda *a, **k: {})
     assert agent_task.claim("wo-1") is True
     assert "--expect" in seen["args"] and "pending" in seen["args"]
@@ -279,9 +281,7 @@ def test_act_prompt_forbids_a_check_that_cannot_fail():
 
 
 def test_review_prompt_asks_about_scope_not_just_satisfaction():
-    """From a live run: the agent was asked to remove a hardcoded default and also deleted an
-    unrelated lookup table. Its check passed, and a reviewer asked only whether the request was
-    satisfied said DONE. Collateral damage is a separate question and has to be asked as one."""
+    """Review checks unrelated changes as well as satisfaction of the requested change."""
     p = agent_run.review_prompt("req", "sum", ["a.py"], "git", "cmd", 0, "out")
     assert "请求之外" in p and "CONTINUE" in p
 
@@ -290,6 +290,18 @@ def test_review_prompt_shows_the_real_output_and_its_provenance():
     p = agent_run.review_prompt("req", "sum", ["a.py"], "self-reported", "the-cmd", 3, "REALOUT")
     assert "REALOUT" in p and "the-cmd" in p and "3" in p
     assert "self-reported" in p, "a self-reported change list is weaker evidence and must say so"
+
+
+
+@pytest.mark.parametrize("case", schedule10_review_cases(), ids=lambda case: case["name"])
+def test_completion_review_keeps_the_entire_accepted_request(case):
+    actor = agent_run.act_prompt(case["request"], case["workspace"])
+    review = agent_run.review_prompt(
+        case["request"], case["summary"], case["changed"], case["changed_via"],
+        case["command"], case["return_code"], case["output"])
+    assert case["request"] in actor
+    assert case["request"] in review
+    assert case["trailing_requirement"] in review
 
 
 # --------------------------------------------------------------------------- the JSON tail
@@ -355,7 +367,7 @@ def test_done_report_carries_the_real_check_output():
 
 
 def test_done_report_never_says_handled():
-    """The exact word that papered over four days of the incident."""
+    """Terminal reports describe their evidence and outcome."""
     for r in (_report(), _report(cmd=None, rc=None, out="")):
         assert "已处理" not in r
 
@@ -516,8 +528,7 @@ class TestRunVerify:
         assert rc != 0
 
     def test_powershell_syntax_is_accepted(self, tmp_path):
-        """The first live run produced exactly this shape and cmd answered
-        "& was unexpected at this time.", recording a correct fix as a failure."""
+        """The Windows verification runner accepts PowerShell syntax."""
         rc, _ = agent_run.run_verify("& { if ($true) { exit 0 } else { exit 1 } }", str(tmp_path))
         assert rc == 0
 
@@ -576,41 +587,26 @@ def test_report_is_chunked_below_the_discord_limit(monkeypatch):
     assert len(sent) == 3 and all(len(s) <= agent_run._DISCORD_MAX for s in sent)
 
 
-def test_runner_points_llmcall_at_the_shim():
-    """Left at its machine default, the delegate retries cc then CODEX then claude, so the cc leg of
-    an agentic call runs codex a second time and every edit happens twice."""
-    assert os.environ.get("LLMCALL_AGENT_RUNNER") == agent_run._SHIM
+def test_runner_does_not_install_a_runner_policy(monkeypatch):
+    import importlib
+    monkeypatch.delenv("LLMCALL_AGENT_RUNNER", raising=False)
+    importlib.reload(agent_run)
+    assert "LLMCALL_AGENT_RUNNER" not in os.environ
 
 
-def test_every_approach_acts_on_exactly_one_provider():
-    """A cost ladder is right for judgement and wrong for actions: falling through mid-session would
-    hand the same job to a second agent on top of the first one's half-finished edits."""
-    assert agent_run.APPROACH_CHAINS, "there must be at least one way to act"
-    for chain in agent_run.APPROACH_CHAINS:
-        assert len(chain) == 1, "acting must not fall through providers: %r" % (chain,)
+def test_approaches_vary_prompts_without_provider_selection():
+    assert len(set(chain[0] for chain in agent_run.APPROACH_CHAINS)) == agent_run.MAX_APPROACHES
+    assert agent_run.ACT_TIMEOUT is None and agent_run.REVIEW_TIMEOUT is None
+    assert agent_run.REVIEW_CHAIN is None
 
 
-def test_the_reviewer_is_never_the_actor():
-    assert agent_run.REVIEW_CHAIN[0] != agent_run.APPROACH_CHAINS[0][0]
-    assert sorted(agent_run.REVIEW_CHAIN) == sorted(c[0] for c in agent_run.APPROACH_CHAINS), \
-        "the review chain must be a rotation of the acting order, not an independent list that can " \
-        "drift and keep naming a provider the fleet has routed around"
-
-
-def test_the_acting_order_follows_llmcall_routing(monkeypatch):
-    """Excluding a provider fleet-wide must also stop this tier from opening every work order
-    against it. Hardcoding the ladder here is how a switch ends up half thrown."""
-    monkeypatch.setenv("LLMCALL_CHAIN", "cc,claude")
-    assert agent_run._approach_chains() == (["cc"], ["claude"])
-    monkeypatch.setenv("LLMCALL_CHAIN", "claude")
-    assert agent_run._approach_chains() == (["claude"],)
-    monkeypatch.delenv("LLMCALL_CHAIN", raising=False)
-    # The default ladder is llmcall's to decide, so read it from there rather than restating it.
-    # This assertion used to spell out ("codex", "cc", "claude") and went red the day llmcall put
-    # codexg in front, which is the same mistake the docstring warns about, made one level up:
-    # a test that restates the ladder is another place the switch has to be thrown.
-    # It can still fail: were _approach_chains to answer from its own list, it would stop matching.
+def test_actor_and_reviewer_keep_installed_routing(monkeypatch):
+    from types import SimpleNamespace
     import llmcall
-    expected = tuple([n] for n in llmcall.active_chain() if n)
-    assert agent_run._approach_chains() == expected
-    assert len(expected) >= 2, "a one rung ladder would make this test unable to catch a wrong order"
+    calls = []
+    monkeypatch.setattr(llmcall, "call", lambda prompt, **kw:
+                        calls.append(kw) or SimpleNamespace(text="", provider=None, error=None))
+    for mode in ("agent", "judge"):
+        agent_run._llm("", None, None, mode)
+    assert [call["mode"] for call in calls] == ["agent", "judge"]
+    assert all(not ({"chain", "providers", "model", "timeout", "fallback"} & call.keys()) for call in calls)

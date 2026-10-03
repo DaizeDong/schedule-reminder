@@ -1,27 +1,7 @@
 #!/usr/bin/env python3
-"""schedule-reminder — Agent Center reply DISPATCH (judge with the LLM chain, execute deterministically).
+"""Plan owner requests through installed llmcall policy and execute deterministic actions.
 
-For a user reply in a stream channel, this:
-  1. Gathers the stream's current actionable STATE (active pool items) as (id, title).
-  2. Asks the cost-ordered LLM chain (codex -> cc -> claude, read-only) for a JSON ACTION PLAN.
-  3. Executes the plan DETERMINISTICALLY via reminder.py, validating every id against the state
-     (the model can only touch items it was shown -- no hallucinated ids).
-  4. Posts a Chinese confirmation back to the stream channel via relay.py.
-
-Per-stream behaviour (STREAMS): 'pool' (mail -> email-monitor task pool), 'reminder' (the
-schedule-reminder base -> done/snooze), 'generic' (create a follow-up task + confirm).
-
-TWO OPS DO NOT TOUCH THE POOL AT ALL. 'agent' enqueues a work order for the execution tier
-(agent_task/agent_run/agent_tick) and 'stop' cancels a running one. They exist because a bus that
-can only mutate records answers "make X stop" with a to-do titled "make X stop", which is what
-happened for four days while the thing kept running. 'agent' carries no item id, so it cannot
-hallucinate one; 'stop' is validated against the orders that are actually running, the same
-allowlist discipline as done/snooze.
-
-CLI:  dispatch.py --stream mail            # reads mail.inbox from the Agent Center state dir
-      dispatch.py --stream mail --reply "..."   # explicit reply text
-Stdlib + the shared `llmcall` pip package (call_chain, str|None) + the sibling relay module.
-"""
+Pool operations affect only shown IDs. Work operations enqueue or stop execution. Persisted authorization supports read-only reconciliation after a successful mutation whose outcome could not be recorded. Confirmations describe actual outcomes."""
 import argparse
 import hashlib
 import json
@@ -33,7 +13,12 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
-from llmcall import call_chain  # noqa: E402  (patched in tests as dispatch.call_chain)
+def call_chain(prompt, log=None):
+    """Compatibility seam returning text; policy belongs to installed llmcall."""
+    import llmcall
+    result = llmcall.call(prompt, mode="judge", log=log)
+    return result.text if result and not getattr(result, "error", None) else None
+
 import agent_task  # noqa: E402
 import agent_tick  # noqa: E402
 import relay       # noqa: E402
@@ -45,7 +30,9 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 REMINDER = os.path.join(_HERE, "reminder.py")
-_STATE_DIR = os.path.join(os.path.expanduser("~"), ".agent-center", "state")
+import private_data
+import inbound
+_STATE_DIR = None
 
 # kind: pool = email-monitor task pool | reminder = any active reminder | generic = create/ack only
 STREAMS = {
@@ -73,18 +60,10 @@ def _rem(*args):
 
 
 def _active_items(source=None):
-    items, cursor = [], None
-    while True:
-        args = ["list", "--active", "--limit", "100"]
-        if source:
-            args += ["--source", source]
-        if cursor:
-            args += ["--cursor", cursor]
-        r = _rem(*args)
-        items += r.get("items", [])
-        cursor = r.get("next_cursor")
-        if not cursor:
-            break
+    args = ["list", "--active"]
+    if source:
+        args += ["--source", source]
+    items = agent_task.query_items(_rem, *args)
     return [{"id": it["id"], "title": it.get("title") or ""} for it in items]
 
 
@@ -99,10 +78,7 @@ def get_state(cfg):
 def get_work():
     """Work orders the 'stop' op may target. Deliberately NOT filtered by stream: the user says
     "stop" in whichever channel they happen to be reading."""
-    try:
-        return agent_task.running()
-    except Exception:
-        return []
+    return agent_task.running()
 
 
 def build_prompt(stream, cfg, reply, items, work=None):
@@ -181,66 +157,124 @@ def _thread_key(title):
     return "manual:%s-%s" % (slug, h) if slug else "manual:%s" % h
 
 
-def execute(stream, cfg, plan, items, log=None, work=None):
+def _action_identity(stream, msg_id, index, action):
+    return "dispatch:" + inbound.identity(stream, str(msg_id), index, action)
+
+
+def execute(stream, cfg, plan, items, log=None, work=None, msg_id=None,
+            saved_outcomes=None, save_outcome=None, inbound_id=None, authorized_ids=None,
+            authorized_work_ids=None):
     allowed = {it["id"] for it in items}
     running_ids = {it["id"] for it in (work or [])}
-    done = snoozed = created = 0
-    enqueued, stopped, skipped = [], [], []
-    for act in (plan.get("actions") or []):
-        op = (act.get("op") or "").lower()
-        if op == "agent":
-            # No id to validate: an 'agent' op names work, not an existing record, so there is
-            # nothing for the model to hallucinate. What IS checked is that it asked for something.
-            request = (act.get("request") or "").strip()
-            if not request:
-                skipped.append("agent?empty")
-                continue
-            item = agent_task.enqueue(stream, request, workspace=act.get("workspace"))
-            if item.get("_err"):
-                skipped.append("agent?%s" % str(item["_err"])[:24])
-            else:
-                enqueued.append(item["id"])
-            continue
-        if op == "stop":
-            iid = (act.get("id") or "").strip()
-            if iid != "*" and iid not in running_ids:
-                skipped.append("stop?%s" % iid[:8])
-                continue
-            for r in agent_tick.stop(iid, note="用户在频道里要求停止"):
-                stopped.append(r["id"])
-            continue
-        if op in ("done", "dismiss"):
-            iid = act.get("id")
-            if iid in allowed and _rem("done", "--id", iid).get("item", {}).get("state") == "done":
-                done += 1
-            else:
-                skipped.append("done?%s" % (iid or "")[:8])
+    if authorized_ids is not None:
+        allowed.intersection_update(authorized_ids)
+    if authorized_work_ids is not None:
+        running_ids.intersection_update(authorized_work_ids)
+    result = {"done": 0, "snoozed": 0, "created": 0, "enqueued": [],
+              "stopped": [], "skipped": [], "failed": [], "outcomes": []}
+    for index, action in enumerate(plan.get("actions") or []):
+        op = str(action.get("op") or "").lower() if isinstance(action, dict) else ""
+        source_identity = inbound_id if inbound_id is not None else msg_id
+        key = _action_identity(stream, source_identity, index, action)
+        outcome = (saved_outcomes or {}).get(key)
+        if not outcome or outcome["status"] == "failed":
+            outcome = {"op": op, "status": "rejected", "reason": "invalid or unsupported action"}
+            try:
+                if op == "agent":
+                    request = str(action.get("request") or "").strip()
+                    if request:
+                        item = agent_task.enqueue(stream, request, workspace=action.get("workspace"),
+                                                  msg_id=msg_id,
+                                                  idempotency_key=key if source_identity is not None else None)
+                        outcome = ({"op": op, "status": "succeeded", "id": item["id"]} if item.get("id")
+                                   else {"op": op, "status": "failed", "reason": str(item.get("_err") or "missing work receipt")})
+                elif op == "stop":
+                    iid = str(action.get("id") or "").strip()
+                    if authorized_work_ids is not None:
+                        authorized = set(authorized_work_ids)
+                        targets = sorted(authorized) if iid == "*" else [iid] if iid in authorized else []
+                    else:
+                        targets = [iid] if iid == "*" or iid in running_ids else []
+                    if targets:
+                        stops = []
+                        for target in targets:
+                            if authorized_work_ids is None or target in running_ids:
+                                stops.extend(agent_tick.stop(target, note="user asked to stop"))
+                            else:
+                                current = agent_task.get(target)
+                                cancelled = (isinstance(current, dict) and current.get("id") == target
+                                             and current.get("state") == "cancelled"
+                                             and agent_task.exec_state(current) == agent_task.STATE_FAILED)
+                                stops.append({"id": target, "stopped": cancelled})
+                        successful = [row["id"] for row in stops if row.get("stopped") is True]
+                        outcome = {"op": op, "status": "succeeded" if stops and len(successful)==len(stops) else "failed",
+                                   "ids": successful, "reason": "stop remains unresolved"}
+                elif op in ("done", "dismiss", "snooze"):
+                    iid = action.get("id")
+                    if iid not in allowed:
+                        if op in ("done", "dismiss") and iid in (authorized_ids or []):
+                            response = _rem("get", "--id", iid)
+                            current = response.get("item") or {}
+                            reconciled = (not response.get("_err") and current.get("id") == iid
+                                          and current.get("state") == "done")
+                            outcome = {"op": op, "id": iid,
+                                       "status": "succeeded" if reconciled else "failed",
+                                       "reason": "" if reconciled else "previously authorized completion is not confirmed"}
+                        else:
+                            outcome["reason"] = "item %s was not shown to the planner" % str(iid)[:8]
+                    elif op == "snooze" and not action.get("until"):
+                        outcome["reason"] = "snooze requires until"
+                    else:
+                        args = (["snooze", "--id", iid, "--until", action["until"]] if op == "snooze"
+                                else ["done", "--id", iid])
+                        response = _rem(*args)
+                        item = response.get("item") or {}
+                        succeeded = bool(item) and not response.get("_err")
+                        if op != "snooze":
+                            succeeded = succeeded and item.get("state") == "done"
+                        outcome = {"op": op, "status": "succeeded" if succeeded else "failed",
+                                   "id": iid, "reason": str(response.get("_err") or "mutation did not return its expected item")}
+                elif op == "create":
+                    title = str(action.get("title") or "").strip()
+                    if title:
+                        args = ["add", "--title", title, "--kind", "task"]
+                        if source_identity is not None:
+                            args += ["--idempotency-key", key, "--if-exists", "return"]
+                        if cfg["kind"] == "pool":
+                            args += ["--source", "email-monitor", "--ext", json.dumps({
+                                "x_email_monitor_thread_key": _thread_key(title),
+                                "x_email_monitor_msg_count": 1}, ensure_ascii=False)]
+                        else:
+                            args += ["--source", "agent-center:%s" % stream]
+                        if action.get("due_at"):
+                            args += ["--due-at", action["due_at"]]
+                        response = _rem(*args)
+                        item = response.get("item") or {}
+                        outcome = {"op": op, "status": "succeeded" if item.get("id") and not response.get("_err") else "failed",
+                                   "id": item.get("id"), "reason": str(response.get("_err") or "missing creation receipt")}
+            except Exception as error:
+                outcome = {"op": op, "status": "failed", "reason": type(error).__name__ + ": " + str(error)}
+            if save_outcome:
+                save_outcome(key, outcome)
+        result["outcomes"].append(outcome)
+        if outcome["status"] != "succeeded":
+            marker = op + "?" + outcome["reason"]
+            result["skipped"].append(marker)
+            if outcome["status"] == "failed":
+                result["failed"].append(marker)
+        elif op in ("done", "dismiss"):
+            result["done"] += 1
         elif op == "snooze":
-            iid, until = act.get("id"), act.get("until")
-            if iid in allowed and until and not _rem("snooze", "--id", iid, "--until", until).get("_err"):
-                snoozed += 1
-            else:
-                skipped.append("snooze?%s" % (iid or "")[:8])
+            result["snoozed"] += 1
         elif op == "create":
-            title = (act.get("title") or "").strip()
-            if not title:
-                continue
-            args = ["add", "--title", title, "--kind", "task"]
-            if cfg["kind"] == "pool":
-                args += ["--source", "email-monitor",
-                         "--ext", json.dumps({"x_email_monitor_thread_key": _thread_key(title),
-                                              "x_email_monitor_msg_count": 1}, ensure_ascii=False)]
-            else:
-                args += ["--source", "agent-center:%s" % stream]
-            if act.get("due_at"):
-                args += ["--due-at", act["due_at"]]
-            if not _rem(*args).get("_err"):
-                created += 1
+            result["created"] += 1
+        elif op == "agent":
+            result["enqueued"].append(outcome["id"])
+        elif op == "stop":
+            result["stopped"].extend(outcome["ids"])
     if log:
-        log("execute[%s]: done=%d snooze=%d create=%d agent=%d stop=%d skip=%s"
-            % (stream, done, snoozed, created, len(enqueued), len(stopped), skipped))
-    return {"done": done, "snoozed": snoozed, "created": created,
-            "enqueued": enqueued, "stopped": stopped, "skipped": skipped}
+        log("execute[%s]: %s" % (stream, json.dumps(result, ensure_ascii=False)))
+    return result
 
 
 def _has_webhook(stream):
@@ -260,65 +294,93 @@ def _post(stream, text, post, log, channel_id=None):
     if not post:
         if log:
             log("[no-post] would relay -> %s: %s" % (stream, text))
-        return
+        return True
     if channel_id and not _has_webhook(stream):
-        relay.send(text, channel_id=str(channel_id))
+        delivered = relay.send(text, channel_id=str(channel_id))
     else:
-        relay.relay(stream, text)
-
-
-def dispatch(stream, reply, chain=None, providers=None, timeout=180, log=None, post=True,
-             channel_id=None):
-    cfg = STREAMS.get(stream, _DEFAULT_CFG)
-    items = get_state(cfg)
-    work = get_work()
-    prompt = build_prompt(stream, cfg, reply, items, work)
-    raw = call_chain(prompt, chain=chain, providers=providers, timeout=timeout, log=log)
-    plan = _extract_json(raw)
-    if not plan:
-        _post(stream, "收到你的回复,但自动解析失败,已留待人工处理。原文:%s" % reply.strip()[:200],
-              post, log, channel_id)
+        delivered = relay.relay(stream, text)
+    if delivered is False:
         if log:
-            log("dispatch[%s]: chain/plan failed -> passthrough" % stream)
+            log("confirmation delivery failed; durable work remains pending")
         return False
-    res = execute(stream, cfg, plan, items, log=log, work=work)
-    confirm = (plan.get("confirm") or "").strip() or (
-        "收到:完成%d、推迟%d、新建%d。" % (res["done"], res["snoozed"], res["created"]))
-    # The model writes the summary, but what was DISPATCHED is appended deterministically. A vague
-    # confirm must not be able to hide the fact that a real agent is now running on this machine,
-    # and the id is what the user needs in order to stop it.
-    if res["enqueued"]:
-        confirm += "\n🤖 已派活 %d 个工作单:%s。开始执行,完成或卡住都会回这个频道报告(回「停 <id>」可中止)。" % (
-            len(res["enqueued"]), ", ".join("`%s`" % i[:8] for i in res["enqueued"]))
-    if res["stopped"]:
-        confirm += "\n🛑 已停止:%s。" % ", ".join("`%s`" % i[:8] for i in res["stopped"])
-    _post(stream, confirm, post, log, channel_id)
     return True
+
+
+def _dispatch(stream, reply, log, post, channel_id, msg_id, record=None, save=None, inbound_id=None):
+    cfg = STREAMS.get(stream, _DEFAULT_CFG)
+    items, work = get_state(cfg), get_work()
+    plan = record.get("plan") if record is not None else None
+    if plan is None:
+        prompt = build_prompt(stream, cfg, reply, items, work)
+        plan = _extract_json(call_chain(prompt, log=log))
+        if not isinstance(plan, dict) or not isinstance(plan.get("actions"), list):
+            _post(stream, "自动解析失败，本次没有执行操作。", post, log, channel_id)
+            return False
+        if record is not None:
+            record["plan"] = plan
+            record["authorized_ids"] = [item["id"] for item in items]
+            record["authorized_work_ids"] = [item["id"] for item in work]
+            save()
+    def save_outcome(key, outcome):
+        record["outcomes"][key] = outcome
+        save()
+    result = execute(stream, cfg, plan, items, log=log, work=work, msg_id=msg_id,
+                     saved_outcomes=record["outcomes"] if record is not None else None,
+                     save_outcome=save_outcome if record is not None else None,
+                     inbound_id=inbound_id,
+                     authorized_ids=record.get("authorized_ids", []) if record is not None else None,
+                     authorized_work_ids=record.get("authorized_work_ids", []) if record is not None else None)
+    confirm = "已执行：完成%d、推迟%d、新建%d、排队%d、停止%d。" % (
+        result["done"], result["snoozed"], result["created"], len(result["enqueued"]), len(result["stopped"]))
+    if result["enqueued"]:
+        confirm += "\n已派活工作单：" + ", ".join(result["enqueued"])
+    if result["stopped"]:
+        confirm += "\n已停止：" + ", ".join(result["stopped"])
+    rejected = [row["op"] + "?" + row["reason"] for row in result["outcomes"]
+                if row["status"] == "rejected"]
+    if rejected:
+        confirm += "\n未执行（rejected/skipped）：" + "; ".join(rejected)
+    if result["failed"]:
+        confirm += "\n失败（failed）：" + "; ".join(result["failed"])
+    confirmed = _post(stream, confirm, post, log, channel_id)
+    return confirmed is not False and not result["skipped"] and not result["failed"]
+
+
+def dispatch(stream, reply, log=None, post=True, channel_id=None, msg_id=None, inbound_id=None):
+    if inbound_id is None:
+        inbound_id = (inbound.identity("text", str(channel_id), str(msg_id))
+                      if channel_id is not None and msg_id is not None else msg_id)
+    if inbound_id is None:
+        return _dispatch(stream, reply, log, post, channel_id, msg_id)
+    # Durable delivery identity scopes retries; msg_id remains the original source reference.
+    with inbound.dispatch_record(stream, inbound_id) as (record, save):
+        return _dispatch(stream, reply, log, post, channel_id, msg_id, record, save, inbound_id)
 
 
 def main():
     ap = argparse.ArgumentParser(prog="dispatch.py")
     ap.add_argument("--stream", required=True)
     ap.add_argument("--reply", default=None, help="reply text; default reads state/<stream>.inbox")
-    ap.add_argument("--chain", default=None)
-    ap.add_argument("--timeout", type=int, default=180)
-    ap.add_argument("--codex-model", default="gpt-5.6-sol", help="(ignored; model resolves from ~/.codex/config.toml)")
-    ap.add_argument("--codex-reasoning", default="max", help="(ignored; effort resolves from ~/.codex/config.toml)")
-    ap.add_argument("--claude-model", default="claude-opus-4-8")
     ap.add_argument("--no-post", dest="post", action="store_false", help="dry run: print confirm, do not relay")
     a = ap.parse_args()
     reply = a.reply
     if reply is None:
-        p = os.path.join(_STATE_DIR, "%s.inbox" % a.stream)
+        p = os.path.join(_STATE_DIR or str(private_data.data_dir()/"state"), "%s.inbox" % a.stream)
         reply = open(p, encoding="utf-8").read() if os.path.exists(p) else ""
     if not reply.strip():
         print(json.dumps({"ok": False, "reason": "empty reply"}))
         return 1
-    providers = {"codex": {"model": a.codex_model, "reasoning": a.codex_reasoning},
-                 "cc": {"model": a.claude_model}, "claude": {"model": a.claude_model}}
-    chain = [c.strip() for c in a.chain.split(",")] if a.chain else None
-    ok = dispatch(a.stream, reply, chain, providers, a.timeout,
-                  log=lambda m: print(m, file=sys.stderr), post=a.post)
+    try:
+        ok = dispatch(a.stream, reply, log=lambda m: print(m, file=sys.stderr), post=a.post)
+    except ModuleNotFoundError as error:
+        if error.name != 'llmcall':
+            raise
+        print(json.dumps({
+            'ok': False, 'status': 'unavailable', 'error_code': 'ERR_LLM_UNAVAILABLE',
+            'message': 'The llmcall package is unavailable in the dispatch interpreter.',
+            'action': 'Install llmcall in the interpreter running dispatch.py, then retry this reply.',
+        }))
+        return 1
     print(json.dumps({"ok": ok}))
     return 0 if ok else 1
 

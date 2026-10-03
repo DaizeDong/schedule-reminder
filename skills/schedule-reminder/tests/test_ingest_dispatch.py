@@ -6,6 +6,7 @@ extraction robustness, thread-key collision avoidance, and the user-vs-bot inges
 and network I/O is stubbed — no codex, no Discord, no real pool.
 """
 import os
+import json
 import sys
 
 import pytest
@@ -16,6 +17,14 @@ if _SCRIPTS not in sys.path:
 
 import dispatch  # noqa: E402
 import ingest    # noqa: E402
+_FIXTURE = json.loads(open(os.path.join(os.path.dirname(__file__), "capability_cases.json"), encoding="utf-8").read())
+
+
+@pytest.fixture(autouse=True)
+def isolate_owner_dm(monkeypatch):
+    """Individual DM cases supply their own response; other unit cases stay offline."""
+    monkeypatch.setattr(ingest, 'owner_dm_channel', lambda reg, token: None)
+    monkeypatch.setattr(dispatch, 'get_work', lambda: [])
 
 
 # --------------------------------------------------------------------------- _extract_json
@@ -47,8 +56,8 @@ def test_extract_json_nested_braces():
 
 # --------------------------------------------------------------------------- _thread_key
 def test_thread_key_distinct_chinese_titles():
-    k1 = dispatch._thread_key("需回复:房东的门禁卡邮件")
-    k2 = dispatch._thread_key("待办:约牙医洗牙")
+    k1 = dispatch._thread_key(_FIXTURE["synthetic_thread_titles"][0])
+    k2 = dispatch._thread_key(_FIXTURE["synthetic_thread_titles"][1])
     assert k1 != k2, "distinct Chinese titles must not collide (the manual:task bug)"
     assert k1.startswith("manual:")
 
@@ -65,7 +74,7 @@ def _rem_recorder():
         calls.append(args)
         if args[0] == "done":
             return {"item": {"state": "done"}}
-        return {}  # snooze/add success (no _err)
+        return {"item": dict(_FIXTURE["schedule3_created_item"])}
     return calls, fake_rem
 
 

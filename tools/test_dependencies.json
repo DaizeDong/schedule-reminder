@@ -1,0 +1,8 @@
+{
+  "notification_language.py": {
+    "sha256": "413c59ee248c01b2990ca58e425d5102210bb9434a27289383921b6537238228",
+    "bytes": 19596,
+    "purpose": "Canonical code-only notification language rule for route acceptance tests",
+    "provisioning": "Supply the exact code artifact with --source, or SCHEDULE_LANGUAGE_RULE_B64 in CI. Missing or changed bytes fail before test collection."
+  }
+}
