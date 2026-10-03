@@ -59,6 +59,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import private_data
 import sys
 import urllib.request
 
@@ -72,7 +73,6 @@ for _s in (sys.stdout, sys.stderr):
 # Discord 403s the default urllib UA, a real User-Agent is mandatory.
 _UA = "AgentCenter-Relay/1.0 (+https://discord.com)"
 _API = "https://discord.com/api/v10"
-_DEFAULT_REGISTRY = os.path.join(os.path.expanduser("~"), ".agent-center", "registry.json")
 
 # Discord rejects a single message whose `content` exceeds 2000 characters with HTTP 400,
 # and the whole message is then lost. _CHUNK_BUDGET leaves room for the "(n/m)" marker that
@@ -102,24 +102,24 @@ def split_for_discord(text: str, budget: int = _CHUNK_BUDGET) -> list[str]:
         return [text]
 
     pieces: list[str] = []
-    cur = ""
+    cur = None
     for line in text.split("\n"):
         while len(line) > budget:
             # A single line longer than the budget: emit what is left of the current piece,
             # then hard-split the line. Nothing is dropped, the break is just not on a newline.
-            if cur:
+            if cur is not None:
                 pieces.append(cur)
-                cur = ""
+                cur = None
             pieces.append(line[:budget])
             line = line[budget:]
-        if not cur:
+        if cur is None:
             cur = line
         elif len(cur) + 1 + len(line) <= budget:
             cur += "\n" + line
         else:
             pieces.append(cur)
             cur = line
-    if cur:
+    if cur is not None:
         pieces.append(cur)
 
     total = len(pieces)
@@ -130,7 +130,7 @@ def split_for_discord(text: str, budget: int = _CHUNK_BUDGET) -> list[str]:
 
 
 def registry_path() -> str:
-    return os.environ.get("AGENT_CENTER_CONFIG") or _DEFAULT_REGISTRY
+    return str(private_data.registry_path())
 
 
 def load_registry() -> dict:
@@ -186,6 +186,9 @@ def _post_bot(channel_id: str, content: str, files: list | None, token: str) -> 
     to be neither truncated nor split, which meant an over-long body was lost in full; see that
     function for why that is the worse of the two failures.
     """
+    if not files and (not isinstance(content, str) or not content.strip()):
+        sys.stderr.write("relay: blank content cannot be delivered without attachments\n")
+        return False
     parts = split_for_discord(content or "")
     if len(parts) > 1:
         # Attachments ride the first part; the rest carry text only. Sending the files with
@@ -246,6 +249,9 @@ def _big_brother(text: str) -> bool:
     """Fallback / digest target: the operator's Big Brother DM (registry.big_brother), delivered by
     the native `bigbrother` sender. This is the phone-reaching channel — the digest and any
     unknown-stream fallback land here, as documented in `reference/agent-center.md`."""
+    if not isinstance(text, str) or not text.strip():
+        sys.stderr.write("relay: blank content cannot be delivered\n")
+        return False
     try:
         here = os.path.dirname(os.path.abspath(__file__))
         if here not in sys.path:
@@ -254,7 +260,7 @@ def _big_brother(text: str) -> bool:
         # This is the LAST channel: whatever could not be delivered anywhere else arrives here.
         # An over-long body must not die on the one path that exists to catch the others.
         parts = split_for_discord(text or "")
-        ok = True
+        ok = bool(parts)
         for part in parts:
             if not bigbrother.send_dm(part):
                 ok = False
@@ -262,6 +268,52 @@ def _big_brother(text: str) -> bool:
     except Exception as e:
         sys.stderr.write("relay: big-brother fallback failed (%s)\n" % e)
         return False
+
+
+def deliver(stream, content):
+    """Deliver through the configured stream and retain confirmed Discord message IDs."""
+    from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+    import uuid
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError('blank content cannot produce a delivery receipt')
+    reg = load_registry()
+    target = (reg.get('streams') or {}).get(stream) or {}
+    webhook = target.get('webhook')
+    token = bot_token(reg)
+    channel = target.get('channel_id')
+    if not webhook and not (channel and token):
+        return relay(stream, content)
+    if os.environ.get('AGENT_CENTER_RELAY_DRYRUN'):
+        return {'kind': 'synthetic-local', 'receipt_id': str(uuid.uuid4()),
+                'delivered': True, 'exit_code': 0}
+    receipts = []
+    for part in split_for_discord(content):
+        payload = {'content': part, 'flags': 4}
+        headers = {'Content-Type': 'application/json', 'User-Agent': _UA}
+        if webhook:
+            parsed = urlsplit(webhook)
+            query = dict(parse_qsl(parsed.query))
+            query['wait'] = 'true'
+            url = urlunsplit(parsed._replace(query=urlencode(query)))
+            if target.get('username'):
+                payload['username'] = target['username']
+        else:
+            url = '%s/channels/%s/messages' % (_API, channel)
+            headers['Authorization'] = 'Bot '+token
+        request = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'),
+                                         headers=headers, method='POST')
+        with urllib.request.urlopen(request, timeout=30) as response:
+            if response.status != 200:
+                raise ValueError('delivery response did not confirm a message')
+            message = json.loads(response.read().decode('utf-8'))
+        receipt = message.get('id') if isinstance(message, dict) else None
+        if not isinstance(receipt, str) or not receipt.strip():
+            raise ValueError('delivery response lacked a message ID')
+        receipts.append(receipt)
+    if not receipts:
+        raise ValueError('delivery produced no confirmed receipt')
+    return {'kind': 'discord-message', 'receipt_id': ','.join(receipts),
+            'delivered': True, 'exit_code': 0}
 
 
 def relay(stream: str, content: str, username: str | None = None) -> bool:
@@ -274,6 +326,9 @@ def relay(stream: str, content: str, username: str | None = None) -> bool:
     Fallback: if the stream is unknown or no registry exists, deliver to Big Brother DM so the
     message is never lost (prefixed with the stream name for context).
     """
+    if not isinstance(content, str) or not content.strip():
+        sys.stderr.write("relay: blank content cannot be delivered\n")
+        return False
     reg = load_registry()
     s = (reg.get("streams") or {}).get(stream)
     if not s:
@@ -289,7 +344,7 @@ def relay(stream: str, content: str, username: str | None = None) -> bool:
         return _big_brother("[%s] %s" % (stream, content))
     name = username or s.get("username") or stream
     parts = split_for_discord(content or "")
-    ok = True
+    ok = bool(parts)
     for part in parts:
         # Every part must land. Returning True after a partial delivery would report a
         # message as sent while its tail is missing, which is the failure this whole
@@ -332,6 +387,24 @@ def digest(content: str) -> bool:
     return _big_brother(content)
 
 
+def safe_stream_entry(entry: dict) -> dict:
+    """Preserve ordinary metadata while removing explicit credential-bearing fields."""
+    def scrub(value):
+        if isinstance(value, dict):
+            result = {}
+            for key, child in value.items():
+                name = str(key).casefold().replace("-", "_")
+                if (name in {"webhook", "token", "password", "secret", "credentials", "authorization", "api_key"}
+                        or name.endswith(("_token", "_secret", "_password", "_webhook"))):
+                    continue
+                result[key] = scrub(child)
+            return result
+        if isinstance(value, list):
+            return [scrub(child) for child in value]
+        return value
+    return scrub(entry)
+
+
 def _cmd_list() -> int:
     reg = load_registry()
     streams = reg.get("streams") or {}
@@ -339,7 +412,7 @@ def _cmd_list() -> int:
         print(json.dumps({"ok": False, "registry": registry_path(), "streams": []}))
         return 1
     # NEVER print webhook URLs, only safe metadata.
-    out = {name: {k: v for k, v in s.items() if k != "webhook"} for name, s in streams.items()}
+    out = {name: safe_stream_entry(entry) for name, entry in streams.items()}
     print(json.dumps({"ok": True, "registry": registry_path(),
                       "guild_id": reg.get("guild_id"), "streams": out}, ensure_ascii=False, indent=2))
     return 0

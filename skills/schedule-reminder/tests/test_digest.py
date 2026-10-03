@@ -92,15 +92,7 @@ def test_collect_emits_sections_only(monkeypatch, tmp_path, capsys):
 
 
 def test_collect_says_so_when_nobody_is_registered(monkeypatch, tmp_path, capsys):
-    """空名单必须出声,不能打印空串。
-
-    这条用例原来断言的是 `out.strip() == ""` —— 它钉住的正是后来查出来的那个缺陷,
-    所以是**故意改掉的**,不是为了让红变绿。宿主脚本用
-    `if ($skillDigest) { 加这一段 }` 拼消息,打印空串就等于整段从夜里那条消息里消失,
-    而消失的一段和「聚合器压根没跑」在屏幕上一模一样。
-    实测 2026-09-11:这个聚合器接进生产好几个月,contributors 一直是空数组,
-    于是那一段每天都不出现,没有任何人看得出来。
-    """
+    """An empty contributor list produces an explicit roster so a host cannot silently omit the aggregator."""
     monkeypatch.setenv("AGENT_CENTER_DIGEST", str(tmp_path / "none.json"))
     rc = digest.collect(now="2026-06-27T00:00:00Z")
     out = capsys.readouterr().out

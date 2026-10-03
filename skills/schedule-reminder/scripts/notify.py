@@ -1,36 +1,16 @@
-#!/usr/bin/env python3
-"""schedule-reminder — pluggable notification channel.
+"""Notification routing and delivery receipts.
 
-Default channel = the **Agent Center `#reminders` channel**, via this repo's own `relay.py`
-(`relay.py send --stream reminders`). That is the standing decision (2026-07-01): every skill
-notifies into its own Agent Center channel; the Big Brother DM is no longer a notification target.
+Explicit SCHEDULE_RELAY_CMD takes precedence. Otherwise the configured relay
+sends to SCHEDULE_RELAY_STREAM (default reminders). A missing relay script uses
+the standalone Big Brother sender. Legacy boolean delivery never proves external
+readiness; a downstream receipt is required for that capability.
 
-  NOTE for whoever owns the Discord: a channel post does NOT push to your phone unless that
-  channel's notifications are set to All Messages. A DM always pushes. Routing reminders to a
-  channel is only safe if #reminders is actually configured to notify you.
-
-Resolution order (first one that exists wins):
-  1. SCHEDULE_RELAY_CMD  — explicit override; text appended as final argv. Also the **test seam**
-     (tests point it at a stub, so no real Discord push happens).
-  2. relay.py            — `send --stream <SCHEDULE_RELAY_STREAM|reminders>` (the Agent Center
-     egress; relay.py itself falls back to the DM if that stream is unconfigured, so a reminder is
-     never silently lost).
-  3. bigbrother DM       — the native Big Brother DM sender (`bigbrother.send_dm`), only if relay.py
-     is missing (standalone install). Replaces the old shell-out to the legacy DM notifier script.
-
-Contract: notify(text) -> bool  (True = delivered, False = failed; never raises for delivery errors).
-
-Env:
-  SCHEDULE_RELAY_CMD     full command to run; reminder text appended as last arg (overrides all)
-  SCHEDULE_RELAY_PY      path to relay.py       (default: alongside this file)
-  SCHEDULE_RELAY_STREAM  Agent Center stream     (default: "reminders")
-
-Secrets: the relay/bigbrother read their token/webhook from the registry; this module never reads,
-logs, or echoes any of them.
+The transport modules resolve their own credentials. This module does not log them.
 """
 from __future__ import annotations
 
 import os
+import json
 import shlex
 import subprocess
 import sys
@@ -67,13 +47,45 @@ def notify(text):
 
         # Standalone install without relay.py: deliver via the native Big Brother DM so a reminder
         # is never dropped. (Replaces the old shell-out to the legacy DM notifier script.)
-        if _HERE not in sys.path:
-            sys.path.insert(0, _HERE)
-        import bigbrother  # noqa: E402  (local sibling module)
-        return bool(bigbrother.send_dm(text))
+        return _standalone(text)
     except Exception as e:  # delivery failures are signalled by return value, not exceptions
         sys.stderr.write("notify: %s\n" % e)
         return False
+
+
+def _standalone(text):
+    """Legacy fallback confirms delivery only; it produces no readiness receipt."""
+    if _HERE not in sys.path:
+        sys.path.insert(0, _HERE)
+    import bigbrother
+    return bool(bigbrother.send_dm(text))
+
+
+def deliver(text):
+    """Return a downstream receipt when available, retaining legacy bool delivery.
+
+    A successful legacy process has no receipt and cannot establish readiness.
+    """
+    command = os.environ.get('SCHEDULE_RELAY_CMD')
+    if not command:
+        relay_path = _default_relay_path()
+        if not os.path.isfile(relay_path):
+            return _standalone(text)
+        if os.path.abspath(relay_path) == os.path.join(_HERE, 'relay.py'):
+            import relay
+            return relay.deliver(_default_stream(), text)
+        argv = [sys.executable, _default_relay_path(), 'send', '--stream', _default_stream(), '--text', text]
+    else:
+        argv = shlex.split(command, posix=(os.name != 'nt')) + [text]
+    result = subprocess.run(argv,
+                            capture_output=True, text=True, encoding='utf-8', timeout=30)
+    if result.returncode:
+        return False
+    try:
+        receipt = json.loads(result.stdout.strip())
+    except (ValueError, TypeError):
+        return True
+    return receipt if isinstance(receipt, dict) else False
 
 
 if __name__ == "__main__":

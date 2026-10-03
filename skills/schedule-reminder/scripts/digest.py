@@ -34,6 +34,7 @@ import os
 import shlex
 import subprocess
 import sys
+import private_data
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -41,32 +42,38 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-_DEFAULT = os.path.join(os.path.expanduser("~"), ".agent-center", "digest.json")
 
 
 def _path() -> str:
-    return os.environ.get("AGENT_CENTER_DIGEST") or _DEFAULT
+    return os.environ.get("AGENT_CENTER_DIGEST") or str(private_data.data_dir()/"digest.json")
 
 
-def _load() -> dict:
+
+class DigestConfigError(ValueError):
+    """An existing contributor configuration is unavailable or invalid."""
+
+
+def _load(*, strict=False) -> dict:
     try:
-        with open(_path(), encoding="utf-8") as fh:
-            d = json.load(fh)
-        if not isinstance(d, dict):
-            return {"contributors": []}
-        d.setdefault("contributors", [])
-        return d
+        with open(_path(), encoding="utf-8") as stream:
+            value = json.load(stream)
+        if not isinstance(value, dict):
+            raise ValueError("digest configuration must be an object")
+        contributors = value.get("contributors", [])
+        if not isinstance(contributors, list) or any(not isinstance(row, dict) for row in contributors):
+            raise ValueError("digest contributors must be an array of objects")
+        value.setdefault("contributors", [])
+        return value
     except FileNotFoundError:
         return {"contributors": []}
-    except Exception as e:
-        sys.stderr.write("digest: contributors file unreadable (%s)\n" % e)
-        return {"contributors": []}
+    except Exception:
+        raise DigestConfigError("existing digest configuration is unreadable or invalid") from None
 
 
 def _save(d: dict) -> None:
-    os.makedirs(os.path.dirname(_path()), exist_ok=True)
+    private_data.prepare_parent(_path())
     tmp = _path() + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    with private_data.open_for_write(tmp, "w", encoding="utf-8") as fh:
         json.dump(d, fh, ensure_ascii=False, indent=2)
     os.replace(tmp, _path())
 
@@ -105,20 +112,9 @@ def _run_contributor(c: dict, now: str | None) -> tuple[str, str | None]:
 
 
 def _assemble(now: str | None):
-    """Run every enabled contributor; return (enabled, sections, problems, roster). No side effects.
-
-    ROSTER exists because a digest assembled from plug-in sources can go quiet in three different
-    ways that look identical once the message is written: a source that ran and had nothing to say,
-    a source that failed, and a source that is registered but switched off. Only the first is
-    "nothing happened today". The other two are "you are not being told about something", and with
-    only sections in the output they are indistinguishable from a calm day.
-
-    That distinction is about to carry real weight. The nightly message is currently assembled by
-    the config-backup task, which always runs, so the message always arrives. Splitting that task
-    into several means the message stops being carried by anything guaranteed, and a source that
-    quietly stops contributing would simply shrink the digest. Counting the roster is what keeps a
-    silent absence from reading as a quiet day.
-    """
+    """Run enabled contributors and report sections, failures and the complete roster.
+    
+    The roster distinguishes a successful empty contribution from a failed or disabled source. A host can embed the result without treating absent contributors as a quiet day."""
     d = _load()
     everyone = d.get("contributors", [])
     contribs = [c for c in everyone if c.get("enabled", True)]
@@ -147,9 +143,7 @@ def roster_line(roster: dict) -> str:
     absence would be equally consistent with the aggregator not having run at all.
     """
     if not roster.get("registered"):
-        # Worth saying out loud rather than printing nothing. Measured 2026-09-11: this aggregator
-        # had been wired into the nightly push for months with an EMPTY contributor list, so the
-        # section was silently omitted every single night and nobody could tell.
+        # An empty roster is visible output, not an omitted aggregator.
         return "来源 0 —— 没有任何已注册的当日总结贡献者,所以这一段永远是空的。"
     bits = ["来源 %d" % roster["registered"], "有内容 %d" % roster["spoke"]]
     if roster["silent"]:
@@ -190,10 +184,9 @@ def run(now: str | None = None, dry_run: bool = False) -> int:
 
 
 def collect(now: str | None = None) -> int:
-    """Print ONLY the assembled skill sections (no header, no send) for embedding into an existing
-    daily push (e.g. sync-config-to-backup.ps1's single merged Notify). Empty output if nothing to
-    contribute, so the host push can conditionally include it. Contributor failures are reported to
-    #infra (non-fatal) just like run()."""
+    """Print sections and the contributor roster for embedding in a host summary.
+    
+    Contributor failures are reported to the infrastructure stream; the roster remains visible even when no section has content."""
     _contribs, sections, problems, roster = _assemble(now)
     # ALWAYS write the roster line, even with nothing to report. The host embeds this output
     # conditionally (`if ($skillDigest)`), so printing nothing makes the whole section vanish from
@@ -219,7 +212,7 @@ def _cmd_list() -> int:
 
 
 def _cmd_register(args) -> int:
-    d = _load()
+    d = _load(strict=True)
     cmd = shlex.split(args.cmd, posix=(os.name != "nt")) if isinstance(args.cmd, str) else args.cmd
     entry = {"name": args.name, "title": args.title, "cmd": cmd,
              "timeout": args.timeout, "enabled": not args.disabled}
@@ -232,7 +225,7 @@ def _cmd_register(args) -> int:
 
 
 def _cmd_unregister(args) -> int:
-    d = _load()
+    d = _load(strict=True)
     before = len(d.get("contributors", []))
     d["contributors"] = [c for c in d.get("contributors", []) if c.get("name") != args.name]
     _save(d)
@@ -258,16 +251,21 @@ def main(argv=None) -> int:
     p_unreg = sub.add_parser("unregister")
     p_unreg.add_argument("--name", required=True)
     args = ap.parse_args(argv)
-    if args.op == "run":
-        return run(args.now, args.dry_run)
-    if args.op == "collect":
-        return collect(args.now)
-    if args.op == "list":
-        return _cmd_list()
-    if args.op == "register":
-        return _cmd_register(args)
-    if args.op == "unregister":
-        return _cmd_unregister(args)
+    try:
+        if args.op == "run":
+            return run(args.now, args.dry_run)
+        if args.op == "collect":
+            return collect(args.now)
+        if args.op == "list":
+            return _cmd_list()
+        if args.op == "register":
+            return _cmd_register(args)
+        if args.op == "unregister":
+            return _cmd_unregister(args)
+    except DigestConfigError:
+        print(json.dumps({"ok": False, "error_code": "ERR_DIGEST_CONFIG",
+                          "error": "existing digest configuration is unreadable or invalid"}))
+        return 1
     return 2
 
 

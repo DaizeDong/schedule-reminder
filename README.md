@@ -5,7 +5,7 @@ Track todos, events and progress in a crash-safe SQLite store; fire due reminder
 [![Claude Code Skill](https://img.shields.io/badge/Claude%20Code-Skill-orange?style=flat)](https://docs.anthropic.com/en/docs/claude-code)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Languages](https://img.shields.io/badge/Languages-EN%20%2F%20CN-blue?style=flat)](#languages)
-[![Roadmap](https://img.shields.io/badge/Roadmap-v0.4.2-purple?style=flat)](ROADMAP.md)
+[![Roadmap](https://img.shields.io/badge/Roadmap-current-purple?style=flat)](ROADMAP.md)
 
 [English](README.md) | [中文版](README_CN.md)
 
@@ -29,7 +29,7 @@ not on flashy features.
 
 **Is:** a persistent, queryable schedule + memo store with a `pending/doing/done/blocked/cancelled`
 state machine, due-reminder dispatch via the local Discord relay, and a stable
-`reminder.py <verb> --json` API for both humans and other skills.
+`reminder.py [--actor NAME] <verb>` API for both humans and other skills.
 
 **Isn't:** a one-shot notifier (that's the relay), a calendar UI, or a cloud service. If nothing
 needs to *persist, be queried, or be reminded*, you don't need this.
@@ -46,12 +46,19 @@ Or clone manually:
 git clone https://github.com/DaizeDong/schedule-reminder.git ~/.claude/plugins/schedule-reminder
 ```
 
-Then run the idempotent installer (creates the DB, registers the PT5M heartbeat task, junctions the
-skill, runs health):
+Set `SCHEDULE_REMINDER_CONFIG` to an initialized PRIVATE versioned companion repository before
+writing runtime data. Preview the selected capabilities, then run the idempotent installer:
 
 ```powershell
-pwsh -File skills/schedule-reminder/scripts/install.ps1
+pwsh -File skills/schedule-reminder/scripts/install.ps1 -Capabilities store,remind -Plan
+pwsh -File skills/schedule-reminder/scripts/install.ps1 -Capabilities store,remind
 ```
+
+The default selection is store plus remind. Empty selection is a no-op; ingest and work are
+optional. Installation returns nonzero until selected readiness is measured, even after successful
+task registration. `health` still returns a successful JSON report when readiness is incomplete;
+inspect `health.readiness.ready`. See [deployment](skills/schedule-reminder/reference/deployment.md)
+for PRIVATE storage, task readback, worker receipts, and the unmeasured ingest/work boundary.
 
 ## Quick start
 
@@ -73,19 +80,14 @@ The skill fires when the user wants to track a todo / event / deadline / progres
 
 ## Example output
 
-```json
-{"api_version":"1.0.0","schema_version":1,"ok":true,
- "item":{"id":"019f0035-f0e1-700d-95f8-020c880c543a","kind":"task","title":"Reply to recruiter",
-         "state":"pending","progress":0,"priority":1,"due_at":"2026-06-28T17:00:00.000000+00:00",
-         "source":"me","idempotency_key":"me:1","ext":null,"...":"..."}}
-```
+See [examples.json](examples.json) for synthetic output reproduced by tools/make_fixtures.py.
 
 ## Architecture (three layers)
 
 ```
 SQLite (WAL) single file        <- private storage, downstream NEVER touches it
   store.py (typed functions)    <- in-process; trusted skills may import
-    reminder.py <verb> --json   <- the ONLY stable contract (api_version 1.0.0)
+    reminder.py [--actor NAME] <verb>   <- the ONLY stable contract (api_version 1.0.0)
 [Windows task: PT5M heartbeat] -> reminder.py tick -> reconcile due -> Discord relay (out)
 [Windows task: PT10M ingest]   -> ingest_tick -> poll every readable channel -> a registered
                                   command handler, else dispatch (LLM judge)              (in)
@@ -98,9 +100,9 @@ triggers, no silent skips.
 - **Contract:** [`skills/schedule-reminder/reference/contract.md`](skills/schedule-reminder/reference/contract.md)
 - **Deployment:** [`skills/schedule-reminder/reference/deployment.md`](skills/schedule-reminder/reference/deployment.md)
 - **Integration (for downstream skills):** [`skills/schedule-reminder/reference/integration.md`](skills/schedule-reminder/reference/integration.md)
-- **Agent Center bus (two-way):** [`skills/schedule-reminder/reference/agent-center.md`](skills/schedule-reminder/reference/agent-center.md), the outbound relay + daily digest and the inbound ingest every skill shares. One enumeration of which channels are read, one egress for everything sent, and a registry of deterministic command handlers so a tool never has to write a second poller.
+- **Delivery and work recovery:** [operations.md](skills/schedule-reminder/reference/operations.md).
 
-## Tested-real
+## Test coverage and evidence
 
 15 acceptance signals (E1-E15) drive the frozen CLI via subprocess and assert JSON: CRUD, the full
 transition table (legal + illegal), write invariants, due trigger / idempotent tick / missed-fire
@@ -111,8 +113,14 @@ digest, heartbeat survival, notify routing, and the two-way ingest/dispatch. E8/
 merge-blocking red lines.
 
 ```bash
-python -m pytest skills/schedule-reminder/tests/ -q   # 93 passed
+python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider
 ```
+
+The existing notification-route checks also need the canonical `notification_language.py` code.
+Set `SCHEDULE_TEST_LANGUAGE_RULE` to that file when running them. The test harness copies the code
+unchanged into its synthetic profile; it does not load the operator's configuration or credentials.
+Without the dependency, those checks report its absence. Live scheduled-task checks remain separate
+from offline capability tests.
 
 ## Limitations
 
@@ -120,8 +128,7 @@ python -m pytest skills/schedule-reminder/tests/ -q   # 93 passed
   `health` warns (does not hard-fail). Upgrade path without changing Python: `pip install
   pysqlite3-binary` (auto-detected). The bundled test suite verifies `integrity_check` stays `ok`
   under concurrency on the host SQLite.
-- **Recurrence/RRULE expansion is stored but not yet expanded** (roadmap v0.2); the `recurrence`
-  field round-trips today.
+- **Recurrence uses rolling expansion.** The supported RRULE subset advances the master row to the next future occurrence; it does not materialize an infinite series. See the contract for supported fields.
 - **Windows-first deployment** (scheduled task via `install.ps1`); cron line provided for Unix.
 - **DB must stay on local NTFS**, never a OneDrive/GDrive/network path (WAL lock + sync corruption).
 
@@ -132,3 +139,11 @@ English (`README.md`, authoritative) · 中文 (`README_CN.md`)
 ## Roadmap · Contributing · License
 
 See [ROADMAP.md](ROADMAP.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [LICENSE](LICENSE) (MIT).
+
+JSON output is unconditional. Place global options such as --db and --actor before the verb; do not pass --json.
+
+## Synthetic verification
+
+`verify_expired_email_active.py --data-dir <PRIVATE-directory>` generates disposable synthetic records in the private companion. It refuses a source-contained database. The utility does not prove live worker readiness.
+
+Historical counts do not establish current runtime or installed readiness; use the execution report for the exact source revision.

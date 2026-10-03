@@ -133,7 +133,7 @@ def cmd_add(a):
         recurrence=a.recurrence, rdate=_json_arg(a.rdate, "--rdate"),
         exdate=_json_arg(a.exdate, "--exdate"), alarms=_json_arg(a.alarms, "--alarms"),
         tags=_tags(a.tags), project=a.project, source=a.source,
-        idempotency_key=a.idempotency_key, ext=_parse_ext(a.ext),
+        idempotency_key=a.idempotency_key, if_exists=a.if_exists, ext=_parse_ext(a.ext),
         actor=a.actor, db_path=a.db,
     )
     return _emit({"item": item})
@@ -167,12 +167,12 @@ def cmd_update(a):
 
 def cmd_transition(a):
     item = store.transition(a.id, a.to, expect_state=a.expect, reason=a.reason,
-                            progress=a.progress, actor=a.actor, db_path=a.db)
+                            progress=a.progress, ext=_parse_ext(a.ext), actor=a.actor, db_path=a.db)
     return _emit({"item": item})
 
 
 def cmd_done(a):
-    return _emit({"item": store.done(a.id, actor=a.actor, db_path=a.db)})
+    return _emit({"item": store.done(a.id, actor=a.actor, ext=_parse_ext(a.ext), db_path=a.db)})
 
 
 def cmd_block(a):
@@ -205,7 +205,7 @@ def cmd_events(a):
 
 
 def cmd_health(a):
-    return _emit({"health": store.health(db_path=a.db, check_task=a.check_task)})
+    return _emit({"health": store.health(db_path=a.db, check_task=a.check_task, capabilities=a.capabilities)})
 
 
 def build_parser():
@@ -222,6 +222,7 @@ def build_parser():
     s.add_argument("--dry-run", dest="dry_run", action="store_true")
 
     s = sub.add_parser("add"); s.set_defaults(fn=cmd_add)
+    s.add_argument("--if-exists", choices=("update", "return"), default="update")
     s.add_argument("--title", required=True)
     s.add_argument("--kind", default="task", choices=list(store.KINDS))
     s.add_argument("--due-at", dest="due_at", default=None)
@@ -266,8 +267,10 @@ def build_parser():
     s.add_argument("--expect", default=None, choices=list(store.STATES))
     s.add_argument("--reason", default=None)
     s.add_argument("--progress", type=int, default=None)
+    s.add_argument("--ext", default=None, help="metadata to commit atomically with the state")
 
     s = sub.add_parser("done"); s.set_defaults(fn=cmd_done); s.add_argument("--id", required=True)
+    s.add_argument("--ext", default=None, help="metadata to commit atomically with completion")
 
     s = sub.add_parser("block"); s.set_defaults(fn=cmd_block)
     s.add_argument("--id", required=True)
@@ -291,6 +294,7 @@ def build_parser():
 
     s = sub.add_parser("health"); s.set_defaults(fn=cmd_health)
     s.add_argument("--check-task", dest="check_task", action="store_true")
+    s.add_argument("--capabilities", default=None)
 
     return p
 
@@ -300,8 +304,6 @@ def main(argv=None):
     a = p.parse_args(argv)
     # ensure DB exists for all but init (init creates it explicitly)
     try:
-        if a.cmd != "init":
-            store.init_db(a.db)
         return a.fn(a)
     except store.SkillError as e:
         return _fail(e)

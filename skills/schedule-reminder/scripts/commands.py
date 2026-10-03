@@ -65,18 +65,35 @@ def load(reg):
     never silently: a handler that vanishes because of a typo in its regex looks exactly like a bus
     that stopped reading, and that is the failure mode this whole layer exists to remove."""
     out = []
-    for name, cfg in (reg.get("commands") or {}).items():
-        if name.startswith("_"):
+    definitions = reg.get("commands") or {}
+    if not isinstance(definitions, dict):
+        sys.stderr.write("commands: definitions must be an object; skipped\n")
+        return out
+    for name, cfg in definitions.items():
+        if isinstance(name, str) and name.startswith("_"):
             continue          # registry convention: a leading underscore is a comment, not an entry
-        if not isinstance(cfg, dict) or not cfg.get("trigger") or not cfg.get("exec"):
-            sys.stderr.write("commands: %r is missing trigger or exec; skipped\n" % name)
-            continue
         try:
+            if not isinstance(cfg, dict):
+                raise ValueError("definition must be an object")
+            if not isinstance(cfg.get("trigger"), str) or not cfg["trigger"].strip():
+                raise ValueError("trigger must be a nonempty string")
+            if (not isinstance(cfg.get("exec"), list) or not cfg["exec"]
+                    or not all(isinstance(arg, str) for arg in cfg["exec"])
+                    or not cfg["exec"][0].strip()):
+                raise ValueError("exec must be a string argv list with a nonempty executable")
             trigger = re.compile(cfg["trigger"], re.I)
-        except re.error as e:
-            sys.stderr.write("commands: %r has an invalid trigger (%s); skipped\n" % (name, e))
+            timeout = cfg.get("timeout")
+            if timeout is None:
+                timeout = DEFAULT_TIMEOUT
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, str)):
+                raise ValueError("timeout must be a positive integer")
+            timeout = int(timeout)
+            if timeout <= 0:
+                raise ValueError("timeout must be a positive integer")
+        except (ValueError, re.error) as e:
+            sys.stderr.write("commands: %r has an invalid definition (%s); skipped\n" % (name, e))
             continue
-        argv = [os.path.expanduser(os.path.expandvars(str(a))) for a in cfg["exec"]]
+        argv = [os.path.expanduser(os.path.expandvars(a)) for a in cfg["exec"]]
         # A bare "python" is resolved against the CURRENT process's interpreter, not against PATH.
         # This runs from a scheduled task, and a task's PATH on Windows routinely contains only the
         # WindowsApps execution alias: a stub that `command -v` finds and that then runs nothing at
@@ -86,7 +103,7 @@ def load(reg):
                                                           "python3", "python3.exe"):
             argv[0] = sys.executable or argv[0]
         out.append({"name": name, "trigger": trigger, "exec": argv,
-                    "timeout": int(cfg.get("timeout") or DEFAULT_TIMEOUT),
+                    "timeout": timeout,
                     "desc": cfg.get("desc") or ""})
     return out
 
@@ -134,7 +151,7 @@ def run(cmd, payload, log=None):
     return True, (p.stdout or "").strip()[:200]
 
 
-def route(msgs, stream, channel_id, reg, log=None, post=True):
+def route(msgs, stream, channel_id, reg, log=None, post=True, before_run=None):
     """Split a batch: (claimed, remaining, results).
 
     `claimed` were answered (or attempted) by a handler and MUST NOT go on to the judgment chain.
@@ -154,6 +171,8 @@ def route(msgs, stream, channel_id, reg, log=None, post=True):
         if not c:
             remaining.append(m)
             continue
+        if before_run is not None:
+            before_run(c["name"])
         ok, detail = run(c, {"text": text, "channel_id": str(channel_id), "stream": stream,
                              "message_id": m.get("id"), "timestamp": m.get("timestamp")}, log=log)
         claimed.append(m)

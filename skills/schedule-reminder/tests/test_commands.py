@@ -22,18 +22,13 @@ if _SCRIPTS not in sys.path:
 
 import commands  # noqa: E402
 import ingest    # noqa: E402
+from make_fixtures import command_handler_script, command_timeout_script, command_message
 
 
 def _handler(tmp_path, name="h.py", body=None, rc=0):
     """A real handler script. Default: record what arrived on stdin, exit `rc`."""
     p = tmp_path / name
-    p.write_text(body or (
-        "import json,sys\n"
-        "payload = json.load(sys.stdin)\n"
-        "with open(r'%s', 'w', encoding='utf-8') as f:\n"
-        "    json.dump(payload, f, ensure_ascii=False)\n"
-        "sys.exit(%d)\n" % (str(tmp_path / "seen.json").replace("\\", "\\\\"), rc)
-    ), encoding="utf-8")
+    p.write_text(body or command_handler_script(tmp_path / "seen.json", rc), encoding="utf-8")
     return str(p)
 
 
@@ -46,8 +41,7 @@ def _reg(tmp_path, trigger=r"^\s*gradient\b", rc=0, streams=None, timeout=60, bo
 
 
 def _msg(mid, text):
-    return {"id": mid, "content": text, "timestamp": "2026-08-10T19:14:00Z",
-            "author": {"bot": False, "id": "OWNER"}}
+    return command_message(mid, text)
 
 
 # --------------------------------------------------------------------------- registration
@@ -163,7 +157,7 @@ def test_failed_handler_still_claims_and_reports(tmp_path, monkeypatch):
 
 
 def test_handler_timeout_is_a_failure_not_a_hang(tmp_path, monkeypatch):
-    slow = "import time\ntime.sleep(30)\n"
+    slow = command_timeout_script()
     reg = _reg(tmp_path, timeout=1, body=slow)
     monkeypatch.setattr(commands.relay, "send", lambda text, **kw: True)
     _, _, results = commands.route([_msg("1", "gradient")], "s", "99", reg)

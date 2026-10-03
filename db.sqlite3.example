@@ -1,0 +1,10 @@
+{
+  "format": "SQLite",
+  "schema_user_version": 1,
+  "tables": [
+    "items",
+    "events",
+    "meta"
+  ],
+  "ddl": "skills/schedule-reminder/scripts/store.py::_DDL"
+}
