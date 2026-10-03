@@ -7,7 +7,7 @@ import tempfile
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[3]
 FIXTURE = json.loads((ROOT/'skills/schedule-reminder/tests/capability_cases.json').read_text(encoding='utf-8'))
 sys.path.insert(0, str(ROOT/'skills/schedule-reminder/tests'))
 sys.path.insert(0, str(ROOT/'skills/schedule-reminder/scripts'))

@@ -21,6 +21,13 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: schedule-reminder
+
 jobs:
   suite:
     runs-on: ubuntu-latest
@@ -30,7 +37,20 @@ jobs:
         # Without this the directory is present and EMPTY, and the failure is not a missing
         # checkout, it is whatever the code does when its resolver is absent.
         with:
+          path: schedule-reminder
           submodules: true
+          persist-credentials: false
+      - name: Check out the canonical notification language file
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.NOTIFICATION_POLICY_REPOSITORY }}
+          ref: 63993685e07e6d91030fb112605808e9ec897648
+          path: notification-policy
+          ssh-key: ${{ secrets.NOTIFICATION_POLICY_READ_KEY }}
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: claude/scripts/notification_language.py
+          sparse-checkout-cone-mode: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
@@ -45,7 +65,21 @@ jobs:
       # exercise the import path production uses, otherwise it certifies a configuration that does
       # not exist anywhere.
       - name: Install deps
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LLMCALL_DEPLOY_KEY: ${{ secrets.LLMCALL_DEPLOY_KEY }}
         run: |
+          test -n "$LLMCALL_DEPLOY_KEY" || { echo "::error::LLMCALL_DEPLOY_KEY is required to read the private dependency"; exit 1; }
+          install -d -m 700 "$HOME/.ssh"
+          gh api meta --jq '.ssh_keys[] | "github.com " + .' >> "$HOME/.ssh/known_hosts"
+          eval "$(ssh-agent -s)"
+          trap 'ssh-agent -k' EXIT
+          printf '%s\n' "$LLMCALL_DEPLOY_KEY" | tr -d '\r' | ssh-add -
+          export GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=yes'
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=url.ssh://git@github.com/DaizeDong/llmcall.git.insteadOf
+          export GIT_CONFIG_VALUE_0=https://github.com/DaizeDong/llmcall.git
           test -f requirements.txt || { echo "::error::requirements.txt is MISSING"; exit 1; }
           python -m pip install --quiet -r requirements.txt
           python -m pip install --quiet pytest
@@ -61,10 +95,8 @@ jobs:
       # being written: the tests ran against bytecode from a mutant that had already been reverted
       # on disk. Disabling the cache removes the failure mode from CI entirely.
       - name: Prepare canonical notification language dependency
-        env:
-          SCHEDULE_LANGUAGE_RULE_B64: ${{ secrets.SCHEDULE_LANGUAGE_RULE_B64 }}
         run: |
-          python -B tools/prepare_test_dependency.py --out "$RUNNER_TEMP/schedule-test-dependencies/notification_language.py"
+          python -B tools/prepare_test_dependency.py --source "$GITHUB_WORKSPACE/notification-policy/claude/scripts/notification_language.py" --out "$RUNNER_TEMP/schedule-test-dependencies/notification_language.py"
           echo "SCHEDULE_TEST_LANGUAGE_RULE=$RUNNER_TEMP/schedule-test-dependencies/notification_language.py" >> "$GITHUB_ENV"
 
       - name: Acceptance suite
