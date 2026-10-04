@@ -4,14 +4,14 @@ Track todos, events and progress in a crash-safe SQLite store; fire due reminder
 
 [![Claude Code Skill](https://img.shields.io/badge/Claude%20Code-Skill-orange?style=flat)](https://docs.anthropic.com/en/docs/claude-code)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Languages](https://img.shields.io/badge/Languages-EN%20%2F%20CN-blue?style=flat)](#languages)
-[![Roadmap](https://img.shields.io/badge/Roadmap-current-purple?style=flat)](ROADMAP.md)
+[![Languages](https://img.shields.io/badge/Languages-EN%20%2F%20CN-blue?style=flat)](README_CN.md)
+[![Roadmap](https://img.shields.io/badge/Roadmap-v0.6.0-purple?style=flat)](ROADMAP.md)
 
 [English](README.md) | [中文版](README_CN.md)
 
 ---
 
-## ⭐ Read this first, the design philosophy
+## ⭐ Design Philosophy
 
 schedule-reminder is a **T0 infrastructure base**: other skills write reminders into it and read task
 progress out of it. So its single governing principle is **"a base is the contract, not the
@@ -20,6 +20,11 @@ database, so the engine can be rewritten forever without breaking anyone. v0.1 s
 budget on the guarantees a base must never break: concurrency-safe + crash-safe persistence, a
 guarded state machine, idempotent writes, at-least-once delivery, and MUST-PRESERVE unknown fields,
 not on flashy features.
+
+A stable contract requires stricter input and state checks, at the cost of refusing
+ambiguous writes. At-least-once delivery can still retry after a failure; idempotency
+identities and receipts reconcile duplicates. Task registration, health reports and
+source inspection do not alone prove delivery.
 
 📜 **[Read the full design philosophy -> PHILOSOPHY.md](PHILOSOPHY.md)**
 
@@ -43,7 +48,7 @@ needs to *persist, be queried, or be reminded*, you don't need this.
 Or clone manually:
 
 ```bash
-git clone https://github.com/DaizeDong/schedule-reminder.git ~/.claude/plugins/schedule-reminder
+git clone --recurse-submodules https://github.com/DaizeDong/schedule-reminder.git ~/.claude/plugins/schedule-reminder
 ```
 
 Set `SCHEDULE_REMINDER_CONFIG` to an initialized PRIVATE versioned companion repository before
