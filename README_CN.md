@@ -4,19 +4,22 @@
 
 [![Claude Code Skill](https://img.shields.io/badge/Claude%20Code-Skill-orange?style=flat)](https://docs.anthropic.com/en/docs/claude-code)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Languages](https://img.shields.io/badge/Languages-EN%20%2F%20CN-blue?style=flat)](#languages)
-[![Roadmap](https://img.shields.io/badge/Roadmap-current-purple?style=flat)](ROADMAP.md)
+[![Languages](https://img.shields.io/badge/Languages-EN%20%2F%20CN-blue?style=flat)](README.md)
+[![Roadmap](https://img.shields.io/badge/Roadmap-v0.6.0-purple?style=flat)](ROADMAP.md)
 
 [English](README.md) | [中文版](README_CN.md)
 
 ---
 
-## ⭐ 先读这里, 设计理念
+## ⭐ 设计哲学
 
 schedule-reminder 是一个 **T0 基础设施基座**：其他 skill 往它写提醒、从它读进度。所以它唯一的统领原则是
 **「基座是契约，不是存储」**,下游只依赖一个冻结的 CLI/JSON 契约面（带 `api_version`），永远不直接碰数据库，
 因此底层引擎可以无限重写而不破坏任何人。v0.1 把全部预算花在基座绝不能破的保证上：并发安全 + 防崩溃持久化、
 受保护的状态机、幂等写、至少一次投递、未知字段必保留,而不是花哨功能。
+
+稳定契约需要更严格的输入与状态检查，代价是拒绝含糊写入。至少一次投递仍可能在故障后
+重试；幂等身份和回执用于核对重复。注册任务、健康报告或源码检查不能单独证明提醒已送达。
 
 📜 **[完整设计理念 -> PHILOSOPHY.md](PHILOSOPHY.md)**
 
@@ -38,7 +41,7 @@ relay 的到期提醒派发，以及供人和其他 skill 调用的稳定 `remin
 或手动克隆：
 
 ```bash
-git clone https://github.com/DaizeDong/schedule-reminder.git ~/.claude/plugins/schedule-reminder
+git clone --recurse-submodules https://github.com/DaizeDong/schedule-reminder.git ~/.claude/plugins/schedule-reminder
 ```
 
 先将 `SCHEDULE_REMINDER_CONFIG` 指向已初始化、纳入版本管理的 PRIVATE 伴生仓，再写入运行数据。预览所选能力后运行幂等安装器：

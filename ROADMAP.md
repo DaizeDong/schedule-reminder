@@ -1,6 +1,10 @@
 # Roadmap
 
-The source provides four capability groups: store, remind, ingest and work. Package metadata records the package version; this roadmap does not assert a separate release version.
+Current: **v0.6.0**
+
+The source provides four capability groups: store, remind, ingest and work. Current
+version follows package metadata and the existing 0.6.0 history entry; it is not a
+new release declaration.
 
 ## Available behavior
 

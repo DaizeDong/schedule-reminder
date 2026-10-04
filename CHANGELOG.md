@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here (Keep a Changelog style).
 
+## [Unreleased]
+
+### Changed
+- Reconcile package metadata and README/ROADMAP version displays with the existing 0.6.0 history entry. The channel enumeration, deterministic command routing, channel-ID cursors, and attachment-capable relay remain in current source. This corrects metadata drift; it does not create a new release or alter the historical release date.
+- Document current PRIVATE runtime storage, capability-selected installation and readiness evidence, owner-bound inbound staging, and reviewed work recovery. Source availability and successful health JSON remain separate from measured external readiness.
+
+### Fixed
+- Manual clone instructions initialize the pinned guard and style submodules required by runtime storage checks.
+- Companion restoration guidance explicitly wires a nondefault config location and retains runtime DATA under version control, with SQLite-aware backups.
+
 ## [0.6.0] - 2026-08-12
 ### Fixed
 - **A message could be read by the bus and then seen by nobody.** An instruction typed in the
