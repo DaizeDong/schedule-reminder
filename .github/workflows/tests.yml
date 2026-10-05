@@ -112,7 +112,7 @@ jobs:
       - name: Acceptance suite
         run: |
           test -d skills/schedule-reminder/tests || { echo "::error::the test suite is MISSING -- an absent suite is not a passing suite"; exit 1; }
-          python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider
+          python -B -m pytest skills/schedule-reminder/tests/ -q -rs -p no:cacheprovider
           # (no `|| true`: every nonzero status here is a failure, including collection errors.)
 
       # Guards against the suite quietly shrinking to nothing, which would otherwise look exactly

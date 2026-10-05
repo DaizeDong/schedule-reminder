@@ -336,8 +336,8 @@ class Schedule8Regressions(unittest.TestCase):
         boundary = offline_support.synthetic_boundary()
         calls = []
         with tempfile.TemporaryDirectory(prefix="schedule-transport-") as directory:
-            root = Path(directory)
-            target = root/"pending"/"record.json"
+            root = Path(directory).resolve()
+            target = Path(directory)/"pending"/"record.json"
             def prove(destination):
                 calls.append(("proof", str(destination)))
                 if reject:
