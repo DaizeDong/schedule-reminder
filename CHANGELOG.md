@@ -9,6 +9,9 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - Document current PRIVATE runtime storage, capability-selected installation and readiness evidence, owner-bound inbound staging, and reviewed work recovery. Source availability and successful health JSON remain separate from measured external readiness.
 
 ### Fixed
+- Accept the apply sender's `allow_drop` reload argument during route verification while keeping the probe's configuration writes and reloads replaced.
+- Verify JavaScript model-mapping senders through their real settings and notification entrypoints. Absolute per-sender directory overrides support source installations while language-rule checks still run before delivery.
+- Recheck transient zero-link filesystem observations during runtime path admission, up to three observations. Concurrent SQLite sidecar removal can resolve to a missing or ordinary file; persistent zero links, symlinks, reparse points and hardlinks still refuse. Opened-file inode checks remain strict.
 - Manual clone instructions initialize the pinned guard and style submodules required by runtime storage checks.
 - Companion restoration guidance explicitly wires a nondefault config location and retains runtime DATA under version control, with SQLite-aware backups.
 

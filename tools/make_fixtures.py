@@ -6,6 +6,43 @@ from pathlib import Path
 FIXTURE = 'skills/schedule-reminder/tests/capability_cases.json'
 
 
+def sqlite_path_stat(kind):
+    """Generate filesystem observations without creating aliases or real DATA."""
+    import stat
+    from types import SimpleNamespace
+    mode, links, attributes = {
+        'regular': (stat.S_IFREG | 0o600, 1, 0),
+        'unlinked': (stat.S_IFREG | 0o600, 0, 0),
+        'hardlink': (stat.S_IFREG | 0o600, 2, 0),
+        'symlink': (stat.S_IFLNK | 0o777, 1, 0),
+        'reparse': (stat.S_IFREG | 0o600, 1, 1024),
+        'unlinked-reparse': (stat.S_IFREG | 0o600, 0, 1024),
+    }[kind]
+    return SimpleNamespace(st_mode=mode, st_nlink=links, st_file_attributes=attributes)
+
+
+def sqlite_path_race_cases():
+    """Generate unlink races and stable refusal controls for SQLite sidecars."""
+    return [
+        {'name': name, 'observations': observations, 'allowed': allowed}
+        for name, observations, allowed in [
+            ('missing', ['missing'], True),
+            ('regular', ['regular'], True),
+            ('unlinked-then-missing', ['unlinked', 'missing'], True),
+            ('unlinked-then-regular', ['unlinked', 'regular'], True),
+            ('unlinked-twice-then-regular', ['unlinked', 'unlinked', 'regular'], True),
+            ('stable-unlinked', ['unlinked'], False),
+            ('hardlink', ['hardlink', 'regular'], False),
+            ('symlink', ['symlink', 'regular'], False),
+            ('reparse', ['reparse', 'regular'], False),
+            ('unlinked-reparse', ['unlinked-reparse', 'regular'], False),
+            ('unlinked-then-hardlink', ['unlinked', 'hardlink', 'regular'], False),
+            ('unlinked-then-symlink', ['unlinked', 'symlink', 'regular'], False),
+            ('unlinked-then-reparse', ['unlinked', 'reparse', 'regular'], False),
+        ]
+    ]
+
+
 def runtime_storage_case(root, run, *, versioned=True):
     """Build native Git metadata and fresh synthetic visibility without live accounts."""
     from datetime import datetime, timezone
@@ -297,8 +334,8 @@ def command_message(message_id, text):
 
 
 def model_mapping_sender_script(kind):
-    """Generate the existing synthetic sender bodies without changing their behavior."""
-    return {'NOTIFY_SENDER': '\nimport os\nSTREAM = os.environ["FAKE_STREAM"]\n\n\ndef notify(text):\n    if os.environ.get("FAKE_SILENT"):\n        return True          # claims delivery, sends nothing: the unmigrated-sender shape\n    if os.environ.get("FAKE_MUTE_VERDICT"):\n        open(os.environ["FAKE_OUTBOX"], "a", encoding="utf-8").write(text + "\\n")\n        return None          # delivered, but cannot say so\n    open(os.environ["FAKE_OUTBOX"], "a", encoding="utf-8").write(text + "\\n")\n    return True\n', 'APPLY_SENDER': '\nimport os\nSTREAM = os.environ["FAKE_STREAM"]\n\n\ndef current_map():\n    return {"opus": "Model-A"}\n\n\ndef apply_map(new_map, rationale, notifier=None, reloader=None, writer=None):\n    if os.environ.get("FAKE_NO_CHANGE"):\n        return False\n    writer(new_map)\n    reloader()\n    if not os.environ.get("FAKE_SILENT"):\n        prefix = ("cc model map updated: " if os.environ.get("FAKE_ENGLISH")\n                  else "cc ????????")\n        open(os.environ["FAKE_OUTBOX"], "a", encoding="utf-8").write(\n            prefix + rationale + "\\n")\n    return True\n'}[kind]
+    """Generate synthetic senders with selectable notification and reload behavior."""
+    return {'NOTIFY_SENDER': '\nimport os\nSTREAM = os.environ["FAKE_STREAM"]\n\n\ndef notify(text):\n    if os.environ.get("FAKE_SILENT"):\n        return True          # claims delivery, sends nothing: the unmigrated-sender shape\n    if os.environ.get("FAKE_MUTE_VERDICT"):\n        open(os.environ["FAKE_OUTBOX"], "a", encoding="utf-8").write(text + "\\n")\n        return None          # delivered, but cannot say so\n    open(os.environ["FAKE_OUTBOX"], "a", encoding="utf-8").write(text + "\\n")\n    return True\n', 'APPLY_SENDER': '\nimport os\nSTREAM = os.environ["FAKE_STREAM"]\n\n\ndef current_map():\n    return {"opus": "Model-A"}\n\n\ndef apply_map(new_map, rationale, notifier=None, reloader=None, writer=None):\n    if os.environ.get("FAKE_NO_CHANGE"):\n        return False\n    writer(new_map)\n    if os.environ.get("FAKE_RELOAD_ALLOW_DROP"):\n        reloader(allow_drop=("synthetic-removed-tier",))\n    else:\n        reloader()\n    if not os.environ.get("FAKE_SILENT"):\n        prefix = ("cc model map updated: " if os.environ.get("FAKE_ENGLISH")\n                  else "cc ????????")\n        open(os.environ["FAKE_OUTBOX"], "a", encoding="utf-8").write(\n            prefix + rationale + "\\n")\n    return True\n'}[kind]
 
 def public_example():
     return {"api_version": "1.0.0", "schema_version": 1, "ok": True,
@@ -565,6 +602,21 @@ def schedule12_review_cases():
                          "record.", "record ", "directory. /record.txt"],
         "ordinary_names": ["record.txt", "pending/record.json", "COM10.txt", "console.txt"],
         "record": "Synthetic versioned runtime observation.\n",
+    }
+
+
+def model_mapping_node_sender_files():
+    """Synthetic Node sender modules for the offline route verifier tests."""
+    return {
+        "gateway.js": "exports.loadEnv = () => ({ env: {} });\n",
+        "model-refresh.js": """const fs = require('node:fs');
+exports.settings = () => ({ stream: process.env.FAKE_STREAM });
+exports.notify = (text) => {
+  if (process.env.FAKE_REFUSE) return false;
+  fs.appendFileSync(process.env.FAKE_OUTBOX, text + '\\n', 'utf8');
+  return true;
+};
+""",
     }
 
 

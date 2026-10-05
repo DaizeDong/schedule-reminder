@@ -16,7 +16,7 @@ import os
 import sys
 
 import pytest
-from make_fixtures import model_mapping_sender_script
+from make_fixtures import model_mapping_node_sender_files, model_mapping_sender_script
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.abspath(os.path.join(HERE, "..", "scripts"))
@@ -85,9 +85,11 @@ def test_a_migrated_notify_sender_passes(tmp_path, monkeypatch):
         "the message the check looked for must be the one the sender actually wrote")
 
 
-def test_a_migrated_apply_map_sender_passes(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reload_with_allow_drop", [False, True])
+def test_a_migrated_apply_map_sender_passes(tmp_path, monkeypatch, reload_with_allow_drop):
+    flags = {"FAKE_RELOAD_ALLOW_DROP": "1"} if reload_with_allow_drop else {}
     directory, outbox = make_sender(tmp_path, "apply.py", APPLY_SENDER,
-                                    "model-mapping", monkeypatch)
+                                    "model-mapping", monkeypatch, **flags)
     wire_discord(monkeypatch, outbox)
     assert check.verify_one(row(directory, "apply.py", "apply-map"), attempts=1)["ok"] is True
 
@@ -236,3 +238,58 @@ def test_configured_root_resolves_generated_sender(tmp_path, monkeypatch):
     result = check.verify_one(row("sender", "refresh.py", "notify"), attempts=1)
     assert result["ok"] is True
     assert result["sender"] == os.path.join(directory, "refresh.py")
+
+
+def make_node_sender(tmp_path, monkeypatch, **flags):
+    directory = tmp_path / "node-sender"
+    directory.mkdir()
+    for name, text in model_mapping_node_sender_files().items():
+        (directory / name).write_text(text, encoding="utf-8")
+    outbox = tmp_path / "node-outbox.txt"
+    outbox.write_text("", encoding="utf-8")
+    monkeypatch.setenv("FAKE_STREAM", "model-mapping")
+    monkeypatch.setenv("FAKE_OUTBOX", str(outbox))
+    for name, value in flags.items():
+        monkeypatch.setenv(name, value)
+    wire_discord(monkeypatch, outbox)
+    selected = dict(row(str(directory), "model-refresh.js", "notify"), runtime="node")
+    return selected, outbox
+
+
+def test_node_sender_delivers_through_its_real_module_entrypoint(tmp_path, monkeypatch):
+    selected, outbox = make_node_sender(tmp_path, monkeypatch)
+    result = check.verify_one(selected, attempts=1)
+    assert result["marker"] in outbox.read_text(encoding="utf-8")
+    assert result["ok"] is True
+
+
+def test_node_sender_wrong_stream_fails_before_delivery(tmp_path, monkeypatch):
+    selected, outbox = make_node_sender(tmp_path, monkeypatch, FAKE_STREAM="other-stream")
+    with pytest.raises(check.RouteError, match="announces on stream"):
+        check.verify_one(selected, attempts=1)
+    assert outbox.read_text(encoding="utf-8") == ""
+
+
+def test_node_sender_failure_is_reported(tmp_path, monkeypatch):
+    selected, outbox = make_node_sender(tmp_path, monkeypatch, FAKE_REFUSE="1")
+    with pytest.raises(check.RouteError, match="notify.*did not deliver"):
+        check.verify_one(selected, attempts=1)
+    assert outbox.read_text(encoding="utf-8") == ""
+
+
+def test_sender_directory_override_selects_original_source(tmp_path, monkeypatch):
+    selected, outbox = make_node_sender(tmp_path, monkeypatch)
+    monkeypatch.setenv("SCHEDULE_ROUTE_CODEX_SENDER_DIR", selected["sender_dir"])
+    selected.update(sender_dir="absent-install", sender_dir_env="SCHEDULE_ROUTE_CODEX_SENDER_DIR")
+    assert check.verify_one(selected, attempts=1)["ok"] is True
+    assert outbox.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("value", ["", "relative-source"])
+def test_sender_directory_override_must_be_absolute(tmp_path, monkeypatch, value):
+    selected, outbox = make_node_sender(tmp_path, monkeypatch)
+    monkeypatch.setenv("SCHEDULE_ROUTE_CODEX_SENDER_DIR", value)
+    selected["sender_dir_env"] = "SCHEDULE_ROUTE_CODEX_SENDER_DIR"
+    with pytest.raises(check.RouteError, match="absolute sender directory"):
+        check.verify_one(selected, attempts=1)
+    assert outbox.read_text(encoding="utf-8") == ""
