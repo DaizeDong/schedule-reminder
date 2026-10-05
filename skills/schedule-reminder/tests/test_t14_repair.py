@@ -36,6 +36,11 @@ def work(tmp_path, monkeypatch, real_process):
     monkeypatch.setenv("AGENT_CENTER_RUNS", str(tmp_path / "runs"))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    if sys.platform != "win32":
+        # The production identity probe is Windows-only; portable tests own this synthetic runner.
+        runner_pid = os.getpid()
+        monkeypatch.setattr(agent_task, "proc_identity",
+                            lambda pid: (True, 456) if pid == runner_pid else (False, None))
     monkeypatch.setattr(agent_run, "post", lambda *a: pytest.fail("notification"))
     monkeypatch.setattr(agent_tick, "_post", lambda *a: pytest.fail("notification"))
     store.init_db()
