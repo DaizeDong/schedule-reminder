@@ -105,7 +105,8 @@ jobs:
       # on disk. Disabling the cache removes the failure mode from CI entirely.
       - name: Prepare canonical notification language dependency
         run: |
-          python -B tools/prepare_test_dependency.py --source "$GITHUB_WORKSPACE/notification-policy/claude/scripts/notification_language.py" --out "$RUNNER_TEMP/schedule-test-dependencies/notification_language.py"
+          git -C "$GITHUB_WORKSPACE/notification-policy" cat-file blob 63993685e07e6d91030fb112605808e9ec897648:claude/scripts/notification_language.py > "$RUNNER_TEMP/notification-language-locked.py"
+          python -B tools/prepare_test_dependency.py --source "$RUNNER_TEMP/notification-language-locked.py" --out "$RUNNER_TEMP/schedule-test-dependencies/notification_language.py"
           echo "SCHEDULE_TEST_LANGUAGE_RULE=$RUNNER_TEMP/schedule-test-dependencies/notification_language.py" >> "$GITHUB_ENV"
 
       - name: Acceptance suite
