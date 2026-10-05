@@ -76,13 +76,21 @@ def assert_writable_path(destination):
                 raise ValueError('runtime DATA requires ordinary versionable Windows filenames')
     path = Path(os.path.abspath(expanded))
     for node in [*reversed(path.parents), path]:
-        try:
-            info = node.lstat()
-        except FileNotFoundError:
-            continue
-        if (stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 1024
-                or stat.S_ISREG(info.st_mode) and info.st_nlink != 1):
-            raise ValueError("runtime DATA has an unproven filesystem alias")
+        for attempt in range(3):
+            try:
+                info = node.lstat()
+            except FileNotFoundError:
+                break
+            reparse = getattr(info, "st_file_attributes", 0) & 1024
+            # A concurrent SQLite sidecar unlink can leave lstat observing zero links.
+            # Re-read the pathname; confirmed aliases and persistent zero links refuse.
+            if (stat.S_ISREG(info.st_mode) and info.st_nlink == 0
+                    and not reparse and attempt < 2):
+                continue
+            if (stat.S_ISLNK(info.st_mode) or reparse
+                    or stat.S_ISREG(info.st_mode) and info.st_nlink != 1):
+                raise ValueError("runtime DATA has an unproven filesystem alias")
+            break
     return path
 
 

@@ -68,6 +68,7 @@ ROUTES = (
         "channel": "model-mapping",
         "category": "specific-notifications",
         "sender_dir": "cc-model-refresh",
+        "sender_dir_env": "SCHEDULE_ROUTE_CC_SENDER_DIR",
         "sender_file": "apply.py",
         "entry": "apply-map",
         "desc": "cc proxy: which model each tier maps to",
@@ -77,7 +78,9 @@ ROUTES = (
         "channel": "gateway-model-mapping",
         "category": "specific-notifications",
         "sender_dir": "codexg-model-refresh",
-        "sender_file": "refresh.py",
+        "sender_dir_env": "SCHEDULE_ROUTE_CODEX_SENDER_DIR",
+        "sender_file": "model-refresh.js",
+        "runtime": "node",
         "entry": "notify",
         "desc": "codexg gateway: which model the gateway is pinned to",
     },
@@ -86,6 +89,70 @@ ROUTES = (
 
 class RouteError(RuntimeError):
     pass
+
+
+# Read the current JavaScript sender through its real settings and notify functions.
+_NODE_DRIVER = r"""
+'use strict';
+const path = require('node:path');
+const [, modPath, mode, b64] = process.argv;
+const out = (o) => process.stdout.write(JSON.stringify(o));
+try {
+  const m = require(modPath);
+  const gw = require(path.join(path.dirname(modPath), 'gateway.js'));
+  let fileEnv = {};
+  try { ({ env: fileEnv } = gw.loadEnv()); } catch (e) { /* the sender itself tolerates this too */ }
+  const s = m.settings(fileEnv);
+  if (mode === 'stream') { out({ stream: s.stream }); }
+  else {
+    const log = [];
+    const ok = m.notify(Buffer.from(b64 || '', 'base64').toString('utf8'), s, (x) => log.push(String(x)));
+    out({ ok: ok === true, stream: s.stream, log });
+  }
+} catch (e) { out({ error: String((e && e.stack) || e) }); process.exit(2); }
+"""
+_NODE_TIMEOUT_S = 90
+
+
+class NodeSender(object):
+    """A JS sender seen through the two attributes _drive() uses: STREAM and notify(text)."""
+
+    def __init__(self, path: str):
+        if not os.path.isfile(path):
+            raise RouteError("no sender at %s" % path)
+        self.path = path
+        self.STREAM = self._run("stream").get("stream")
+
+    def _run(self, mode: str, text: str = "") -> dict:
+        import base64
+        try:
+            proc = subprocess.run(
+                ["node", "-e", _NODE_DRIVER, self.path, mode,
+                 base64.b64encode(text.encode("utf-8")).decode("ascii")],
+                cwd=os.path.dirname(os.path.dirname(self.path)), stdin=subprocess.DEVNULL,
+                capture_output=True, timeout=_NODE_TIMEOUT_S, encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            raise RouteError("node is not on PATH, so the JS sender at %s cannot run" % self.path)
+        except subprocess.TimeoutExpired:
+            raise RouteError("the JS sender at %s did not finish in %ds" % (self.path, _NODE_TIMEOUT_S))
+        try:
+            result = json.loads(proc.stdout or "")
+        except ValueError:
+            raise RouteError("the JS sender driver printed no JSON (exit %s): %s"
+                             % (proc.returncode, (proc.stderr or proc.stdout or "").strip()[:500]))
+        if not isinstance(result, dict):
+            raise RouteError("the JS sender driver must return a JSON object")
+        if proc.returncode or "error" in result:
+            raise RouteError("the JS sender driver failed (exit %s): %s"
+                             % (proc.returncode, result.get("error") or proc.stderr.strip()[:500]))
+        return result
+
+    def notify(self, text: str):
+        result = self._run("send", text)
+        if result.get("ok") is not True:
+            raise RouteError("the JS sender's notify() did not deliver: %s"
+                             % "; ".join(result.get("log") or ["no log"]))
+        return True
 
 
 def route(stream: str) -> dict:
@@ -183,7 +250,7 @@ def _drive(sender, row: dict, marker: str) -> None:
         changed = sender.apply_map(
             forced, reason,
             writer=written.append,
-            reloader=lambda: (True, "未执行：路由核验"),
+            reloader=lambda allow_drop=(): (True, "未执行：路由核验"),
         )
         if not changed:
             raise RouteError("apply_map reported no change, so it never reached its notifier")
@@ -197,10 +264,19 @@ def _drive(sender, row: dict, marker: str) -> None:
 
 def verify_one(row: dict, attempts: int = 4, pause: float = 1.5) -> dict:
     rule = _language_rule()
-    sender_dir = os.path.expanduser(row["sender_dir"])
-    if not os.path.isabs(sender_dir):
-        sender_dir = os.path.join(_scripts_root(), sender_dir)
-    sender = load_sender(sender_dir, row["sender_file"])
+    selected = os.environ.get(row.get("sender_dir_env", ""))
+    if selected is not None:
+        sender_dir = os.path.expanduser(selected)
+        if not sender_dir or not os.path.isabs(sender_dir):
+            raise RouteError("%s must name an absolute sender directory" % row["sender_dir_env"])
+    else:
+        sender_dir = os.path.expanduser(row["sender_dir"])
+        if not os.path.isabs(sender_dir):
+            sender_dir = os.path.join(_scripts_root(), sender_dir)
+    if row.get("runtime") == "node":
+        sender = NodeSender(os.path.join(sender_dir, row["sender_file"]))
+    else:
+        sender = load_sender(sender_dir, row["sender_file"])
     channel_id, token = _resolve_channel(row)
 
     marker = "route-check-%s" % uuid.uuid4().hex[:12]

@@ -93,6 +93,28 @@ category when needed, and refuses duplicate names rather than guessing. It never
 token or webhook URLs. Notification-only streams use the registry's canonical bot token and need no
 additional webhook secret.
 
+Provisioning a channel verifies the relay route. To verify a sender migration, run
+`scripts/verify_model_mapping_route.py`: it calls the configured sender and reads back the message
+from that notification type's own channel. This command sends real notifications. It checks the
+configured language rule before sending; a missing rule fails without delivery.
+
+Set `SCHEDULE_ROUTE_SCRIPTS_DIR` to the absolute directory containing `notification_language.py`.
+For source installations, set `SCHEDULE_ROUTE_CC_SENDER_DIR` to the absolute calibration directory
+containing `apply.py`, and `SCHEDULE_ROUTE_CODEX_SENDER_DIR` to the absolute source directory
+containing `model-refresh.js` and `gateway.js`. Without an override, sender directories resolve
+relative to `SCHEDULE_ROUTE_SCRIPTS_DIR` using the verifier's `ROUTES` table. A supplied override
+must be absolute; an empty or invalid override fails before delivery.
+
+The Python apply-map probe replaces only the configuration writer and proxy reloader. The
+JavaScript probe runs the sender's real `settings()` and `notify()` in a separate Node process.
+Neither changes the model selection. A `notify` probe supplies its own message, so it proves the
+transport and channel binding; sender wording still needs tests of the sender's message functions.
+Each sender runs separately so modules with the same name cannot share imported state.
+
+Notification bodies follow the configured language rule. Model identifiers and quoted error text
+remain verbatim. Callers should return delivery success or failure and use the relay's base64 text
+option for multiline messages that need to cross Windows command arguments.
+
 ## digest.py, the one daily 当日总结
 
 One daily task aggregates every *installed* skill's section into a single summary.

@@ -1,0 +1,184 @@
+{
+  "schema_version": 1,
+  "tool": "schedule-reminder",
+  "layout": "separate_companion",
+  "max_bytes": 134217728,
+  "budget_policy": "A 128 MiB working-tree review threshold, excluding Git administration. A threshold breach never authorizes deletion of tasks, receipts, configuration or recovery evidence.",
+  "scope": "Paths are relative to the explicitly selected PRIVATE repository root. Root-level state, digest and run paths cover retained installations; current defaults use the data directory. Unlisted integration artifacts require their producer's review and are not implicitly retained.",
+  "protected_paths": ["registry.json", "routes.json", "data/db.sqlite3*", "data/readiness.json", "state/**", "data/state/**", "agent-runs/**", "data/agent-runs/**"],
+  "artifacts": [
+    {
+      "artifact_id": "registry",
+      "path_pattern": "registry.json",
+      "purpose": "Active relay, ingest and command configuration, including private credentials.",
+      "schema": "skills/schedule-reminder/reference/agent-center.md and scripts/relay.py.",
+      "producer": "agent_center_admin.py and reviewed operator configuration.",
+      "consumer_or_final_deliverable": "Relay delivery, inbound polling and registered commands.",
+      "rebuild_or_restore": "Restore the selected private configuration and validate live credentials separately.",
+      "retention_rule": {"class": "core", "rule": "Keep the active configuration and versions needed to interpret unresolved deliveries; retain history in PRIVATE storage."}
+    },
+    {
+      "artifact_id": "external-route-configuration",
+      "path_pattern": "routes.json",
+      "purpose": "Routing configuration retained for installed integrations.",
+      "schema": "The installed route consumer owns this schema; this source does not validate its contents.",
+      "producer": "Reviewed integration configuration.",
+      "consumer_or_final_deliverable": "The installed routing integration and operator recovery.",
+      "rebuild_or_restore": "Restore the approved private version; confirm the consuming integration before changing it.",
+      "retention_rule": {"class": "core", "rule": "Preserve until consumer and recovery dependencies have been reviewed."}
+    },
+    {
+      "artifact_id": "database",
+      "path_pattern": "data/db.sqlite3*",
+      "purpose": "Durable tasks, alarms, state transitions, deduplication identities and delivery records, including SQLite sidecars.",
+      "schema": "scripts/store.py and reference/contract.md.",
+      "producer": "reminder.py and store.py.",
+      "consumer_or_final_deliverable": "The stable reminder CLI and scheduled workers.",
+      "rebuild_or_restore": "Use SQLite's backup API or a cold checkpointed snapshot; do not restore a live WAL database by copying only its main file.",
+      "retention_rule": {"class": "core", "rule": "Retain current state and required audit history. Remove sidecars only through SQLite or after a verified cold shutdown."}
+    },
+    {
+      "artifact_id": "readiness",
+      "path_pattern": "data/readiness.json",
+      "purpose": "Most recent worker identity and measured delivery receipts.",
+      "schema": "scripts/capabilities.py readiness schema version 1.",
+      "producer": "scheduler_worker.py after confirmed delivery.",
+      "consumer_or_final_deliverable": "reminder.py health and installation readiness.",
+      "rebuild_or_restore": "A real successful worker delivery regenerates evidence; copied or synthetic receipts cannot establish external readiness.",
+      "retention_rule": {"class": "core", "rule": "Retain the latest measured evidence; freshness is evaluated by health, independently of storage retention."}
+    },
+    {
+      "artifact_id": "current-inbound-state",
+      "path_pattern": "data/state/**",
+      "purpose": "Cursors, inbox projections, reaction identities, durable inbound actions and ingest diagnostics.",
+      "schema": "scripts/ingest.py, inbound.py and ingest_tick.py.",
+      "producer": "Ingest and dispatch workers.",
+      "consumer_or_final_deliverable": "Replay-safe inbound delivery and operator diagnosis.",
+      "rebuild_or_restore": "Restore cursors and durable action records together with the task store; do not reset them as a cache cleanup.",
+      "retention_rule": {"class": "core", "rule": "Keep unresolved records, current cursors and deduplication identities. Retire diagnostics only after extracting necessary evidence and proving no active writer or recovery dependency."}
+    },
+    {
+      "artifact_id": "retained-inbound-state",
+      "path_pattern": "state/**",
+      "purpose": "Inbound state retained by earlier or explicitly configured installations.",
+      "schema": "The installed ingest consumer; current source formats are documented by scripts/ingest.py and inbound.py.",
+      "producer": "Installed ingest and dispatch workers.",
+      "consumer_or_final_deliverable": "Installed inbound consumers and migration recovery.",
+      "rebuild_or_restore": "Resolve the installed consumer's state path before restoration or migration; directory age does not establish inactivity.",
+      "retention_rule": {"class": "core", "rule": "Preserve active cursors and action identities until migration is verified and replay dependencies are reconciled."}
+    },
+    {
+      "artifact_id": "current-work-records",
+      "path_pattern": "data/agent-runs/**",
+      "purpose": "Durable requests, attempt results, event history, process identity and verification evidence for queued work.",
+      "schema": "scripts/agent_task.py, agent_tick.py and agent_run.py.",
+      "producer": "The work queue and agent worker.",
+      "consumer_or_final_deliverable": "Work recovery, verification and requested final deliverables.",
+      "rebuild_or_restore": "Restore with the matching task-store state and validate process identity before recovery.",
+      "retention_rule": {"class": "core", "rule": "Keep active and unresolved work. Extract selected results before retiring completed development groups; copied source trees and redundant drafts gain no retention exception."}
+    },
+    {
+      "artifact_id": "retained-work-records",
+      "path_pattern": "agent-runs/**",
+      "purpose": "Work records retained by earlier installations or selected with AGENT_CENTER_RUNS.",
+      "schema": "Installed work consumer; current source uses scripts/agent_task.py and agent_run.py.",
+      "producer": "Installed work queue and agent worker.",
+      "consumer_or_final_deliverable": "Work recovery and verification.",
+      "rebuild_or_restore": "Restore alongside the corresponding task-store records after checking the installed run-root selection.",
+      "retention_rule": {"class": "core", "rule": "Keep active and unresolved work; review completed groups for dependency-free retirement after preserving selected results."}
+    },
+    {
+      "artifact_id": "digest",
+      "path_pattern": "data/digest.json",
+      "purpose": "Configured daily summary contributors.",
+      "schema": "scripts/digest.py contributor registry.",
+      "producer": "digest.py registration commands.",
+      "consumer_or_final_deliverable": "Daily summary generation.",
+      "rebuild_or_restore": "Restore approved contributor commands and configuration from PRIVATE history.",
+      "retention_rule": {"class": "core", "rule": "Retain the active contributor registry; remove obsolete contributors through reviewed configuration changes."}
+    },
+    {
+      "artifact_id": "retained-digest",
+      "path_pattern": "digest.json",
+      "purpose": "Contributor registry retained by an installed or explicitly selected digest path.",
+      "schema": "Installed digest consumer; current source accepts AGENT_CENTER_DIGEST.",
+      "producer": "Installed digest registration commands.",
+      "consumer_or_final_deliverable": "Installed daily summary generation.",
+      "rebuild_or_restore": "Restore the approved private registry after checking the installed path selection.",
+      "retention_rule": {"class": "core", "rule": "Keep while selected by an installed consumer or needed for migration recovery."}
+    },
+    {
+      "artifact_id": "synthetic-verification",
+      "path_pattern": "data/verification/**",
+      "purpose": "Disposable synthetic database checks created by the explicit verification utility.",
+      "schema": "scripts/verify_expired_email_active.py.",
+      "producer": "Explicit offline verification runs.",
+      "consumer_or_final_deliverable": "A retained verification result, when requested.",
+      "rebuild_or_restore": "Regenerate with the verification utility in initialized PRIVATE storage.",
+      "retention_rule": {"class": "rebuildable", "rule": "Remove inactive synthetic workspaces after preserving the selected result; never substitute them for live delivery evidence."}
+    },
+    {
+      "artifact_id": "verification-scripts",
+      "path_pattern": "data/verify/**",
+      "purpose": "Temporary scripts used to verify an agent result.",
+      "schema": "scripts/agent_run.py verification command adapter.",
+      "producer": "The agent verification worker.",
+      "consumer_or_final_deliverable": "Agent result verification.",
+      "rebuild_or_restore": "Regenerate from the retained attempt verification contract.",
+      "retention_rule": {"class": "rebuildable", "rule": "Remove only after the verification process has ended and its result is retained."}
+    },
+    {
+      "artifact_id": "companion-readme",
+      "path_pattern": "README.md",
+      "purpose": "Private installation and restoration instructions.",
+      "schema": "Markdown; links to source-owned deployment and storage contracts.",
+      "producer": "Companion maintainer.",
+      "consumer_or_final_deliverable": "Configuration setup and recovery.",
+      "rebuild_or_restore": "Restore the current private installation instructions from companion history.",
+      "retention_rule": {"class": "core", "rule": "Keep one current setup reference; public source owns generic design and policy."}
+    },
+    {
+      "artifact_id": "tracking-rules",
+      "path_pattern": ".gitignore",
+      "purpose": "Private repository tracking exclusions.",
+      "schema": "Git ignore syntax.",
+      "producer": "Companion maintainer.",
+      "consumer_or_final_deliverable": "Versioned PRIVATE runtime storage.",
+      "rebuild_or_restore": "Restore reviewed rules; runtime writers reject ignored durable DATA paths.",
+      "retention_rule": {"class": "core", "rule": "Keep current tracking rules. Transient locks may be ignored only when their durable owners remain versionable."}
+    },
+    {
+      "artifact_id": "sync-diagnostics",
+      "path_pattern": "sync.log",
+      "max_bytes": 1048576,
+      "purpose": "Private configuration synchronization diagnostics.",
+      "schema": "Text produced by the installed synchronization job.",
+      "producer": "Installed companion synchronization job.",
+      "consumer_or_final_deliverable": "Backup failure diagnosis.",
+      "rebuild_or_restore": "Future synchronization runs create new diagnostics; preserve unique unresolved failure evidence first.",
+      "retention_rule": {"class": "rebuildable", "rule": "Review at 1 MiB; retain current diagnostics and unresolved failures, then rotate only after checking the active writer."}
+    },
+    {
+      "artifact_id": "integration-rollback",
+      "path_pattern": "maintenance/**",
+      "max_bytes": 16777216,
+      "purpose": "Temporary source-integration rollback patches and reconciliation evidence.",
+      "schema": "Git binary patches and their recorded hashes; private maintenance records.",
+      "producer": "Reviewed source consolidation.",
+      "consumer_or_final_deliverable": "Integration review and rollback until source reconciliation is complete.",
+      "rebuild_or_restore": "Apply the recorded patch only to its documented base after checking its hash and scope.",
+      "retention_rule": {"class": "retired", "rule": "Keep only while integration or rollback remains unresolved; remove after final verification and explicit maintenance authorization. Do not accumulate a parallel archive of source history."}
+    },
+    {
+      "artifact_id": "pending-retirement",
+      "path_pattern": "retired/**",
+      "max_bytes": 16777216,
+      "purpose": "Temporary holding area for explicitly reviewed inactive development artifacts awaiting authorized removal.",
+      "schema": "Original artifact formats; retain the relocation and inactivity evidence outside the public source tree.",
+      "producer": "Reviewed maintenance relocation.",
+      "consumer_or_final_deliverable": "Final retirement review only.",
+      "rebuild_or_restore": "Synthetic tests are regenerated from tools/make_fixtures.py and the source tests. This directory is not a recovery dependency.",
+      "retention_rule": {"class": "retired", "rule": "Remove after the exact removal action is authorized and inactivity is rechecked. Relocation is not disk reclamation and does not make development outputs core state."}
+    }
+  ]
+}

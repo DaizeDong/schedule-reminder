@@ -106,6 +106,7 @@ triggers, no silent skips.
 - **Deployment:** [`skills/schedule-reminder/reference/deployment.md`](skills/schedule-reminder/reference/deployment.md)
 - **Integration (for downstream skills):** [`skills/schedule-reminder/reference/integration.md`](skills/schedule-reminder/reference/integration.md)
 - **Delivery and work recovery:** [operations.md](skills/schedule-reminder/reference/operations.md).
+- **Source layout and storage retention:** [storage.md](docs/storage.md) and [storage.contract.json](storage.contract.json).
 
 ## Test coverage and evidence
 
