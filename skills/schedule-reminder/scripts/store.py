@@ -40,7 +40,7 @@ except Exception:  # pragma: no cover
 # Versions / contract constants
 # =================================================================================================
 API_VERSION = "1.0.0"          # external CLI/JSON contract version (decoupled from DB user_version)
-SCHEMA_USER_VERSION = 1        # PRAGMA user_version target (additive migrations only)
+SCHEMA_USER_VERSION = 6        # PRAGMA user_version target (additive migrations only)
 RECORD_SCHEMA_VERSION = 1      # per-row schema_version (tolerant forward parsing)
 RECOMMENDED_SQLITE = "3.51.3"  # < this => known WAL-reset multi-writer corruption bug (advisory)
 
@@ -208,6 +208,19 @@ def _connect(db_path=None, *, readonly=False, create=False, immutable=False):
     return conn
 
 
+def admitted_connection(db_path=None, *, readonly=False):
+    """Open existing PRIVATE storage without creating it or migrating its schema."""
+    path = db_path or default_db_path()
+    try:
+        private_data.assert_sqlite_paths(path)
+        private_data.prove_private(path)
+    except PermissionError as error:
+        raise SkillError("ERR_PERMISSION", str(error)) from error
+    except ValueError as error:
+        raise SkillError("ERR_DATA_POLICY", str(error)) from error
+    return _connect(path, readonly=readonly)
+
+
 def _busy_retry(fn):
     """Bounded exponential back-off around transient SQLITE_BUSY/locked."""
     last = None
@@ -293,6 +306,29 @@ CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+CREATE TABLE IF NOT EXISTS agent_operations (
+  item_id TEXT NOT NULL REFERENCES items(id),
+  generation INTEGER NOT NULL,
+  run_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL UNIQUE,
+  checkpoint TEXT NOT NULL,
+  outcome TEXT,
+  pid INTEGER, pstart TEXT,
+  launch_pid INTEGER, launch_pstart TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  started_at TEXT, finished_at TEXT, released_at TEXT,
+  cleanup_state TEXT NOT NULL DEFAULT 'quiescent', cleanup_receipt TEXT,
+  baseline TEXT, baseline_sha256 TEXT, baseline_workspace TEXT,
+  PRIMARY KEY(item_id, generation)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_reservation ON agent_operations(released_at);
+
+-- T15 receipts share this database's owner, connection and transaction discipline.
+-- Payload validation and claim transitions live in notification_receipts.py.
+CREATE TABLE IF NOT EXISTS notification_receipts (
+  event_id TEXT PRIMARY KEY NOT NULL,
+  receipt TEXT NOT NULL
+);
 """
 
 
@@ -303,11 +339,16 @@ def init_db(db_path=None):
     try:
         conn.execute("PRAGMA journal_mode = WAL")  # persists for the file; set once
         conn.executescript(_DDL)
-        cur = conn.execute("PRAGMA user_version")
-        ver = cur.fetchone()[0]
-        if ver < SCHEMA_USER_VERSION:
-            # additive migrations would run here in order; v1 is the base schema above.
-            conn.execute("PRAGMA user_version = %d" % SCHEMA_USER_VERSION)
+        with _Tx(conn):
+            ver = conn.execute("PRAGMA user_version").fetchone()[0]
+            if ver < SCHEMA_USER_VERSION:
+                if ver < 3:
+                    _migrate_agent_operations(conn)
+                    _migrate_work_evidence(conn)
+                from reminder_action_store import migrate
+                migrate(conn)
+                # Operation-only additions; item/event shapes stay v1.
+                conn.execute("PRAGMA user_version = %d" % SCHEMA_USER_VERSION)
         return path
     finally:
         conn.close()
@@ -457,7 +498,7 @@ def add_item(title, *, kind="task", due_at=None, state="pending", priority=0, pr
              description=None, scheduled_at=None, start_at=None, end_at=None, wait_until=None,
              tz=None, recurrence=None, rdate=None, exdate=None, tags=None, project=None,
              relations=None, alarms=None, source=None, idempotency_key=None, ext=None, if_exists="update",
-             actor=None, db_path=None, _id=None):
+             actor=None, db_path=None, _id=None, _creation=None):
     """Create an item. Idempotent on idempotency_key (UPSERT). Returns the item dict."""
     if not title or not str(title).strip():
         raise SkillError("ERR_BAD_INPUT", "title is required")
@@ -489,12 +530,22 @@ def add_item(title, *, kind="task", due_at=None, state="pending", priority=0, pr
     conn = _connect(db_path)
     try:
         with _Tx(conn):
+            if _creation is not None:
+                import creation_guard
+                proposed = _row_to_item(fields)
+                result = creation_guard.prepare(conn, proposed, _creation)
+                if result is not None:
+                    return result
             if idempotency_key:
                 existing = conn.execute(
                     "SELECT * FROM items WHERE idempotency_key = ?", (idempotency_key,)
                 ).fetchone()
                 if existing is not None:
                     if if_exists == "return":
+                        if _creation is not None:
+                            if existing['source'] != source:
+                                raise SkillError('ERR_CONFLICT', 'idempotency key belongs to another source')
+                            return creation_guard.complete(conn, _row_to_item(existing), proposed, _creation, 'reused')
                         return _row_to_item(existing)
                     # idempotent replay: merge ext, refresh mutable fields, keep original id
                     merged_ext = _merge_ext(existing["ext"], ext)
@@ -550,6 +601,8 @@ def add_item(title, *, kind="task", due_at=None, state="pending", priority=0, pr
             conn.execute("INSERT INTO items(%s) VALUES(%s)" % (cols, ph),
                          tuple(fields[c] for c in ITEM_COLUMNS))
             _append_event(conn, item_id, actor or source, "created", to_state=state)
+            if _creation is not None:
+                return creation_guard.complete(conn, _row_to_item(_get_raw(conn, item_id)), proposed, _creation, 'created')
             return _row_to_item(_get_raw(conn, item_id))
     finally:
         conn.close()
@@ -572,6 +625,119 @@ def _merge_ext(existing_json, new_ext):
         if isinstance(new_ext, dict):
             base.update(new_ext)
     return json.dumps(base, ensure_ascii=False) if base else None
+
+
+def ensure_item(title, *, reuse_id=None, expected_revision=None, note=None, distinct_reason=None, **fields):
+    """Create or reuse an obligation; all review and writes share one owner transaction."""
+    options = dict(reuse_id=reuse_id, expected_revision=expected_revision, note=note, distinct_reason=distinct_reason)
+    for key, value in options.items():
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise SkillError('ERR_BAD_INPUT', '%s must be a nonempty string' % key)
+    if reuse_id and distinct_reason:
+        raise SkillError('ERR_BAD_INPUT', 'reuse_id and distinct_reason are mutually exclusive')
+    return add_item(title, if_exists="return", _creation=options, **fields)
+
+
+def creation_preflight(title, *, db_path=None, **fields):
+    """Read cross-source candidates without changing records or initializing storage."""
+    import creation_guard
+    path = db_path or default_db_path()
+    if not os.path.isfile(path):
+        raise SkillError('ERR_NOT_INITIALIZED', 'initialize the owner before creation preflight')
+    proposed = creation_guard.candidate(title, **fields)
+    conn = admitted_connection(path, readonly=True)
+    try:
+        return creation_guard.inspect(conn, proposed)
+    finally:
+        conn.close()
+
+
+def _dispatch_note_identity(item_id, note, request_key):
+    import hashlib
+    if any(not isinstance(value, str) or not value.strip() for value in (item_id, note, request_key)):
+        raise SkillError('ERR_BAD_INPUT', 'item_id, note and request_key must be nonempty strings')
+    return json.dumps({'item_id': item_id,
+                       'note_sha256': hashlib.sha256(note.strip().encode('utf-8')).hexdigest()},
+                      sort_keys=True)
+
+
+def dispatch_note_receipt(item_id, note, request_key, *, db_path=None):
+    """Recover an exact follow-up receipt without appending or reopening its target."""
+    identity = _dispatch_note_identity(item_id, note, request_key)
+    conn = admitted_connection(db_path, readonly=True)
+    try:
+        conn.execute('BEGIN')
+        seen = conn.execute('SELECT value FROM meta WHERE key=?',
+                            ('dispatch-note:' + request_key,)).fetchone()
+        if seen is None:
+            return None
+        if seen['value'] != identity:
+            raise SkillError('ERR_CONFLICT', 'follow-up identity conflict')
+        item = _row_to_item(_get_raw(conn, item_id))
+        if item is None:
+            raise SkillError('ERR_CONFLICT', 'original follow-up result is unavailable')
+        return item
+    finally:
+        conn.close()
+
+
+def creation_receipt_item(source, idempotency_key, *, db_path=None):
+    """Read a durable creation result, including a cross-source reused obligation."""
+    import creation_guard
+    if any(not isinstance(value, str) or not value.strip() for value in (source, idempotency_key)):
+        raise SkillError('ERR_BAD_INPUT', 'source and idempotency_key must be nonempty strings')
+    key = 'creation:' + creation_guard._digest([source, idempotency_key])
+    conn = admitted_connection(db_path, readonly=True)
+    try:
+        conn.execute('BEGIN')
+        row = conn.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()
+        if row is not None:
+            try:
+                receipt = json.loads(row['value'])
+            except (TypeError, ValueError) as error:
+                raise SkillError('ERR_CONFLICT', 'creation receipt is invalid') from error
+            if (not isinstance(receipt, dict) or set(receipt) != {'item_id', 'request_digest'}
+                    or not isinstance(receipt['item_id'], str) or not receipt['item_id'].strip()
+                    or not isinstance(receipt['request_digest'], str) or len(receipt['request_digest']) != 64
+                    or any(character not in '0123456789abcdef' for character in receipt['request_digest'])):
+                raise SkillError('ERR_CONFLICT', 'creation receipt is invalid')
+            item = _row_to_item(_get_raw(conn, receipt['item_id']))
+            if item is None:
+                raise SkillError('ERR_CONFLICT', 'original creation result is unavailable')
+            return item
+        # Older add/return producers recorded the identity on the item itself.
+        item = _row_to_item(conn.execute('SELECT * FROM items WHERE idempotency_key=?',
+                                         (idempotency_key,)).fetchone())
+        if item is not None and item['source'] != source:
+            raise SkillError('ERR_CONFLICT', 'idempotency key belongs to another source')
+        return item
+    finally:
+        conn.close()
+
+
+def append_dispatch_note(item_id, note, request_key, *, db_path=None):
+    """Append one explicitly linked follow-up, without overwriting prior descriptions."""
+    identity = _dispatch_note_identity(item_id, note, request_key)
+    conn = _connect(db_path)
+    try:
+        with _Tx(conn):
+            key = 'dispatch-note:' + request_key
+            seen = conn.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()
+            if seen:
+                if seen['value'] != identity:
+                    raise SkillError('ERR_CONFLICT', 'follow-up identity conflict')
+                return _row_to_item(_get_raw(conn, item_id))
+            item = _get_raw(conn, item_id)
+            if item is None or item['state'] not in ACTIVE_STATES:
+                raise SkillError('ERR_CONFLICT', 'follow-up target is no longer active')
+            description = ((item['description'] or '').rstrip() + '\n\n补充：' + note.strip()).strip()
+            conn.execute('UPDATE items SET description=?,updated_at=? WHERE id=?',
+                         (description, to_rfc3339(now_utc()), item_id))
+            conn.execute('INSERT INTO meta(key,value) VALUES (?,?)', (key, identity))
+            _append_event(conn, item_id, 'agent-center-dispatch', 'updated')
+            return _row_to_item(_get_raw(conn, item_id))
+    finally:
+        conn.close()
 
 
 # fields a generic update may set (state changes MUST go through transition())
@@ -625,84 +791,100 @@ def update_item(item_id, *, idempotency_key=None, actor=None, ext=None, db_path=
         conn.close()
 
 
+def _transition(conn, item_id, to_state, *, expect_state=None, reason=None, actor=None,
+                progress=None, ext=None, blocker_id=None):
+    """Apply a validated transition within the owner's current transaction."""
+    _validate_state(to_state)
+    row = _get_raw(conn, item_id)
+    if row is None:
+        raise SkillError("ERR_NOT_FOUND", "no item with id %s" % item_id, id=item_id)
+    cur_state = row["state"]
+    if expect_state is not None and cur_state != expect_state:
+        raise SkillError("ERR_STATE_CONFLICT",
+                         "expected state %s but found %s" % (expect_state, cur_state),
+                         id=item_id, current=cur_state, expected=expect_state)
+    if to_state == cur_state and ext is None and not blocker_id:
+        # Preserve the existing no-op contract when no metadata patch was requested.
+        return _row_to_item(row)
+    allowed = TRANSITIONS.get(cur_state, set())
+    if to_state != cur_state and to_state not in allowed:
+        raise SkillError("ERR_ILLEGAL_TRANSITION",
+                         "cannot move %s -> %s" % (cur_state, to_state),
+                         id=item_id, current=cur_state, to=to_state,
+                         allowed=sorted(allowed))
+    now = to_rfc3339(now_utc())
+    relations = json.loads(row["relations"]) if row["relations"] else None
+
+    new_fields = {"state": to_state, "updated_at": now}
+    if blocker_id:
+        relations = list(relations or [])
+        relations.append({"type": "depends-on", "target_id": blocker_id})
+        new_fields["relations"] = _dump_json(relations)
+    if ext is not None:
+        if not isinstance(ext, dict):
+            raise SkillError("ERR_BAD_JSON", "ext must be a JSON object")
+        new_fields["ext"] = _merge_ext(row["ext"], ext)
+    if progress is not None:
+        new_fields["progress"] = _validate_progress(progress)
+
+    if to_state == "done":
+        ok, unmet = _deps_satisfied(conn, relations)
+        if not ok:
+            raise SkillError("ERR_DEPENDENCY_UNMET",
+                             "depends-on not done: %s" % unmet, id=item_id, unmet=unmet)
+        new_fields["end_at"] = now
+        new_fields["progress"] = 100
+    elif to_state == "cancelled":
+        new_fields["end_at"] = now
+    elif to_state == "blocked":
+        _, unmet = _deps_satisfied(conn, relations)
+        reason = str(reason).strip() if reason is not None else None
+        if not unmet and not reason and not str(row["block_reason"] or "").strip():
+            raise SkillError("ERR_BLOCK_REASON_REQUIRED",
+                             "blocked requires an unmet blocker or a reason", id=item_id)
+        if reason:
+            new_fields["block_reason"] = reason
+    elif to_state == "pending":
+        # reopen from terminal: clear end_at + delivery bookkeeping
+        if cur_state in TERMINAL_STATES:
+            new_fields["end_at"] = None
+            new_fields["claimed_at"] = None
+
+    # Revoking an item also revokes its current generation, retaining the writer reservation.
+    op = _operation(conn, item_id)
+    if op and op["outcome"] is None and to_state != "doing":
+        outcome = "cancelled" if to_state == "cancelled" else "interrupted"
+        conn.execute("UPDATE agent_operations SET outcome=?, checkpoint=?, finished_at=?, "
+                     "updated_at=? WHERE item_id=? AND generation=?",
+                     (outcome, outcome, now, now, item_id, op["generation"]))
+        new_fields["ext"] = _merge_ext(new_fields.get("ext", row["ext"]), {_EXEC + "state": outcome})
+    sets = ", ".join("%s=?" % k for k in new_fields)
+    vals = list(new_fields.values()) + [item_id, cur_state]
+    cur = conn.execute(
+        "UPDATE items SET %s WHERE id=? AND state=?" % sets, tuple(vals)
+    )
+    if cur.rowcount == 0:  # CAS lost: state changed under us
+        fresh = _get_raw(conn, item_id)
+        raise SkillError("ERR_STATE_CONFLICT", "state changed concurrently",
+                         id=item_id, current=fresh["state"] if fresh else None)
+    if blocker_id:
+        _append_event(conn, item_id, actor, "updated", payload={"fields": ["relations"]})
+    if to_state != cur_state or ext is not None:
+        _append_event(conn, item_id, actor, "status_change",
+                      from_state=cur_state, to_state=to_state,
+                      payload={"reason": reason} if reason else None)
+    return _row_to_item(_get_raw(conn, item_id))
+
+
 def transition(item_id, to_state, *, expect_state=None, reason=None, actor=None,
                progress=None, ext=None, blocker_id=None, db_path=None):
-    """Atomically change state and optional ext fields with invariants and optimistic CAS."""
-    _validate_state(to_state)
+    """Atomically change state and metadata with invariants and optimistic CAS."""
     conn = _connect(db_path)
     try:
         with _Tx(conn):
-            row = _get_raw(conn, item_id)
-            if row is None:
-                raise SkillError("ERR_NOT_FOUND", "no item with id %s" % item_id, id=item_id)
-            cur_state = row["state"]
-            if expect_state is not None and cur_state != expect_state:
-                raise SkillError("ERR_STATE_CONFLICT",
-                                 "expected state %s but found %s" % (expect_state, cur_state),
-                                 id=item_id, current=cur_state, expected=expect_state)
-            if to_state == cur_state and ext is None and not blocker_id:
-                # Preserve the existing no-op contract when no metadata patch was requested.
-                return _row_to_item(row)
-            allowed = TRANSITIONS.get(cur_state, set())
-            if to_state != cur_state and to_state not in allowed:
-                raise SkillError("ERR_ILLEGAL_TRANSITION",
-                                 "cannot move %s -> %s" % (cur_state, to_state),
-                                 id=item_id, current=cur_state, to=to_state,
-                                 allowed=sorted(allowed))
-            now = to_rfc3339(now_utc())
-            relations = json.loads(row["relations"]) if row["relations"] else None
-
-            new_fields = {"state": to_state, "updated_at": now}
-            if blocker_id:
-                relations = list(relations or [])
-                relations.append({"type": "depends-on", "target_id": blocker_id})
-                new_fields["relations"] = _dump_json(relations)
-            if ext is not None:
-                if not isinstance(ext, dict):
-                    raise SkillError("ERR_BAD_JSON", "ext must be a JSON object")
-                new_fields["ext"] = _merge_ext(row["ext"], ext)
-            if progress is not None:
-                new_fields["progress"] = _validate_progress(progress)
-
-            if to_state == "done":
-                ok, unmet = _deps_satisfied(conn, relations)
-                if not ok:
-                    raise SkillError("ERR_DEPENDENCY_UNMET",
-                                     "depends-on not done: %s" % unmet, id=item_id, unmet=unmet)
-                new_fields["end_at"] = now
-                new_fields["progress"] = 100
-            elif to_state == "cancelled":
-                new_fields["end_at"] = now
-            elif to_state == "blocked":
-                _, unmet = _deps_satisfied(conn, relations)
-                reason = str(reason).strip() if reason is not None else None
-                if not unmet and not reason and not str(row["block_reason"] or "").strip():
-                    raise SkillError("ERR_BLOCK_REASON_REQUIRED",
-                                     "blocked requires an unmet blocker or a reason", id=item_id)
-                if reason:
-                    new_fields["block_reason"] = reason
-            elif to_state == "pending":
-                # reopen from terminal: clear end_at + delivery bookkeeping
-                if cur_state in TERMINAL_STATES:
-                    new_fields["end_at"] = None
-                    new_fields["claimed_at"] = None
-
-            sets = ", ".join("%s=?" % k for k in new_fields)
-            vals = list(new_fields.values()) + [item_id, cur_state]
-            cur = conn.execute(
-                "UPDATE items SET %s WHERE id=? AND state=?" % sets, tuple(vals)
-            )
-            if cur.rowcount == 0:  # CAS lost: state changed under us
-                fresh = _get_raw(conn, item_id)
-                raise SkillError("ERR_STATE_CONFLICT", "state changed concurrently",
-                                 id=item_id, current=fresh["state"] if fresh else None)
-            if blocker_id:
-                _append_event(conn, item_id, actor, "updated", payload={"fields": ["relations"]})
-            if to_state != cur_state or ext is not None:
-                _append_event(conn, item_id, actor, "status_change",
-                              from_state=cur_state, to_state=to_state,
-                              payload={"reason": reason} if reason else None)
-            return _row_to_item(_get_raw(conn, item_id))
+            return _transition(conn, item_id, to_state, expect_state=expect_state,
+                               reason=reason, actor=actor, progress=progress, ext=ext,
+                               blocker_id=blocker_id)
     finally:
         conn.close()
 
@@ -1383,3 +1565,322 @@ def health(*, db_path=None, check_task=False, capabilities=None):
         out["task_ok"] = all(row['status'] == 'ready' for name, row in out['readiness']['capabilities'].items()
                              if row['selected'] and name != 'store')
     return out
+
+
+# Agent work operations use the existing transaction and event stream. The reservation remains
+# held after a terminal verdict until the runner (or identity-aware reaper) confirms quiescence.
+_EXEC = "x_agent_exec_"
+_WORK_SOURCE = "agent-center:work"
+
+
+def _migrate_agent_operations(conn):
+    """Preserve old running orders as occupied generations, never as queued work."""
+    for row in conn.execute("SELECT * FROM items WHERE source=?", (_WORK_SOURCE,)).fetchall():
+        ext = _row_to_item(row).get("ext") or {}
+        if row["state"] != "doing" and ext.get(_EXEC + "state") != "running":
+            continue
+        if _operation(conn, row["id"]):
+            continue
+        now, run_id, attempt_id = to_rfc3339(now_utc()), uuid7(), uuid7()
+        outcome = None if row["state"] == "doing" else (
+            "cancelled" if row["state"] == "cancelled" else "interrupted")
+        conn.execute("INSERT INTO agent_operations(item_id,generation,run_id,attempt_id,checkpoint,"
+                     "pid,pstart,created_at,updated_at,outcome) VALUES(?,1,?,?,?,?,?,?,?,?)",
+                     (row["id"], run_id, attempt_id, "legacy_running", ext.get(_EXEC + "pid"),
+                      str(ext[_EXEC + "pstart"]) if ext.get(_EXEC + "pstart") is not None else None,
+                      row["created_at"], now, outcome))
+        ext.update({_EXEC + "generation": 1, _EXEC + "run_id": run_id,
+                    _EXEC + "attempt_id": attempt_id})
+        conn.execute("UPDATE items SET ext=? WHERE id=?", (_dump_json(ext), row["id"]))
+        _append_event(conn, row["id"], "migration", "work_migrated",
+                      payload={"generation": 1, "run_id": run_id, "attempt_id": attempt_id})
+
+
+def _operation(conn, item_id, generation=None):
+    if generation is None:
+        row = conn.execute("SELECT * FROM agent_operations WHERE item_id=? "
+                           "ORDER BY generation DESC LIMIT 1", (item_id,)).fetchone()
+    else:
+        row = conn.execute("SELECT * FROM agent_operations WHERE item_id=? AND generation=?",
+                           (item_id, generation)).fetchone()
+    return dict(row) if row else None
+
+
+def _migrate_work_evidence(conn):
+    """Old started reservations have no descendant-cleanup evidence; never infer it from PID."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_operations)")}
+    for name, definition in (
+            ("cleanup_state", "TEXT NOT NULL DEFAULT 'quiescent'"),
+            ("cleanup_receipt", "TEXT"), ("baseline", "TEXT"),
+            ("baseline_sha256", "TEXT"), ("baseline_workspace", "TEXT")):
+        if name not in columns:
+            conn.execute("ALTER TABLE agent_operations ADD COLUMN " + name + " " + definition)
+    conn.execute("UPDATE agent_operations SET cleanup_state='unknown', cleanup_receipt=? "
+                 "WHERE released_at IS NULL AND (started_at IS NOT NULL OR pid IS NOT NULL "
+                 "OR checkpoint='legacy_running')",
+                 (_dump_json({"reason": "migration: no cleanup receipt; manual reconciliation required"}),))
+
+
+def work_operation(item_id, *, db_path=None):
+    conn = admitted_connection(db_path, readonly=True)
+    try:
+        return _operation(conn, item_id)
+    finally:
+        conn.close()
+
+
+def work_reservations(*, db_path=None):
+    conn = admitted_connection(db_path, readonly=True)
+    try:
+        return [dict(row) for row in conn.execute(
+            "SELECT * FROM agent_operations WHERE released_at IS NULL")]
+    finally:
+        conn.close()
+
+
+def claim_work(item_id, *, run_id=None, actor=None, db_path=None):
+    """Claim one queued item and the serial writer slot in one transaction; no lease replay."""
+    conn = _connect(db_path)
+    try:
+        with _Tx(conn):
+            row = _get_raw(conn, item_id)
+            if row is None or row["source"] != _WORK_SOURCE or row["state"] != "pending":
+                return None
+            ext = _row_to_item(row).get("ext") or {}
+            if ext.get(_EXEC + "state") != "queued":
+                return None
+            if conn.execute("SELECT 1 FROM agent_operations WHERE released_at IS NULL LIMIT 1").fetchone():
+                return None
+            # Old runners have no operation row. They still reserve the single writer slot.
+            for other in conn.execute("SELECT id,state,ext FROM items WHERE source=? "
+                                      "AND id NOT IN (SELECT item_id FROM agent_operations)",
+                                      (_WORK_SOURCE,)):
+                other_ext = json.loads(other["ext"] or "{}")
+                if other["state"] == "doing" or (other["state"] in ACTIVE_STATES and
+                        other_ext.get(_EXEC + "state") in ("running", "stop_pending", "reconcile")):
+                    return None
+            previous = _operation(conn, item_id)
+            generation = previous["generation"] + 1 if previous else 1
+            now, attempt_id = to_rfc3339(now_utc()), uuid7()
+            run_id = run_id or uuid7()
+            conn.execute("INSERT INTO agent_operations(item_id,generation,run_id,attempt_id,"
+                         "checkpoint,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                         (item_id, generation, run_id, attempt_id, "claimed", now, now))
+            ext.update({_EXEC + "state": "running", _EXEC + "generation": generation,
+                        _EXEC + "run_id": run_id, _EXEC + "attempt_id": attempt_id,
+                        _EXEC + "pid": None, _EXEC + "pstart": None})
+            conn.execute("UPDATE items SET state='doing',ext=?,updated_at=? WHERE id=?",
+                         (_dump_json(ext), now, item_id))
+            _append_event(conn, item_id, actor, "status_change", "pending", "doing",
+                          {"generation": generation, "run_id": run_id, "attempt_id": attempt_id,
+                           "checkpoint": "claimed"})
+            return _operation(conn, item_id, generation)
+    finally:
+        conn.close()
+
+
+def request_work_stop(item_id, expected_generation, *, note='', actor=None, db_path=None):
+    """Fence only the generation authorized by a persisted caller; zero means legacy work."""
+    if type(expected_generation) is not int or expected_generation < 0:
+        raise SkillError('ERR_BAD_INPUT', 'expected generation must be a nonnegative integer')
+    conn = _connect(db_path)
+    try:
+        with _Tx(conn):
+            row, op = _get_raw(conn, item_id), _operation(conn, item_id)
+            if (not row or row['source'] != _WORK_SOURCE or row['state'] not in ACTIVE_STATES
+                    or (op['generation'] if op else 0) != expected_generation
+                    or (op and (op['outcome'] is not None or op['released_at'] is not None))):
+                return None
+            ext = _row_to_item(row).get('ext') or {}
+            ext.update({_EXEC + 'state': 'stop_pending', _EXEC + 'note': note[:300]})
+            conn.execute('UPDATE items SET ext=?,updated_at=? WHERE id=?',
+                         (_dump_json(ext), to_rfc3339(now_utc()), item_id))
+            _append_event(conn, item_id, actor, 'work_stop_requested',
+                          payload={'generation': expected_generation, 'note': note[:300]})
+            return _row_to_item(_get_raw(conn, item_id))
+    finally:
+        conn.close()
+
+
+def cancel_work(item_id, expected_generation, *, note='', actor=None, db_path=None):
+    """Finalize the stopped generation without cancelling a replacement after process cleanup."""
+    if type(expected_generation) is not int or expected_generation < 0:
+        raise SkillError('ERR_BAD_INPUT', 'expected generation must be a nonnegative integer')
+    conn = _connect(db_path)
+    try:
+        with _Tx(conn):
+            row, op = _get_raw(conn, item_id), _operation(conn, item_id)
+            if (not row or row['source'] != _WORK_SOURCE or row['state'] not in ACTIVE_STATES
+                    or (op['generation'] if op else 0) != expected_generation
+                    or (op and (op['outcome'] is not None or op['released_at'] is not None))):
+                return None
+            return _transition(conn, item_id, 'cancelled', actor=actor, reason=note or 'stopped',
+                ext={_EXEC + 'state': 'failed', _EXEC + 'note': ('cancelled: ' + note)[:300]})
+    finally:
+        conn.close()
+
+
+def publish_work(item_id, *, actor=None, db_path=None, action_id=None):
+    """Publish only after the full request is durable; cancellation during preparation wins."""
+    conn = _connect(db_path)
+    try:
+        with _Tx(conn):
+            if action_id is not None:
+                receipt = conn.execute('SELECT state,work_item_id FROM work_actions WHERE id=?', (action_id,)).fetchone()
+                if not receipt or receipt['state'] != 'preparing' or receipt['work_item_id'] != item_id:
+                    return None
+            row = _get_raw(conn, item_id)
+            if not row or row["source"] != _WORK_SOURCE or row["state"] != "pending":
+                return None
+            ext = _row_to_item(row).get("ext") or {}
+            if ext.get(_EXEC + "state") != "preparing":
+                return None
+            ext[_EXEC + "state"] = "queued"
+            conn.execute("UPDATE items SET ext=?,updated_at=? WHERE id=?",
+                         (_dump_json(ext), to_rfc3339(now_utc()), item_id))
+            _append_event(conn, item_id, actor, "work_prepared")
+            if action_id is not None:
+                conn.execute("UPDATE work_actions SET state='queued',updated_at=? WHERE id=?",
+                             (to_rfc3339(now_utc()), action_id))
+            return _row_to_item(_get_raw(conn, item_id))
+    finally:
+        conn.close()
+
+
+def advance_work(item_id, generation, action, *, pid=None, pstart=None, checkpoint=None,
+                 outcome=None, note="", fields=None, progress=None, expected=None,
+                 baseline=None, baseline_sha256=None, workspace=None, receipt=None,
+                 actor=None, db_path=None):
+    """Fenced operation updates. A false result means ownership or snapshot was lost.
+
+    start is a one-shot runner handshake. receipt is an idempotent parent acknowledgement and
+    cannot replace a different process identity. reconcile requires the caller's exact snapshot.
+    release requires a quiescent child receipt; a dead runner cannot clear unknown cleanup.
+    """
+    conn = _connect(db_path)
+    try:
+        with _Tx(conn):
+            op = _operation(conn, item_id)
+            row = _get_raw(conn, item_id)
+            if not op or op["generation"] != generation or not row:
+                return False
+            if expected is not None and any(op.get(k) != expected.get(k) for k in
+                    ("generation", "checkpoint", "pid", "pstart", "launch_pid", "launch_pstart",
+                     "outcome", "updated_at", "cleanup_state", "cleanup_receipt")):
+                return False
+            now = to_rfc3339(now_utc())
+            updates, item_fields = {"updated_at": now}, {"updated_at": now}
+            ext = _row_to_item(row).get("ext") or {}
+            if action == "release":
+                if (op["outcome"] is None or op["released_at"] is not None
+                        or op["cleanup_state"] != "quiescent"):
+                    return False
+                updates["released_at"] = now
+            elif action == 'recover_cleanup':
+                if (expected is None or op['outcome'] is None or op['released_at'] is not None
+                        or op['cleanup_state'] not in ('unknown', 'in_flight')):
+                    return False
+                if (not isinstance(receipt, dict) or receipt.get('authority') != 'operator-reviewed'
+                        or not receipt.get('note') or not receipt.get('evidence_sha256')):
+                    raise ValueError('reviewed cleanup evidence is required')
+                updates.update(cleanup_state='quiescent', cleanup_receipt=_dump_json(receipt), released_at=now)
+            elif action == "child_finish":
+                # Cancellation can fence work while its shared process owner is still cleaning.
+                # This receipt cannot change that terminal outcome or reopen the generation.
+                if op["released_at"] is not None or op["cleanup_state"] != "in_flight":
+                    return False
+                if outcome not in ("quiescent", "unknown") or not isinstance(receipt, dict):
+                    raise ValueError("invalid cleanup receipt")
+                updates.update(cleanup_state=outcome, cleanup_receipt=_dump_json(receipt))
+            elif action == 'stop_reconcile':
+                if (expected is None or op['outcome'] is not None or op['checkpoint'] != 'spawning'
+                        or op['started_at'] is not None or op['pid'] is not None or op['launch_pid'] is not None
+                        or row['state'] != 'doing' or ext.get(_EXEC + 'state') != 'stop_pending'):
+                    return False
+                updates.update(outcome='reconcile', checkpoint='reconcile', finished_at=now,
+                               cleanup_state='unknown', cleanup_receipt=_dump_json({'reason': note}))
+                item_fields.update(state='blocked', block_reason=note)
+                ext.update({_EXEC + 'state': 'reconcile', _EXEC + 'note': note[:300]})
+            else:
+                if op["outcome"] is not None or row["state"] != "doing" or ext.get(_EXEC + "state") == "stop_pending":
+                    return False
+                if action == "spawn":
+                    if op["checkpoint"] != "claimed":
+                        return False
+                    updates["checkpoint"] = "spawning"
+                elif action == "child_start":
+                    if not op["started_at"] or op["cleanup_state"] != "quiescent":
+                        return False
+                    updates.update(cleanup_state="in_flight", cleanup_receipt=_dump_json(receipt))
+                elif action == "baseline":
+                    if op["checkpoint"] != "running" or op["baseline"] is not None:
+                        return False
+                    if not isinstance(baseline, str) or not baseline or not baseline_sha256 or not workspace:
+                        raise ValueError("incomplete initial baseline")
+                    updates.update(baseline=baseline, baseline_sha256=baseline_sha256,
+                                   baseline_workspace=workspace)
+                elif action in ("receipt", "start"):
+                    if pid is None or pstart is None:
+                        return False
+                    if action == "start":
+                        if op["checkpoint"] not in ("spawning", "spawned") or op["started_at"]:
+                            return False
+                        updates.update(checkpoint="running", started_at=now, pid=pid, pstart=str(pstart))
+                        ext.update({_EXEC + "pid": pid, _EXEC + "pstart": pstart})
+                    else:
+                        if op["launch_pid"] is not None and (
+                                op["launch_pid"] != pid or op["launch_pstart"] != str(pstart)):
+                            return False
+                        if op["checkpoint"] not in ("spawning", "spawned") and not op["started_at"]:
+                            return False
+                        updates.update(launch_pid=pid, launch_pstart=str(pstart))
+                        if not op["started_at"]:
+                            updates["checkpoint"] = "spawned"
+                            ext.update({_EXEC + "pid": pid, _EXEC + "pstart": pstart})
+                elif action == "checkpoint":
+                    if not op["started_at"]:
+                        return False
+                    updates["checkpoint"] = checkpoint
+                    ext.update(fields or {})
+                    if progress is not None:
+                        item_fields["progress"] = _validate_progress(progress)
+                elif action in ("finish", "reconcile"):
+                    if action == "reconcile":
+                        if expected is None:
+                            return False
+                        outcome = "reconcile"
+                        if op["cleanup_state"] == "quiescent":
+                            updates["released_at"] = now
+                    if outcome == "done":
+                        if (not op["started_at"] or op["checkpoint"] != "reviewing"
+                                or op["cleanup_state"] != "quiescent"):
+                            return False
+                        ok, unmet = _deps_satisfied(conn, _row_to_item(row).get("relations"))
+                        if not ok:
+                            raise SkillError("ERR_DEPENDENCY_UNMET", "depends-on not done", unmet=unmet)
+                        item_fields.update(state="done", progress=100, end_at=now)
+                    else:
+                        item_fields.update(state="blocked", block_reason=note or outcome)
+                    updates.update(outcome=outcome, checkpoint=outcome, finished_at=now)
+                    ext.update({_EXEC + "state": outcome, _EXEC + "note": note[:300]})
+                else:
+                    raise ValueError("unknown work operation action: " + action)
+            item_fields["ext"] = _dump_json(ext)
+            conn.execute("UPDATE agent_operations SET " + ",".join(k + "=?" for k in updates) +
+                         " WHERE item_id=? AND generation=?", (*updates.values(), item_id, generation))
+            conn.execute("UPDATE items SET " + ",".join(k + "=?" for k in item_fields) + " WHERE id=?",
+                         (*item_fields.values(), item_id))
+            _append_event(conn, item_id, actor, "work_" + action, row["state"],
+                          item_fields.get("state", row["state"]),
+                          {"generation": generation, "run_id": op["run_id"],
+                           "attempt_id": op["attempt_id"], "checkpoint": updates.get("checkpoint"),
+                           "outcome": updates.get("outcome"),
+                           "cleanup_state": updates.get("cleanup_state"),
+                           "cleanup_receipt": receipt,
+                           "baseline_sha256": updates.get("baseline_sha256")})
+            if item_fields.get("state", row["state"]) != row["state"]:
+                _append_event(conn, item_id, actor, "status_change", row["state"],
+                              item_fields["state"], {"reason": note, "generation": generation})
+            return _row_to_item(_get_raw(conn, item_id))
+    finally:
+        conn.close()

@@ -8,6 +8,9 @@ import json
 import os
 import subprocess
 import sys
+from contextvars import ContextVar
+
+_NOTIFICATION = ContextVar("work_notification", default=(None, "reconcile"))
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -37,11 +40,27 @@ def _log(msg):
     print(msg, flush=True)
 
 
-def _post(stream, text):
+def _post(stream, text, *, run_id=None, condition='reconcile'):
     try:
-        relay.relay(stream, text[:1900])
+        import notification_client as client
+        if run_id is None:
+            run_id, condition = _NOTIFICATION.get()
+        receipt = client.submit('schedule-reminder', run_id, 'terminal', condition, stream, text,
+                                language='preserve', fallback='big_brother')
+        if receipt['state'] != 'sent':
+            _log('report: ' + client.detail(receipt))
+        return receipt
     except Exception as e:
         _log("relay failed: %s" % type(e).__name__)
+
+
+def _post_owner(stream, text, *, run_id, condition='reconcile'):
+    """Retain the existing two-argument reporting callback seam."""
+    token = _NOTIFICATION.set((run_id, condition))
+    try:
+        return _post(stream, text)
+    finally:
+        _NOTIFICATION.reset(token)
 
 
 def _age_seconds(item):
@@ -68,7 +87,7 @@ def log_tail(item, lines=18):
 
 
 @agent_task.serialized_lifecycle
-def reap(items=None, post=True):
+def _reap_legacy(items=None, post=True):
     """Report every running order whose process is gone. Returns the list of reaped ids."""
     reaped = []
     for it in agent_task.running(items):
@@ -98,26 +117,73 @@ def reap(items=None, post=True):
         reaped.append(it["id"])
         _log("reap: %s dead (pid=%s)" % (it["id"][:8], pid))
         if post:
-            _post(ext.get(agent_task.EXT_STREAM) or "infra", "\n".join([
+            _post_owner(ext.get(agent_task.EXT_STREAM) or "infra", "\n".join([
                 "⛔ 工作单 `%s` 的执行进程没了(pid=%s),**任务没有完成**,不会自动重排。"
                 % (it["id"][:8], pid),
                 "标题:%s" % (it.get("title") or "")[:120],
                 ("日志末尾:\n```\n%s\n```" % tail[:800]) if tail else "(没有日志可读)",
-            ]))
+            ]), run_id='work-order:' + it['id'], condition='reconcile')
     return reaped
 
 
 @agent_task.serialized_lifecycle
-def launch(item):
-    """Spawn only while this order still owns launch; publish its PID under the same lock."""
+def reap(items=None, post=True):
+    """Reconcile dead/ambiguous generations without ever replaying an action.
+
+    A receipt written after our liveness probe makes the snapshot CAS fail. A late child must
+    win its startup CAS before doing work, so revoking an unstarted generation is safe.
+    Parent identity is not descendant cleanup evidence. In-flight/unknown cleanup keeps its
+    reservation after reconciliation; only the shared execution receipt can establish quiescence.
+    """
+    reaped = []
+    reservations = agent_task.store.work_reservations()
+    known = {op["item_id"] for op in reservations}
+    legacy = [it for it in (agent_task.orders() if items is None else items) if it["id"] not in known]
+    reaped.extend(_reap_legacy(legacy, post=post))
+    for op in reservations:
+        it = agent_task.get(op["item_id"])
+        if it and agent_task.exec_state(it) == agent_task.STATE_STOPPING:
+            result = _finish_stop(it, (it.get("ext") or {}).get(agent_task.EXT_NOTE) or "", post=post,
+                                  never_started=op["checkpoint"] == "claimed")
+            if result["stopped"]:
+                reaped.append(it["id"])
+            continue
+        pid = op["pid"] if op["pid"] is not None else op["launch_pid"]
+        pstart = op["pstart"] if op["pid"] is not None else op["launch_pstart"]
+        if pid is not None:
+            alive, actual_start = agent_task.proc_identity(pid)
+            if alive and (pstart is None or actual_start is None or str(actual_start) == str(pstart)):
+                continue
+        if op["outcome"] is not None:
+            agent_task.release(op["item_id"], op["generation"])
+            continue
+        if not op["started_at"] and _age_seconds({"updated_at": op["updated_at"]}) < CLAIM_GRACE_SECONDS:
+            continue
+        note = "runner identity absent; reconcile without replay (pid=%s)" % pid
+        if not agent_task.reconcile(it["id"], op, note):
+            continue
+        reaped.append(it["id"])
+        _log("reconcile: %s pid=%s" % (it["id"][:8], pid))
+        if post:
+            _post_owner((it.get("ext") or {}).get(agent_task.EXT_STREAM) or "infra",
+                  "工作单 `%s` 没有完成；执行状态待核对，不会自动重排。" % it["id"][:8], run_id=op['run_id'])
+    return reaped
+
+
+@agent_task.serialized_lifecycle
+def launch(item, *, generation=None, post_reports=True):
+    """Spawn the runner detached and record (pid, creation time). Returns True on success."""
     item = agent_task.get(item["id"])
-    if (not item or agent_task.exec_state(item) != agent_task.STATE_RUNNING
-            or item.get("state") == "cancelled"):
+    if not item or agent_task.exec_state(item) != agent_task.STATE_RUNNING:
         return False
     ext = item.get("ext") or {}
+    generation = generation if generation is not None else ext.get(agent_task.EXT_GENERATION)
+    if not agent_task.begin_spawn(item["id"], generation):
+        return False
     workspace = ext.get(agent_task.EXT_WORKSPACE) or agent_task.default_workspace()
     if not os.path.isdir(workspace):
-        agent_task.finish(item["id"], False, "workspace missing: %s" % workspace)
+        agent_task.finish(item["id"], False, "workspace missing: %s" % workspace, generation=generation)
+        agent_task.release(item["id"], generation)
         return False
     d = agent_task.run_dir(item, create=True)
     # A pythonw parent would give the child no usable stdout; a real file handle does. Prefer the
@@ -129,25 +195,30 @@ def launch(item):
             exe = cand
     logf = agent_task.private_data.open_for_write(os.path.join(d, "run.log"), "ab")
     try:
-        prepared = agent_task.patch_ext(item["id"], **{agent_task.EXT_LAUNCH: "starting"})
-        if prepared.get("_err"):
-            raise RuntimeError("launch intent could not be persisted")
         flags = 0
         if sys.platform == "win32":
             flags = _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW
         kw = {"creationflags": flags} if sys.platform == "win32" else {"start_new_session": True}
-        p = subprocess.Popen([exe, RUNNER, "--id", item["id"]],
+        argv = [exe, "-B", RUNNER, "--id", item["id"], "--generation", str(generation)]
+        if not post_reports:
+            argv.append("--no-post")
+        p = subprocess.Popen(argv,
                              stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
-                             cwd=workspace, close_fds=True, **kw)
+                             cwd=workspace, close_fds=True,
+                             env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"), **kw)
     except Exception as e:
         logf.close()
-        agent_task.finish(item["id"], False, "could not launch runner: %s" % type(e).__name__)
+        # Popen may have crossed the OS spawn boundary before raising. Revoke only an
+        # unstarted snapshot; a child that already owns the generation must be reconciled alive.
+        op = agent_task.operation(item["id"])
+        if op and op["generation"] == generation and not op["started_at"]:
+            agent_task.reconcile(item["id"], op, "launch outcome unknown: " + type(e).__name__)
         _log("launch failed: %s" % e)
         return False
     logf.close()
     _alive, pstart = agent_task.proc_identity(p.pid)
-    registered = agent_task.record_process(item["id"], p.pid, pstart)
-    if registered.get("_err"):
+    registered = agent_task.record_process(item["id"], p.pid, pstart, generation=generation)
+    if not registered or registered.get("_err"):
         agent_task.request_stop(item["id"], "process identity persistence failed")
         try:
             agent_task.kill_tree(p.pid, pstart)
@@ -165,12 +236,29 @@ def launch(item):
     return True
 
 
-def _finish_stop(item, note="", post=True, never_started=False):
+def _finish_stop(item, note="", post=True, never_started=False, expected_generation=None):
     ext = item.get("ext") or {}
+    op = agent_task.operation(item["id"])
+    if expected_generation is None and op:
+        expected_generation = ext.get(agent_task.EXT_GENERATION)
+    if expected_generation is not None and (op['generation'] if op else 0) != expected_generation:
+        return {'id': item['id'], 'killed': False, 'stopped': False, 'status': 'stale_generation'}
+    run_id = op["run_id"] if op else "work-order:" + item["id"]
+    if (op and not never_started and op['checkpoint'] == 'spawning' and op['started_at'] is None
+            and op['pid'] is None and op['launch_pid'] is None):
+        reason = 'stop revoked an unregistered spawn; process cleanup requires reviewed evidence'
+        reconciled = agent_task.store.advance_work(item['id'], op['generation'], 'stop_reconcile',
+                                                   expected=op, note=reason, actor=agent_task.ACTOR)
+        status = 'reconcile' if reconciled else 'stop_pending'
+        if post:
+            _post_owner(ext.get(agent_task.EXT_STREAM) or 'infra', reason,
+                        run_id=run_id, condition=status)
+        return {'id': item['id'], 'killed': False, 'stopped': False, 'status': status, 'error': reason}
     try:
         killed = False if never_started else agent_task.kill_tree(
             ext.get(agent_task.EXT_PID), ext.get(agent_task.EXT_PSTART))
-        result = agent_task.cancel(item["id"], note or "user asked to stop")
+        result = (agent_task.cancel(item["id"], note or "user asked to stop") if expected_generation is None else
+                  agent_task.cancel(item["id"], note or "user asked to stop", expected_generation=expected_generation))
         if result.get("_err"):
             raise RuntimeError("cancellation persistence failed: " + str(result["_err"]))
     except (RuntimeError, OSError) as error:
@@ -179,66 +267,72 @@ def _finish_stop(item, note="", post=True, never_started=False):
                    "status": "stop_pending", "error": str(error)}
         _log("stop pending %s: %s" % (item["id"][:8], error))
         if post:
-            _post(ext.get(agent_task.EXT_STREAM) or "infra",
-                  "工作单 %s 的停止请求尚未完成：%s" % (item["id"][:8], error))
+            _post_owner(ext.get(agent_task.EXT_STREAM) or "infra",
+                  "工作单 %s 的停止请求尚未完成：%s" % (item["id"][:8], error), run_id=run_id, condition="stop_pending")
         return outcome
     status = "terminated" if killed else "already_exited"
     agent_task.append_event(item, "stopped", killed=killed, status=status)
     _log("stopped %s (%s)" % (item["id"][:8], status))
     if post:
-        _post(ext.get(agent_task.EXT_STREAM) or "infra",
-              "已停止工作单 %s（%s）。" % (item["id"][:8], status))
+        _post_owner(ext.get(agent_task.EXT_STREAM) or "infra",
+              "已停止工作单 %s（%s）。" % (item["id"][:8], status), run_id=run_id, condition="cancelled")
     return {"id": item["id"], "killed": killed, "stopped": True, "status": status}
 
 
 @agent_task.serialized_lifecycle
-def stop(item_id, note="", post=True):
+def stop(item_id, note="", post=True, *, expected_generation=None):
     """Persist stop intent before termination; cancel only once the process is gone."""
     items = agent_task.orders()
     targets = (agent_task.running(items) if item_id == "*" else
                [it for it in items if it["id"] == item_id or it["id"].startswith(item_id)])
     out = []
     for item in targets:
-        was_queued = agent_task.exec_state(item) == agent_task.STATE_QUEUED
-        saved = agent_task.request_stop(item["id"], note)
+        was_queued = agent_task.exec_state(item) in (agent_task.STATE_QUEUED, "preparing")
+        saved = (agent_task.request_stop(item["id"], note) if expected_generation is None else
+                 agent_task.request_stop(item["id"], note, expected_generation=expected_generation))
         if saved.get("_err"):
-            out.append({"id": item["id"], "stopped": False, "status": "stop_pending",
+            status = 'stale_generation' if saved['_err'] == 'ERR_STALE_GENERATION' else 'stop_pending'
+            out.append({"id": item["id"], "stopped": False, "status": status,
                         "error": "stop intent could not be persisted: " + str(saved["_err"])})
             continue
-        current = next((row for row in agent_task.orders() if row["id"] == item["id"]), None)
+        # Bound requests keep the exact PID/start-time snapshot from the stop-intent transaction.
+        # A replacement generation can appear after this point; final cancellation checks again.
+        current = (saved if 'id' in saved else saved.get('item')) if expected_generation is not None else next(
+            (row for row in agent_task.orders() if row["id"] == item["id"]), None)
         if current is None:
             out.append({"id": item["id"], "stopped": False, "status": "stop_pending",
                         "error": "current order could not be read after stop intent"})
             continue
         current_ext = current.get("ext") or {}
+        operation = agent_task.operation(item["id"])
         phase = current_ext.get(agent_task.EXT_LAUNCH)
+        if operation:
+            phase = {"claimed": "claimed", "spawning": "starting"}.get(operation["checkpoint"], phase)
         never_started = (current_ext.get(agent_task.EXT_PID) is None
                          and phase != "starting" and (was_queued or phase == "claimed"))
-        out.append(_finish_stop(current, note, post=post, never_started=never_started))
+        out.append(_finish_stop(current, note, post=post, never_started=never_started,
+                                expected_generation=expected_generation))
     return out
 
 
 @agent_task.serialized_lifecycle
 def run(post=True, reap_only=False):
+    run_id = agent_task.store.uuid7()
     items = agent_task.orders()
     reaped = reap(items, post=post)
-    # Reaping can persist stop intent without completing a terminal transition.
     items = agent_task.orders()
-    live = agent_task.running(items)
+    reservations = agent_task.store.work_reservations()
     q = agent_task.queued(items)
-    if reap_only:
-        return {"reaped": reaped, "running": len(live), "queued": len(q), "launched": None}
     launched = None
-    # Serial on purpose. Two agents editing one working tree concurrently is a corruption source,
-    # not throughput.
-    if not live and q:
-        target = q[0]                       # ids are time ordered, so this is the oldest
-        if agent_task.claim(target["id"]):  # the compare and swap is what makes overlapping ticks safe
-            if launch(agent_task.get(target["id"])):
-                launched = target["id"]
-        else:
-            _log("claim lost for %s (another tick took it)" % target["id"][:8])
-    return {"reaped": reaped, "running": len(live), "queued": len(q), "launched": launched}
+    # The transaction, not this snapshot, enforces serial workspace writes across ticks.
+    if not reap_only and not reservations and not agent_task.running(items) and q:
+        target = q[0]
+        op = agent_task.claim(target["id"], run_id=run_id, return_operation=True)
+        if op and launch(agent_task.get(target["id"]), generation=op["generation"], post_reports=post):
+            launched = target["id"]
+    occupied = {op["item_id"] for op in reservations} | {item["id"] for item in agent_task.running(items)}
+    return {"run_id": run_id, "reaped": reaped, "running": len(occupied),
+            "queued": len(q), "launched": launched}
 
 
 def main():

@@ -141,9 +141,9 @@ polled, routed, and turned into pool mutations or a rendered answer, then confir
 separate bot, no new dependency.
 
 ```
-python ingest.py poll                  # advance each channel's cursor, write <key>.inbox (read-only)
+python ingest.py poll                  # read Discord; persist each channel's cursor and inbox
 python ingest.py list                  # registered streams AND what guild discovery adds
-python dispatch.py --stream <name>     # judge one stream's inbox -> execute -> confirm (--no-post = dry)
+python dispatch.py --stream <name>     # judge one stream's inbox -> execute -> confirm
 python ingest_tick.py                  # scheduled entrypoint: poll -> commands -> dispatch
 ```
 
@@ -203,18 +203,18 @@ judgment chain, and a claimed message never reaches a model.
 - Registering a command is how a tool gets a Discord front end now. Writing a second poller is not.
 
 - **Judge, then execute (two-phase, anti-hallucination).** `dispatch.py` gathers the stream's
-  actionable state (active pool items as `id | title`), asks the **cost-ordered LLM chain**
-  (`llm_chain.py`: **codex → cc → claude**, read-only) for a compact JSON *action plan*
+  actionable state (active pool items as `id | title`), asks the installed `llmcall` judge
+  for a compact JSON *action plan*
   `{actions:[{op:done|snooze|create,...}], confirm}`, then a **deterministic** executor runs it via
   `reminder.py`. The executor only touches ids that were shown to the model, a hallucinated id is
   silently skipped, never acted on.
 - **Per-stream handler** (`STREAMS` in `dispatch.py`): `mail` → reconcile the **email-monitor** task
   pool (done/snooze/create with `source=email-monitor`); `reminders` → done/snooze any active
   reminder; every other stream → generic create-a-followup + confirm (`source=agent-center:<stream>`).
-- **`llm_chain.call_chain(prompt, chain, providers)`** is the reusable primitive for **all** headless
-  judgement calls in this skill: first non-empty answer wins, falls through on failure, deterministic
-  no-op if the whole chain is down. codex uses `-s read-only --skip-git-repo-check` (the judge never
-  needs write access). Use it, don't re-spawn models ad hoc.
+- **Shared model policy.** Judge calls use `llmcall.call(prompt, mode="judge")` through the local
+  `dispatch.call_chain` wrapper. Routing, model, timeout and fallback remain the installed
+  interface's policy. Missing dependencies or unusable responses fail explicitly; this skill
+  does not start provider CLIs or supply a provider ladder.
 - **User vs bot.** `ingest.py` counts a message as a user reply only when it is neither `author.bot`
   nor a `webhook_id` post, so the skill's own relay/digest confirmations never feed back on
   themselves. Bot token: `registry.reader.bot_token`, else the legacy notifier config file.
@@ -238,45 +238,68 @@ without them answers "make X stop" with a to-do titled "make X stop". That is no
 misrouted daily poster survived three objections over four days that way, each one dutifully filed.
 
 ```
-python agent_tick.py                # scheduled: reap dead runs, then launch at most one
-python agent_tick.py --stop <id>    # cancel + kill a tree ('*' = whichever is running)
-python agent_run.py --id <id>       # run one order to a terminal state (--no-post = dry)
-python agent_task.py list           # the queue, no secrets
+python agent_tick.py                    # reconcile exited runs, then launch at most one
+python agent_tick.py --stop <id>        # persist stop intent and verify termination
+python agent_run.py --id <id> --generation <n>  # enter an already-reserved generation
+python agent_task.py list               # active work orders; --all includes terminal orders
+python agent_task.py status             # unreleased reservations and queued item IDs
+python agent_task.py recover-cleanup --id <id> --generation <n> --evidence-file <private-audit.json>
 ```
+
+`--no-post` on dispatch, tick or runner suppresses channel reporting. It still permits model
+calls, command execution and database changes. It is not a dry run. See
+[operations.md](operations.md) for command and installation boundaries.
 
 - **A work order is an ordinary pool item** (`source=agent-center:work`, `due_at` NULL so a running
   order never trips the reminder notifier). `ext` holds only short fixed `x_agent_exec_*` fields;
   the request text, prompts, per-round transcripts and check output are files in a run directory
-  under the Agent Center config dir, because `--ext` arrives as a process argument and Windows caps
-  a command line near 32767 characters.
+  in the PRIVATE companion. Enqueue atomically saves the request and its integrity digest before
+  publishing the item. Reusing an action identity preserves the original request.
+- **Each claim owns a generation.** One transaction reserves the serial writer and publishes the
+  item state, execution metadata and operation generation. The runner must claim that generation
+  before executing; parent registration, checkpoints and completion cannot overwrite a newer
+  generation. Requests and results also carry their run and attempt identities.
 - **Judge, then hand off.** `dispatch` decides between record and world, emits
   `{"op":"agent","request":...}` or `{"op":"stop","id":...}`, and the deterministic executor
-  enqueues or cancels. `agent` carries no item id, so the anti-hallucination rule simply does not
-  apply to it; `stop` is checked against the orders that are actually running. The channel
-  confirmation appends the dispatched ids itself, so a vague model summary cannot hide a live agent.
-- **A round is act, verify, review, decide.** The agent must return a command that exits non-zero
-  when the job is NOT done; `agent_run` executes that command and records the real output. Only a
-  passing check reaches an independent reviewer, on a different provider, which answers DONE or
-  CONTINUE. A task that genuinely cannot be checked by a command falls back to review alone, and the
-  terminal report says so rather than looking like the stronger case.
-- **No progress rotates the approach, it does not stop the order.** Three rounds sharing one
-  signature (normalized check output plus the content hashes of the changed files) mean the attempt
-  is not moving. The next approach gets a fresh directory, a different provider, and the problem
-  plus the current state of the world WITHOUT the reasoning that failed. Two rotations that both
-  stall end it as stalled. There is no round or wall-clock ceiling; evidence ends a run.
+  enqueues work or requests a stop against the saved authorized work IDs. Console actions bind
+  stop intent and final cancellation to the observed generation; a stale request cannot stop a
+  replacement generation. A confirmation distinguishes requested, stopped and unresolved outcomes.
+- **A round is act, verify, review, decide.** The actor returns a final verification contract with
+  a nonempty summary and a command, or an explicit `verify: null` when no executable check exists.
+  A failing check cannot complete the work. Completion additionally requires the actual actor and
+  reviewer model identities, different reported model families, an exact `DONE` verdict and
+  unchanged before/after review evidence. A review-only completion is identified in the report.
+- **Unknown evidence does not replay execution.** Missing execution or cleanup evidence leaves
+  `reconcile`; an invalid final contract or unavailable independent review leaves
+  `review_unavailable`. A confirmed failure before execution can be recorded as `failed`.
+  Only known verification failures or an explicit `CONTINUE:` verdict may continue the loop.
+  Repeated unchanged failures rotate the prompt approach, while llmcall routing remains unchanged.
+- **Current capability limit.** The installed llmcall result lacks typed execution outcome,
+  cleanup and actual model-family fields. Schedule preserves that absence instead of inferring
+  them from response text or a provider label. Such results cannot establish automatic completion;
+  successful automatic completion is covered by synthetic typed-evidence tests.
 - **Liveness is `(pid, process creation time)`.** Windows recycles pids, so a pid-only probe reads a
   recycled number as the live holder, and `os.kill(pid, 0)` is not an existence check there at all.
-  A run whose process is gone is REPORTED and never silently requeued. Kills use the process TREE.
+  Failed identity queries remain uncertainty. Stop intent is saved before tree termination;
+  cancellation requires a verified absent/reused identity or verified termination.
+- **An interrupted spawn retains its reservation.** A missing parent or unregistered child is
+  insufficient cleanup evidence. Stop revokes an unregistered spawn into `reconcile` with unknown
+  cleanup. Unreleased or uncertain reservations keep the serial slot even when the item has a
+  terminal outcome; legacy running and stop-pending work also blocks another launch.
+- **Recovery requires a separate review.** Inspect `agent_task.py status`, establish that the
+  relevant process tree is gone, and retain that audit in the PRIVATE companion. `recover-cleanup`
+  requires the exact terminal generation plus a nonempty `note` and `evidence_sha256` in the JSON
+  file. It validates those fields, rechecks recorded runner/launcher identities and compares the
+  reservation before release. The digest records the operator's audit; the command does not
+  independently prove its contents. Recovery releases cleanup ownership without replaying work
+  or marking the task successful.
 - **The runner is detached** (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`),
-  measured to outlive both a normal parent exit and the scheduler terminating the parent at its
-  execution time limit, which is what lets a 2 minute tick own an hours-long job. Do NOT add
-  `CREATE_BREAKAWAY_FROM_JOB`: inside a task it raises access denied. Serial by design, one runner at
-  a time, because two agents in one working tree corrupt it.
-- **Three llmcall deviations, each a measured hazard, all in `agent_run.py`'s header.** Point
-  `LLMCALL_AGENT_RUNNER` at the shim BEFORE importing llmcall (it freezes the path at import, and the
-  machine default re-runs codex inside the delegate, doubling every side effect). Act on a SINGLE
-  provider so the reported provider is the true one. Never use `schema=`/`extract=` with
-  `mode="agent"`, since a parse miss re-invokes the provider and re-does the work.
+  and writes output into its private run directory. Native process tests and installed scheduler
+  validation are separate from source review.
+- **Installed llmcall policy applies throughout.** Actor calls use `llmcall.call(prompt,
+  mode="agent")`; reviewer calls use judge mode with the observed actor family as `avoid`.
+  The runner does not override `LLMCALL_AGENT_RUNNER` or pin providers, models, timeout or fallback.
+  It does not pass unsupported `cwd`, `cancel` or `requirements` arguments to `llmcall.call`.
 - **Terminal reports carry evidence**, the changed files, the command, its actual output, and the
   reviewer's verdict. The word 已处理 is banned from them by test; it is the word that made four days
   of doing nothing look like four days of handling it.

@@ -6,9 +6,8 @@ description: Persistent store for todos, events, deadlines and progress with pen
 # schedule-reminder, the T0 schedule/memo base
 
 > Governing principle (full text in `PHILOSOPHY.md`): **a base is the contract, not the storage.**
-> Downstream skills depend on a frozen CLI/JSON surface, never on the database, so the engine can
-> change forever without breaking them. Correctness (concurrency-safe, crash-safe, backward-compatible)
-> beats features.
+> Downstream skills use the versioned CLI/JSON surface and documented read-only linkage seam,
+> never database internals. Preserve concurrency, crash recovery and compatibility.
 
 ## When to use / when to stop
 
@@ -23,7 +22,8 @@ description: Persistent store for todos, events, deadlines and progress with pen
 ```
 SQLite (WAL) single file          <- private storage, NEVER touched by downstream
   store.py  (typed functions)     <- in-process, trusted skills MAY import
-    reminder.py <verb>            <- the ONLY stable contract (JSON always); downstream calls via subprocess
+    reminder.py <verb>            <- versioned CLI contract (JSON always); call via subprocess
+    reminder_linked_items.py      <- reviewed read-only Task Console linkage
 [Windows task: PT5M heartbeat] -> reminder.py tick -> reconcile due items -> Discord relay (out)
 [Windows task: PT10M ingest]   -> ingest_tick    -> poll every readable channel -> commands.py
                                                     (deterministic) or dispatch (LLM judge)  (in)
@@ -48,8 +48,9 @@ up **all** missed reminders on the next run (idempotent, at-least-once + dedupe)
 
 Initialize a PRIVATE versioned companion and set `SCHEDULE_REMINDER_CONFIG` to its root before writes.
 `SCHEDULE_REMINDER_DATA_DIR` optionally selects DATA inside another proven PRIVATE repository.
-An explicit `--db` takes precedence over `SCHEDULE_DB_PATH`. Missing storage is an empty read,
-but writes fail until the PRIVATE database is explicitly initialized.
+An explicit `--db` takes precedence over `SCHEDULE_DB_PATH`. Reads do not initialize storage:
+list reads may return empty, work-feed reports unavailable, and creation preflight requires an
+initialized database. Writes fail until the PRIVATE database is explicitly initialized.
 
 `scripts/install.ps1 -Capabilities store,remind -Plan` emits four capability rows without effects.
 Omitting selection chooses store plus remind; explicit empty selection is a no-op. Ingest and work
@@ -72,6 +73,8 @@ python scripts/reminder.py add --title "买牛奶" --due-at 2026-06-28T17:00:00Z
        --source my-skill --idempotency-key my-skill:42 --ext '{"x_my_skill_id":"42"}'
 python scripts/reminder.py get  --id <ID>
 python scripts/reminder.py list --active --source my-skill --limit 50
+python scripts/reminder.py creation-preflight --title "Prepare Acme report" --source my-skill --idempotency-key my-skill:report-1
+python scripts/reminder.py work-feed --limit 100 --event-limit 50
 python scripts/reminder.py transition --id <ID> --to doing --progress 30
 python scripts/reminder.py done --id <ID>
 python scripts/reminder.py block --id <ID> --blocker-id <OTHER> --reason "waiting"
@@ -96,10 +99,14 @@ table -> `reference/contract.md`.
 
 ## Hard rules
 
-1. **Downstream never reads the DB**, only `reminder.py [--actor NAME] <verb>`. (Lets the engine evolve.)
+1. **Downstream never reads the DB**. Use the CLI or the separately documented read-only linkage seam.
 2. **DB stays on local NTFS**, never OneDrive/GDrive/network (WAL lock + sync = corruption).
 3. **State changes go through `transition`/`done`/`block`**, never `update` (state machine guarded).
-4. **Always pass `--source` + `--idempotency-key`** on writes (audit + safe retries).
+4. **Before creating, compare existing obligations, sources and occurrence dates** with
+   `creation-preflight`. Use `ensure` to reuse an equivalent item or explicitly review a similar
+   candidate. Append a follow-up using `--reuse-id`, its `--expected-revision` and `--note` under a
+   new request identity. Reuse that identity and exact payload for retries. Different occurrences
+   need different identities. `add` defaults to updating a keyed item; `--if-exists return` preserves it.
 5. **Unknown fields are MUST-PRESERVE**, put extras in `--ext` as `x_<skill>_*`; the base round-trips
    them.
 6. **All time is UTC RFC3339**; due trigger is the interval `now >= due_at - lead`, never `==`.
@@ -113,5 +120,12 @@ This `SKILL.md` is the only always-loaded file. Load one shard on demand:
 - `reference/integration.md`, copy-paste examples for downstream skills.
 - `reference/operations.md`, inbound commands, explicit retry, atomic work finalization,
   notification recovery and the installed llmcall interface.
+- `reference/linkage-review.md`, exact Task Console linkage and its read-only owner seam.
+- `reference/notification-receipts.md`, business-event identity, delivery receipts and uncertainty.
+
+`work-action` consumes an owner-issued offer and revision from `work-feed`. Manual completion
+uses the existing dependency/state guards and requires no executor. Execution and task handoff
+have separate receipts; a Scheduler acknowledgement does not complete the todo. See the contract
+for stdin schemas and [manual completion](../../docs/manual-completion.md).
 
 CLI output is always JSON. Global --db and --actor options precede the verb; --json is not supported.

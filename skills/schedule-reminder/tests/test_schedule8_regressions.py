@@ -90,6 +90,7 @@ def storage():
     sequence = iter(range(100))
     store = inert_module("skills/schedule-reminder/scripts/store.py",
         _connect=lambda *args, **kwargs: Connection(),
+        migrate=inert_module('skills/schedule-reminder/scripts/reminder_action_store.py').migrate,
         _WRITE_LOCK=SimpleNamespace(acquire=lambda: None, release=lambda: None),
         uuid7=lambda: "synthetic-item-" + str(next(sequence)),
         default_db_path=lambda: "synthetic-memory",
@@ -184,35 +185,62 @@ class Schedule8Regressions(unittest.TestCase):
 
     def test_stop_recovers_cancelled_authorized_work_without_repeating_stop(self):
         fixture = case()
-        stopped, reads = [], []
-        item = {"id": fixture["work_id"], "state": "cancelled",
-                "ext": {"x_agent_exec_state": "failed"}}
-        task = SimpleNamespace(get=lambda iid: reads.append(iid) or item,
-            exec_state=lambda row: (row.get("ext") or {}).get("x_agent_exec_state"),
-            STATE_FAILED="failed")
+        for generation in (0, 1):
+            with self.subTest(generation=generation):
+                stopped, reads = [], []
+                item = {"id": fixture["work_id"], "state": "cancelled",
+                        "ext": {"x_agent_exec_state": "failed"}}
+                operation = None if generation == 0 else {
+                    "generation": generation, "outcome": "cancelled", "cleanup_state": "quiescent"}
+                task = SimpleNamespace(get=lambda iid: reads.append(iid) or item,
+                    operation=lambda iid: operation,
+                    exec_state=lambda row: (row.get("ext") or {}).get("x_agent_exec_state"),
+                    STATE_FAILED="failed")
+                dispatch = inert_module("skills/schedule-reminder/scripts/dispatch.py",
+                    _action_identity=lambda *args: "synthetic-action",
+                    agent_task=task, agent_tick=SimpleNamespace(stop=lambda *args, **kwargs: stopped.append(args)))
+                for selected in (fixture["work_id"], "*"):
+                    result = dispatch.execute(fixture["stream"], {"kind": "reminder"},
+                        {"actions": [{"op": "stop", "id": selected}]}, [],
+                        work=[], authorized_work_ids=[fixture["work_id"]],
+                        authorized_work_generations={fixture["work_id"]: generation})
+                    self.assertEqual(result["stopped"], [fixture["work_id"]])
+                    self.assertEqual(result["failed"], [])
+                self.assertEqual(stopped, [])
+                self.assertEqual(reads, [fixture["work_id"], fixture["work_id"]])
+
+    def test_stop_without_saved_generation_cannot_read_or_stop_work(self):
+        fixture = case()
+        effects = []
         dispatch = inert_module("skills/schedule-reminder/scripts/dispatch.py",
             _action_identity=lambda *args: "synthetic-action",
-            agent_task=task, agent_tick=SimpleNamespace(stop=lambda *args, **kwargs: stopped.append(args)))
-        for selected in (fixture["work_id"], "*"):
-            result = dispatch.execute(fixture["stream"], {"kind": "reminder"},
-                {"actions": [{"op": "stop", "id": selected}]}, [],
-                work=[], authorized_work_ids=[fixture["work_id"]])
-            self.assertEqual(result["stopped"], [fixture["work_id"]])
-            self.assertEqual(result["failed"], [])
-        self.assertEqual(stopped, [])
-        self.assertEqual(reads, [fixture["work_id"], fixture["work_id"]])
+            agent_task=SimpleNamespace(get=lambda *args: effects.append("get"),
+                                       operation=lambda *args: effects.append("operation")),
+            agent_tick=SimpleNamespace(stop=lambda *args, **kwargs: effects.append("stop") or []))
+        for generations in (None, {}, {fixture["work_id"]: None}, {fixture["work_id"]: True}):
+            with self.subTest(generations=generations):
+                result = dispatch.execute(fixture["stream"], {"kind": "reminder"},
+                    {"actions": [{"op": "stop", "id": fixture["work_id"]}]}, [],
+                    work=[{"id": fixture["work_id"]}], authorized_work_ids=[fixture["work_id"]],
+                    authorized_work_generations=generations)
+                self.assertEqual(result["stopped"], [])
+                self.assertTrue(result["failed"])
+                self.assertEqual(effects, [])
 
     def test_stop_recovery_cannot_read_or_stop_unshown_work(self):
         fixture = case()
+        effects = []
         dispatch = inert_module("skills/schedule-reminder/scripts/dispatch.py",
             _action_identity=lambda *args: "synthetic-action",
-            agent_task=SimpleNamespace(get=support.forbidden),
-            agent_tick=SimpleNamespace(stop=support.forbidden))
+            agent_task=SimpleNamespace(get=lambda *args: effects.append("get")),
+            agent_tick=SimpleNamespace(stop=lambda *args, **kwargs: effects.append("stop") or []))
         result = dispatch.execute(fixture["stream"], {"kind": "reminder"},
             {"actions": [{"op": "stop", "id": fixture["other_work_id"]}]}, [],
-            work=[], authorized_work_ids=[fixture["work_id"]])
+            work=[], authorized_work_ids=[fixture["work_id"]],
+            authorized_work_generations={fixture["work_id"]: 1})
         self.assertEqual(result["stopped"], [])
         self.assertTrue(result["skipped"])
+        self.assertEqual(effects, [])
 
     def test_cancel_state_and_metadata_share_one_transaction(self):
         store, connection = storage()
@@ -266,14 +294,18 @@ class Schedule8Regressions(unittest.TestCase):
     def test_stop_outcome_save_failure_reconciles_on_retry(self):
         fixture = case()
         current = {"id": fixture["work_id"], "state": "doing", "ext": {"x_agent_exec_state": "running"}}
+        operation = {"generation": 1, "outcome": None, "cleanup_state": "quiescent"}
         stops = []
         def stop(identity, **kwargs):
+            self.assertEqual(kwargs["expected_generation"], operation["generation"])
             stops.append(identity)
             current.update(state="cancelled", ext={"x_agent_exec_state": "failed"})
+            operation.update(outcome="cancelled")
             return [{"id": identity, "stopped": True}]
         def fail_save(*args):
             raise OSError(fixture["failure"])
         task = SimpleNamespace(get=lambda identity: copy.deepcopy(current),
+            operation=lambda identity: copy.deepcopy(operation),
             exec_state=lambda item: item["ext"]["x_agent_exec_state"], STATE_FAILED="failed")
         dispatch = inert_module("skills/schedule-reminder/scripts/dispatch.py",
             _action_identity=lambda *args: "synthetic-action", agent_task=task,
@@ -282,9 +314,11 @@ class Schedule8Regressions(unittest.TestCase):
         with self.assertRaises(OSError):
             dispatch.execute(fixture["stream"], {"kind": "reminder"}, plan, [],
                 work=[copy.deepcopy(current)], authorized_work_ids=[fixture["work_id"]],
+                authorized_work_generations={fixture["work_id"]: 1},
                 save_outcome=fail_save)
         result = dispatch.execute(fixture["stream"], {"kind": "reminder"}, plan, [],
-            work=[], authorized_work_ids=[fixture["work_id"]], saved_outcomes={})
+            work=[], authorized_work_ids=[fixture["work_id"]], saved_outcomes={},
+            authorized_work_generations={fixture["work_id"]: 1})
         self.assertEqual(result["stopped"], [fixture["work_id"]])
         self.assertEqual(stops, [fixture["work_id"]])
 

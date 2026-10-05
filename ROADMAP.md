@@ -11,6 +11,9 @@ new release declaration.
 - A stable reminder CLI and JSON contract with guarded states and preserved extension fields.
 - Durable PRIVATE storage, recurrence, alarm leads and delivery retries.
 - Owner-bound inbound staging, deterministic commands and action receipts.
+- Creation preflight, transactional reuse and revision-bound follow-ups across sources.
+- A read-only work feed, manual completion receipts and explicitly reviewed Task Console links.
+- Business-event notification receipts that preserve uncertain delivery for reconciliation.
 - Serial work execution with full requests, verification and stop ownership.
 - Installation plans, registered-task readback and identity-bound readiness evidence.
 
@@ -21,6 +24,8 @@ new release declaration.
 - Complete shared guard integration and fresh independent source reviews.
 - Validate native workers and installation separately from source inspection.
 - Keep report success, synthetic delivery and verified external readiness distinct.
+- Verify installed llmcall process containment, cleanup receipts and model-family metadata before
+  claiming executable work readiness; missing typed evidence leaves work unresolved.
 
 ## Future work
 

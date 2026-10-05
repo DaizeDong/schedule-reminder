@@ -159,25 +159,39 @@ def test_source4_idempotent_return_keeps_existing_item(db):
 
 @pytest.fixture
 def lifecycle(tmp_path, monkeypatch):
-    item = schedule4_order(tmp_path)
+    generated = schedule4_order(tmp_path)
     # Match shipped field constants while keeping the fixture generator provider-free.
-    item["ext"] = {
+    generated["ext"] = {
         agent_task.EXT_STATE: agent_task.STATE_QUEUED,
         agent_task.EXT_WORKSPACE: str(tmp_path), agent_task.EXT_STREAM: F["stream"],
     }
+    db_path = str(tmp_path / "schedule4.sqlite3")
+    monkeypatch.setenv("SCHEDULE_DB_PATH", db_path)
+    store.init_db(db_path)
+    item = store.add_item(generated["title"], state=generated["state"],
+                          source=agent_task.WORK_SOURCE, ext=generated["ext"],
+                          _id=generated["id"], db_path=db_path)
     live = {"value": False}
     launches, kills, events = [], [], []
     def rem(*args):
-        if args[0] == "get":
-            return {"item": copy.deepcopy(item)}
-        if args[0] == "update":
-            item["ext"].update(json.loads(args[args.index("--ext") + 1]))
-        elif args[0] == "transition":
-            expected = args[args.index("--expect") + 1] if "--expect" in args else None
-            if expected is not None and item["state"] != expected:
-                return {"_err": "ERR_CONFLICT"}
-            item["state"] = args[args.index("--to") + 1]
-        return {"item": copy.deepcopy(item)}
+        def option(name, default=None):
+            return args[args.index(name) + 1] if name in args else default
+        item_id = option("--id")
+        try:
+            if args[0] == "get":
+                current = store.get_item(item_id, db_path=db_path)
+            elif args[0] == "update":
+                current = store.update_item(item_id, ext=json.loads(option("--ext", "{}")),
+                                            actor=agent_task.ACTOR, db_path=db_path)
+            elif args[0] == "transition":
+                current = store.transition(item_id, option("--to"), expect_state=option("--expect"),
+                                           reason=option("--reason"), ext=json.loads(option("--ext", "{}")),
+                                           actor=agent_task.ACTOR, db_path=db_path)
+            else:
+                raise AssertionError("unexpected lifecycle bridge operation")
+        except store.SkillError as error:
+            return {"_err": error.error_code}
+        return {"item": current}
     def spawn(*args, **kwargs):
         launches.append(args)
         live["value"] = True
@@ -190,13 +204,18 @@ def lifecycle(tmp_path, monkeypatch):
         live["value"] = False
         return was_live
     monkeypatch.setattr(agent_task, "rem", rem)
-    monkeypatch.setattr(agent_task, "orders", lambda active_only=True: [copy.deepcopy(item)])
+    monkeypatch.setattr(agent_task, "orders", lambda active_only=True: store.list_items(
+        source=agent_task.WORK_SOURCE, active_only=active_only, db_path=db_path)["items"])
     monkeypatch.setattr(agent_task, "append_event", lambda *args, **kwargs: events.append((args, kwargs)))
     monkeypatch.setattr(agent_task, "proc_identity", lambda _: (live["value"], F["process_start"]))
     monkeypatch.setattr(agent_task, "kill_tree", kill)
     monkeypatch.setattr(agent_tick, "_log", lambda *args: None)
     monkeypatch.setattr(agent_tick.subprocess, "Popen", spawn)
-    return SimpleNamespace(item=item, live=live, launches=launches, kills=kills, events=events, spawn=spawn)
+    class Lifecycle(SimpleNamespace):
+        @property
+        def item(self):
+            return store.get_item(item["id"], db_path=db_path)
+    return Lifecycle(live=live, launches=launches, kills=kills, events=events, spawn=spawn)
 
 
 @pytest.mark.parametrize("claimed", [False, True])
@@ -231,19 +250,21 @@ def test_source4_stale_queued_stop_snapshot_uses_current_process(lifecycle, monk
     assert lifecycle.item["state"] == "cancelled"
 
 
-def test_source4_unregistered_start_stays_stop_pending(lifecycle):
+def test_source4_unregistered_start_requires_cleanup_reconciliation(lifecycle):
     assert agent_task.claim(lifecycle.item["id"])
-    lifecycle.item["ext"]["x_agent_exec_launch_phase"] = "starting"
+    assert agent_task.begin_spawn(lifecycle.item["id"], lifecycle.item["ext"][agent_task.EXT_GENERATION])
     result = agent_tick.stop(lifecycle.item["id"], post=False)
-    assert result[0]["status"] == "stop_pending"
-    assert lifecycle.item["state"] == "doing"
-    assert agent_task.exec_state(lifecycle.item) == agent_task.STATE_STOPPING
+    assert result[0]["status"] == "reconcile" and not result[0]['stopped']
+    assert lifecycle.item["state"] == "blocked"
+    assert agent_task.exec_state(lifecycle.item) == 'reconcile'
+    operation = agent_task.operation(lifecycle.item['id'])
+    assert operation['cleanup_state'] == 'unknown' and operation['released_at'] is None
 
 
 @pytest.mark.parametrize("termination_succeeds", [False, True])
 def test_source4_registration_failure_tracks_or_terminates_spawn(lifecycle, monkeypatch, termination_succeeds):
     assert agent_task.claim(lifecycle.item["id"])
-    monkeypatch.setattr(agent_task, "record_process", lambda *args: {"_err": "synthetic persistence failure"})
+    monkeypatch.setattr(agent_task, "record_process", lambda *args, **kwargs: {"_err": "synthetic persistence failure"})
     if not termination_succeeds:
         def fail(*args):
             raise RuntimeError("synthetic termination unavailable")

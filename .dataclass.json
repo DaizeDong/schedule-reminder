@@ -5,11 +5,13 @@
     "DATA is real runtime output in a PRIVATE versioned companion repository.",
     "Real DATA never exists in this public source tree, including ignored paths."
   ],
-  "_audited": "Capability repair audited store, worker evidence, run logs, ingest cursors/inboxes, registry writes, digest records, and verification scripts. Every writer proves the nearest governing repository PRIVATE before creating output; nested and linked repositories use Git resolution. Explicit database paths do not bypass this proof.",
+  "_audited": "Audited store, worker evidence, run logs and immutable baselines, ingest cursors/inboxes, registry writes, digest records, creation/link/action receipts, notification receipts and prepared payloads. Receipts share the admitted SQLite database. Action workspaces and transient notification-payloads are PRIVATE output. Every writer proves the nearest governing repository PRIVATE before creating output; nested and linked repositories use Git resolution. Explicit database paths do not bypass this proof.",
   "data": [
     "data/",
     "state/",
     "agent-runs/",
+    "workspaces/",
+    "notification-payloads/",
     "readiness.json",
     "db.sqlite3"
   ],

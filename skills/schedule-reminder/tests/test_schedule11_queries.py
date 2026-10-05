@@ -6,6 +6,7 @@ import pytest
 import agent_task
 import agent_tick
 import dispatch
+import store
 from make_fixtures import schedule11_query_cases
 
 CASE = schedule11_query_cases()
@@ -122,6 +123,7 @@ def test_complete_empty_and_multipage_reads_remain_available(monkeypatch, case, 
 
 @pytest.mark.parametrize("case", CASE["positives"], ids=lambda case: case["name"])
 def test_complete_census_retains_serial_running_and_stop_guards(monkeypatch, case):
+    store.init_db()
     pages(monkeypatch, agent_task, "rem", case["pages"] + case["pages"])
     monkeypatch.setattr(agent_tick, "reap", lambda *_args, **_kwargs: [])
     effects = []
@@ -135,6 +137,9 @@ def test_complete_census_retains_serial_running_and_stop_guards(monkeypatch, cas
 
 @pytest.mark.parametrize("role", ("get", "claim", "finish"))
 def test_successful_get_keeps_normal_claim_and_finish_paths(monkeypatch, role):
+    store.init_db()
+    item = CASE["found"]["item"]
+    store.add_item(item["title"], source=agent_task.WORK_SOURCE, ext=item["ext"], _id=item["id"])
     effects = []
     def query(*args):
         if args[0] != "get":
@@ -148,7 +153,9 @@ def test_successful_get_keeps_normal_claim_and_finish_paths(monkeypatch, role):
         assert effects == []
     elif role == "claim":
         assert result is True
-        assert effects == ["transition", "patch"]
+        assert effects == []
+        assert store.get_item(CASE["identity"])["state"] == "doing"
+        assert agent_task.operation(CASE["identity"])["generation"] == 1
     else:
         assert result == CASE["found"]
         assert effects == ["done"]

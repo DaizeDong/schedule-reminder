@@ -12,6 +12,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 import private_data
+import store
 
 HERE = Path(__file__).resolve().parent
 GROUPS = ('store', 'remind', 'ingest', 'work')
@@ -170,7 +171,8 @@ def readiness(store_health, selection=None, python=None, config=None):
         return {'ready': False, 'capabilities': rows, 'dependencies': dependencies}
     try:
         proof = private_data.prove_private(store_health['db_path'])
-        store_ok = all(store_health.get(key) for key in ('db_ok', 'wal_ok', 'integrity_ok')) and store_health.get('schema_user_version') == 1
+        store_ok = (all(store_health.get(key) for key in ('db_ok', 'wal_ok', 'integrity_ok'))
+                    and store_health.get('schema_user_version') == store.SCHEMA_USER_VERSION)
         store_reason = 'PRIVATE initialized store verified' if store_ok else 'store is not initialized or healthy'
         dependencies['store'].update(ready=store_ok, proof=proof)
     except (OSError, ValueError) as error:

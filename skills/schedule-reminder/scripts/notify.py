@@ -33,9 +33,46 @@ def _run(argv):
     return r.returncode == 0
 
 
-def notify(text):
-    """Deliver `text` via the configured channel. Returns True on success, False on failure."""
+def notify_event(event, text, **delivery_options):
+    """Return the durable business-event receipt for an explicitly selected owner event."""
+    from notification_receipts import deliver
+    return deliver(event, text, **delivery_options)
+
+
+def notify_occurrence(run_id, text, *, phase='reminder', condition='due',
+                      db_path=None, retry_failed=False):
+    """Opt-in occurrence bridge preserving command overrides and standalone routing."""
+    import notification_client as client
+    stream = _default_stream()
+    command = os.environ.get('SCHEDULE_RELAY_CMD')
+    if command:
+        options = {'command': client.command_policy(shlex.split(command, posix=(os.name != 'nt')))}
+    elif os.path.isfile(_default_relay_path()):
+        options = client.transport_options([sys.executable, _default_relay_path(), 'send',
+                                            '--stream', stream, '--text'], stream)
+    else:
+        options = {'command': client.command_policy([sys.executable, os.path.join(_HERE, 'bigbrother.py')])}
+    return client.submit('schedule-reminder', run_id, phase, condition, stream, text,
+                         language='preserve', db_path=db_path, retry_failed=retry_failed, **options)
+
+
+def notify(text, *, run_id=None, phase='reminder', condition='due', retry_failed=False):
+    """Return boolean delivery, using durable receipts when an occurrence ID is supplied.
+
+    Text-only callers retain their established transport until their owner supplies a stable
+    occurrence identity. Business-event receipts do not establish external readiness.
+    """
     try:
+        if run_id is not None:
+            import notification_client as client
+            receipt = notify_occurrence(run_id, text, phase=phase, condition=condition,
+                                        retry_failed=retry_failed)
+            if receipt['state'] != 'sent':
+                sys.stderr.write('notify: ' + client.detail(receipt) + '\n')
+            return receipt['state'] == 'sent'
+        if retry_failed:
+            sys.stderr.write('notify: retry requires a stable occurrence ID\n')
+            return False
         cmd_env = os.environ.get("SCHEDULE_RELAY_CMD")
         if cmd_env:  # explicit override / test seam, always wins
             return _run(shlex.split(cmd_env, posix=(os.name != "nt")) + [text])
@@ -89,7 +126,13 @@ def deliver(text):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        sys.stderr.write("usage: python notify.py <text>\n")
-        sys.exit(2)
-    sys.exit(0 if notify(sys.argv[1]) else 1)
+    import argparse
+    parser = argparse.ArgumentParser(description='Deliver a reminder or stable owner notification')
+    parser.add_argument('text')
+    parser.add_argument('--run-id')
+    parser.add_argument('--phase', default='reminder')
+    parser.add_argument('--condition', default='due')
+    parser.add_argument('--retry-failed', action='store_true')
+    args = parser.parse_args()
+    sys.exit(0 if notify(args.text, run_id=args.run_id, phase=args.phase,
+                         condition=args.condition, retry_failed=args.retry_failed) else 1)

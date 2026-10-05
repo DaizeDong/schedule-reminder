@@ -24,7 +24,8 @@ target = PROFILE/'route-scripts/notification_language.py'
 target.parent.mkdir(parents=True)
 target.write_bytes(validate(regular_bytes(rule_path)))
 for name in list(os.environ):
-    if name.startswith(('SCHEDULE_', 'AGENT_CENTER_', 'AGENT_EXEC_', 'LLMCALL_')) and name != 'SCHEDULE_TEST_TRACE':
+    if name.startswith(('SCHEDULE_', 'AGENT_CENTER_', 'AGENT_EXEC_', 'LLMCALL_')) and name not in {
+            'SCHEDULE_TEST_TRACE', 'SCHEDULE_TEST_TASK_CONSOLE_ROOT'}:
         os.environ.pop(name)
 os.environ.update(HOME=str(PROFILE), USERPROFILE=str(PROFILE), GH_CONFIG_DIR=str(PROFILE/'gh'),
                   USERDOMAIN=FIXTURE['user'].split('\\')[0], USERNAME=FIXTURE['user'].split('\\')[1],

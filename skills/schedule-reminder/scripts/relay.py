@@ -57,11 +57,19 @@ GOTCHA (encoded here so it is never relearned)
 from __future__ import annotations
 
 import argparse
+import base64
+import contextvars
+import copy
+from dataclasses import dataclass, field
+import hashlib
+import math
+from pathlib import Path
 import json
 import os
 import private_data
 import sys
 import urllib.request
+import uuid
 
 # Output is always UTF-8 regardless of host console code page (Windows GBK consoles 403 emoji otherwise).
 for _s in (sys.stdout, sys.stderr):
@@ -79,6 +87,209 @@ _API = "https://discord.com/api/v10"
 # every part of a split message carries.
 _DISCORD_LIMIT = 2000
 _CHUNK_BUDGET = 1900
+
+_REGISTRY_SNAPSHOT = contextvars.ContextVar("relay_registry_snapshot", default=None)
+
+
+class PreparationError(ValueError):
+    """A definite failure before any transport request; safe for delivery-only retry."""
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class _PreparedAttachment:
+    """Transient immutable bytes; only their digest enters the private event receipt."""
+
+    path: str
+    data: bytes = field(repr=False)
+
+    def __fspath__(self):
+        return self.path
+
+
+def prepare_command(command, *, stream, files=None, content=None, snapshot_dir=None):
+    """Pin an explicit standalone notifier. Never resolve it as an Agent Center stream.
+
+    The fingerprint identifies the owner-selected argv/cwd/protocol, not the destination
+    hidden inside a third-party script. Such scripts remain responsible for their own routing.
+    Only argv execution through the existing finite process boundary is supported.
+    """
+    from llmcall import process
+    if not isinstance(command, dict) or set(command) - {'argv', 'payload', 'timeout', 'cwd', 'message_file'}:
+        raise PreparationError('invalid_command_policy')
+    argv = command.get('argv')
+    if not isinstance(argv, list) or not argv or any(not isinstance(a, str) or not a for a in argv):
+        raise PreparationError('invalid_command_argv')
+    if files:
+        raise PreparationError('custom_notifier_attachments_unsupported')
+    payload = command.get('payload', 'text')
+    timeout = command.get('timeout', 30)
+    if payload not in ('text', 'base64', 'at-file'):
+        raise PreparationError('unsupported_command_payload')
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise PreparationError('invalid_command_timeout')
+    context = process.resolve_context(cwd=command.get('cwd'))
+    message_file = command.get('message_file')
+    if payload == 'at-file':
+        if not isinstance(message_file, str):
+            raise PreparationError('custom_notifier_message_file_required')
+        message_file = context.path(message_file)
+        with open(message_file, encoding='utf-8-sig') as source:
+            if source.read() != content:
+                raise PreparationError('custom_notifier_message_file_changed')
+    elif message_file is not None:
+        raise PreparationError('unexpected_message_file')
+    executable = process.find(argv[0], [], context=context)
+    if not executable:
+        raise PreparationError('custom_notifier_missing')
+    argv = [executable, *argv[1:]]
+    for arg in argv[1:]:
+        if arg.lower().endswith('.py') and not os.path.isfile(context.path(arg)):
+            raise PreparationError('custom_notifier_missing')
+    policy = {'argv': argv, 'payload': payload, 'cwd': context.cwd, 'message_file': message_file}
+    fingerprint = hashlib.sha256(json.dumps(policy, sort_keys=True).encode('utf-8')).hexdigest()
+    snapshot_file = None
+    if payload == 'at-file':
+        if snapshot_dir is None:
+            raise PreparationError('custom_notifier_snapshot_directory_required')
+        snapshot_file = Path(snapshot_dir) / (uuid.uuid4().hex + '.txt')
+        created = False
+        try:
+            with private_data.open_for_write(snapshot_file, 'xb') as output:
+                created = True
+                output.write(content.encode('utf-8'))
+                output.flush()
+                os.fsync(output.fileno())
+        except BaseException:
+            if created:
+                release_prepared({'snapshot_file': snapshot_file})
+            raise
+    return {'target': {'kind': 'command', 'stream': stream, 'fallback': False,
+                       'command_sha256': fingerprint},
+            'argv': argv, 'payload': payload, 'timeout': timeout, 'context': context,
+            'message_file': message_file, 'snapshot_file': snapshot_file}
+
+
+def release_prepared(prepared):
+    """Remove the private snapshot only before invocation or after confirmed process cleanup."""
+    path = prepared.get('snapshot_file')
+    if path is not None and prepared.get('snapshot_cleanup_safe', True):
+        try:
+            private_data.assert_writable_path(path)
+            private_data.prove_private(path)
+            Path(path).unlink(missing_ok=True)
+        except (OSError, ValueError):
+            # A leftover private artifact does not change a confirmed delivery verdict.
+            sys.stderr.write('relay: private notifier snapshot cleanup failed\n')
+
+
+def _send_command(content, prepared):
+    from llmcall import process
+    # Legacy @file notifiers consume this attempt's immutable snapshot once. Text transports use
+    # the same canonical chunker as stream delivery; no chunk can gain a second receipt.
+    parts = [content] if prepared['payload'] == 'at-file' else split_for_discord(content)
+    for part in parts:
+        argv = list(prepared['argv'])
+        if prepared['payload'] == 'text':
+            argv.append(part)
+        elif prepared['payload'] == 'base64':
+            argv.append(base64.b64encode(part.encode('utf-8')).decode('ascii'))
+        elif prepared['payload'] == 'at-file':
+            argv.append('@' + str(prepared['snapshot_file']))
+        # An exception or unconfirmed cleanup may leave a child reading its @file payload.
+        # Retain the snapshot until an owner reconciles that process tree.
+        prepared['snapshot_cleanup_safe'] = False
+        result = process.run(argv, '', prepared['timeout'], context=prepared['context'])
+        prepared['snapshot_cleanup_safe'] = getattr(result, 'cleanup_confirmed', None) is True
+        if (result.outcome != 'success' or result.error is not None
+                or not prepared['snapshot_cleanup_safe']):
+            return False
+    return True
+
+
+def prepare_send(*, stream, channel_id=None, files=None, username=None, fallback="none"):
+    """Resolve a receipt target without sending; never select an implicit default stream.
+
+    The returned registry snapshot contains credentials and is transient. Only `target` may
+    enter a receipt. Explicit channels/attachments retain the existing no-DM-fallback rule.
+    """
+    if not isinstance(stream, str) or not stream.strip():
+        raise PreparationError("missing_stream")
+    if fallback not in ("none", "big_brother"):
+        raise PreparationError("invalid_fallback_policy")
+    if username is not None and (not isinstance(username, str) or not username.strip()):
+        raise PreparationError("invalid_username")
+    reg = copy.deepcopy(load_registry())
+    streams = reg.get("streams") or {}
+    if not isinstance(streams, dict):
+        raise PreparationError("malformed_registry")
+    entry = streams.get(stream) or {}
+    if not isinstance(entry, dict):
+        raise PreparationError("malformed_stream")
+    token = bot_token(reg)
+    channel = channel_id or entry.get("channel_id")
+    reason = None
+    if files or channel_id:
+        if not channel:
+            raise PreparationError("missing_channel")
+        if not token:
+            raise PreparationError("missing_credentials")
+        kind = "bot"
+    elif entry.get("webhook"):
+        if not str(entry["webhook"]).startswith("https://"):
+            raise PreparationError("invalid_webhook")
+        kind = "webhook"
+    elif channel and token:
+        kind = "bot"
+    else:
+        reason = "missing_stream" if not entry else "missing_credentials_or_target"
+        if fallback != "big_brother":
+            raise PreparationError(reason)
+        if not token or not (reg.get("big_brother") or {}).get("user_id"):
+            raise PreparationError("missing_fallback_credentials_or_target")
+        kind = "big_brother"
+    target = {"kind": kind, "stream": stream, "fallback": kind == "big_brother",
+              "reason": reason}
+    if kind == "webhook":
+        resolved_username = username or entry.get("username") or stream
+        if not isinstance(resolved_username, str) or not resolved_username.strip():
+            raise PreparationError("invalid_username")
+        target.update(webhook_sha256=hashlib.sha256(entry["webhook"].encode()).hexdigest(),
+                      channel_id=str(channel) if channel else None,
+                      username=resolved_username)
+    elif kind == "bot":
+        target["channel_id"] = str(channel)
+    else:
+        target["user_id"] = str(reg["big_brother"]["user_id"])
+    attachments = []
+    for path in files or ():
+        with open(path, "rb") as source:
+            attachments.append(_PreparedAttachment(os.fspath(path), source.read()))
+    return {"target": target, "registry": reg, "stream": stream,
+            "channel_id": channel_id, "username": username, "files": tuple(attachments)}
+
+
+def _send_prepared(content, files, prepared):
+    """Use exactly the recorded target, retaining the canonical transports and chunker."""
+    target = prepared["target"]
+    if target['kind'] == 'command':
+        return _send_command(content, prepared)
+    reg = prepared["registry"]
+    snapshot = _REGISTRY_SNAPSHOT.set(reg)
+    try:
+        if target["kind"] == "big_brother":
+            sys.stderr.write("relay: explicit Big Brother fallback; target changed\n")
+            return _big_brother("[%s] %s" % (prepared["stream"], content))
+        if target["kind"] == "bot":
+            return _post_bot(target["channel_id"], content,
+                             prepared["files"] or None, bot_token(reg))
+        return relay(prepared["stream"], content, prepared["username"])
+    finally:
+        _REGISTRY_SNAPSHOT.reset(snapshot)
+
 
 
 def split_for_discord(text: str, budget: int = _CHUNK_BUDGET) -> list[str]:
@@ -135,6 +346,9 @@ def registry_path() -> str:
 
 def load_registry() -> dict:
     """Return the registry dict, or {} if absent/unreadable (caller falls back to Big Brother)."""
+    snapshot = _REGISTRY_SNAPSHOT.get()
+    if snapshot is not None:
+        return snapshot
     p = registry_path()
     try:
         with open(p, encoding="utf-8") as fh:
@@ -143,7 +357,7 @@ def load_registry() -> dict:
     except FileNotFoundError:
         return {}
     except Exception as e:  # malformed registry must not crash a skill's alert path
-        sys.stderr.write("relay: registry unreadable (%s)\n" % e)
+        sys.stderr.write("relay: registry unreadable (%s)\n" % type(e).__name__)
         return {}
 
 
@@ -166,7 +380,7 @@ def _post_webhook(url: str, payload: dict) -> bool:
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.status in (200, 204)
     except Exception as e:
-        sys.stderr.write("relay: webhook POST failed (%s)\n" % e)
+        sys.stderr.write("relay: webhook POST failed (%s)\n" % type(e).__name__)
         return False
 
 
@@ -213,7 +427,7 @@ def _post_bot(channel_id: str, content: str, files: list | None, token: str) -> 
             url, data=json.dumps({"content": content or ""}).encode("utf-8"), method="POST",
             headers={**headers, "Content-Type": "application/json"})
     else:
-        paths = [str(f) for f in files]
+        paths = [os.fspath(f) for f in files]
         boundary = "----agentcenter" + os.urandom(8).hex()
         payload = {"content": content or "",
                    "attachments": [{"id": i, "filename": os.path.basename(p)}
@@ -230,9 +444,13 @@ def _post_bot(channel_id: str, content: str, files: list | None, token: str) -> 
             parts.append(head.encode("utf-8") + b"\r\n" + value + b"\r\n")
 
         field("payload_json", json.dumps(payload).encode("utf-8"), ctype="application/json")
-        for i, p in enumerate(paths):
-            with open(p, "rb") as fh:
-                field("files[%d]" % i, fh.read(), os.path.basename(p), "application/octet-stream")
+        for i, (attachment, p) in enumerate(zip(files, paths)):
+            if isinstance(attachment, _PreparedAttachment):
+                data = attachment.data
+            else:
+                with open(p, "rb") as fh:
+                    data = fh.read()
+            field("files[%d]" % i, data, os.path.basename(p), "application/octet-stream")
         parts.append(("--%s--\r\n" % boundary).encode())
         req = urllib.request.Request(
             url, data=b"".join(parts), method="POST",
@@ -241,7 +459,7 @@ def _post_bot(channel_id: str, content: str, files: list | None, token: str) -> 
         with urllib.request.urlopen(req, timeout=180) as r:
             return r.status in (200, 204)
     except Exception as e:
-        sys.stderr.write("relay: bot POST failed (%s)\n" % e)
+        sys.stderr.write("relay: bot POST failed (%s)\n" % type(e).__name__)
         return False
 
 
@@ -266,7 +484,7 @@ def _big_brother(text: str) -> bool:
                 ok = False
         return ok
     except Exception as e:
-        sys.stderr.write("relay: big-brother fallback failed (%s)\n" % e)
+        sys.stderr.write("relay: big-brother fallback failed (%s)\n" % type(e).__name__)
         return False
 
 
@@ -358,7 +576,7 @@ def relay(stream: str, content: str, username: str | None = None) -> bool:
 
 
 def send(content: str, stream: str | None = None, channel_id: str | None = None,
-         files: list | None = None, username: str | None = None) -> bool:
+         files: list | None = None, username: str | None = None, *, prepared=None) -> bool:
     """Deliver to a stream, to an explicit channel, or both, choosing the transport (see module doc).
 
     `stream` alone behaves exactly like relay(): it keeps the per-stream webhook identity when a
@@ -367,6 +585,8 @@ def send(content: str, stream: str | None = None, channel_id: str | None = None,
     Given both, `channel_id` wins for routing and `stream` is used only to resolve a channel when
     the caller passed a name instead of an id.
     """
+    if prepared is not None:
+        return _send_prepared(content, files, prepared)
     reg = load_registry()
     s = (reg.get("streams") or {}).get(stream) if stream else None
     chan = channel_id or (s or {}).get("channel_id")

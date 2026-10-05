@@ -4,7 +4,13 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ## [Unreleased]
 
+### Added
+- Expose revision-bound work feeds, manual completion, reviewed Task Console links and durable action receipts through the owner CLI.
+- Add creation preflight and `ensure` for obligation reuse, explicit follow-ups and occurrence-aware request identities.
+- Persist notification claims under a stable business-event identity. Uncertain sends require reconciliation, and retries preserve the prepared target and payload.
+
 ### Changed
+- Migrate storage additively to schema 6 for operation generations and receipts. Agent workers preserve initial evidence and cleanup reservations; missing execution or model-family metadata prevents automatic completion without replaying the actor. Linux and Windows CI exercise the supported paths.
 - Reconcile package metadata and README/ROADMAP version displays with the existing 0.6.0 history entry. The channel enumeration, deterministic command routing, channel-ID cursors, and attachment-capable relay remain in current source. This corrects metadata drift; it does not create a new release or alter the historical release date.
 - Document current PRIVATE runtime storage, capability-selected installation and readiness evidence, owner-bound inbound staging, and reviewed work recovery. Source availability and successful health JSON remain separate from measured external readiness.
 

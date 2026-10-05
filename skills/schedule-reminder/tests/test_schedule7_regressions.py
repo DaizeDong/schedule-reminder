@@ -79,11 +79,18 @@ def storage():
             pass
 
     lock = SimpleNamespace(acquire=lambda: None, release=lambda: None)
+    migration = module('skills/schedule-reminder/scripts/reminder_action_store.py')
+    def owner_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == 'reminder_action_store' and tuple(fromlist) == ('migrate',) and level == 0:
+            return SimpleNamespace(migrate=migration.migrate)
+        return forbidden()
     store = module("skills/schedule-reminder/scripts/store.py",
                    _connect=lambda *args, **kwargs: Connection(), _WRITE_LOCK=lock,
                    default_db_path=lambda: "synthetic-memory",
                    os=SimpleNamespace(environ={}, path=SimpleNamespace(isfile=lambda path: True)),
                    now_utc=lambda: datetime(2031, 7, 12, 10, tzinfo=timezone.utc))
+    # Functions capture their builtins at definition time. Admit only the parsed DDL helper.
+    store.init_db.__builtins__['__import__'] = owner_import
     # Source functions retain their defining namespace; install deterministic identity there.
     sequence = iter(range(1, 100))
     store.add_item.__globals__["uuid7"] = lambda: "synthetic-item-" + str(next(sequence))
@@ -199,15 +206,25 @@ def dispatcher(items, work=()):
         return {"item": {"id": args[2], "state": "done"}}
     def stop(identity, **kwargs):
         stopped.append(identity)
+        expected = next(row for row in work if row['id'] == identity)['ext']['x_agent_exec_generation']
+        assert kwargs.get('expected_generation') == expected
         selected = [row["id"] for row in work] if identity == "*" else [identity]
         return [{"id": item, "stopped": True} for item in selected]
     identity = lambda *values: hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
     dispatch = module("skills/schedule-reminder/scripts/dispatch.py",
                       inbound=SimpleNamespace(identity=identity), _rem=rem,
-                      agent_tick=SimpleNamespace(stop=stop), agent_task=SimpleNamespace(enqueue=forbidden),
+                      agent_tick=SimpleNamespace(stop=stop),
+                      agent_task=SimpleNamespace(enqueue=forbidden, EXT_GENERATION='x_agent_exec_generation'),
                       get_state=lambda cfg: copy.deepcopy(items), get_work=lambda: copy.deepcopy(work),
                       call_chain=forbidden, _post=lambda *args: True)
     return dispatch, calls, stopped, case
+
+
+def bind_plan_identity(dispatch, record, stream):
+    """Represent a saved current-format plan so authorization controls reach execution."""
+    record['action_identity_version'] = 2
+    record['action_keys'] = [dispatch._action_identity(stream, 'synthetic-inbound', index, action)
+                             for index, action in enumerate(record['plan']['actions'])]
 
 
 class Schedule7RegressionTests(unittest.TestCase):
@@ -277,6 +294,7 @@ class Schedule7RegressionTests(unittest.TestCase):
                 record = {"plan": {"actions": [{"op": operation, "id": case["unshown_id"],
                                                 "until": case["until"]}]},
                           "outcomes": {}, "authorized_ids": [case["authorized_id"]]}
+                bind_plan_identity(dispatch, record, case['stream'])
                 self.assertFalse(dispatch._dispatch(case["stream"], case["title"], None, False,
                                                      case["channel"], case["message_id"],
                                                      record, lambda: None, "synthetic-inbound"))
@@ -318,6 +336,7 @@ class Schedule7RegressionTests(unittest.TestCase):
         items = [{"id": case["unshown_id"], "title": case["title"]}]
         dispatch, calls, _, _ = dispatcher(items)
         record = {"plan": {"actions": [{"op": "done", "id": case["unshown_id"]}]}, "outcomes": {}}
+        bind_plan_identity(dispatch, record, case['stream'])
         self.assertFalse(dispatch._dispatch(case["stream"], case["title"], None, False,
                                              case["channel"], case["message_id"], record,
                                              lambda: None, "synthetic-inbound"))
@@ -327,14 +346,19 @@ class Schedule7RegressionTests(unittest.TestCase):
         for selected in ("*", fixtures()["later_work_id"]):
             with self.subTest(selected=selected):
                 case = fixtures()
-                work = [{"id": case["work_id"], "title": case["title"]},
-                        {"id": case["later_work_id"], "title": case["title"]}]
+                work = [{"id": case["work_id"], "title": case["title"],
+                         'ext': {'x_agent_exec_generation': 1}},
+                        {"id": case["later_work_id"], "title": case["title"],
+                         'ext': {'x_agent_exec_generation': 1}}]
                 dispatch, _, stops, _ = dispatcher([], work)
                 record = {"plan": {"actions": [{"op": "stop", "id": selected}]}, "outcomes": {},
-                          "authorized_ids": [], "authorized_work_ids": [case["work_id"]]}
-                dispatch._dispatch(case["stream"], case["title"], None, False,
-                                   case["channel"], case["message_id"], record,
-                                   lambda: None, "synthetic-inbound")
+                          "authorized_ids": [], "authorized_work_ids": [case["work_id"]],
+                          'authorized_work_generations': {case['work_id']: 1}}
+                bind_plan_identity(dispatch, record, case['stream'])
+                succeeded = dispatch._dispatch(case["stream"], case["title"], None, False,
+                                               case["channel"], case["message_id"], record,
+                                               lambda: None, "synthetic-inbound")
+                self.assertEqual(succeeded, selected == "*")
                 self.assertEqual(stops, [case["work_id"]] if selected == "*" else [])
 
     def test_first_channel_tick_baselines_text_and_reactions(self):
@@ -400,6 +424,7 @@ class Schedule7RegressionTests(unittest.TestCase):
         dispatch, _, stops, _ = dispatcher([], work)
         record = {"plan": {"actions": [{"op": "stop", "id": "*"}]},
                   "outcomes": {}, "authorized_ids": []}
+        bind_plan_identity(dispatch, record, case['stream'])
         self.assertFalse(dispatch._dispatch(case["stream"], case["title"], None, False,
                          case["channel"], case["message_id"], record, lambda: None, "synthetic-inbound"))
         self.assertEqual(stops, [])
@@ -407,7 +432,7 @@ class Schedule7RegressionTests(unittest.TestCase):
     def test_new_plan_persists_both_authorization_snapshots(self):
         case = fixtures()
         items = [{"id": case["authorized_id"], "title": case["title"]}]
-        work = [{"id": case["work_id"], "title": case["title"]}]
+        work = [{"id": case["work_id"], "title": case["title"], 'ext': {'x_agent_exec_generation': 1}}]
         dispatch, _, _, _ = dispatcher(items, work)
         namespace = dispatch._dispatch.__globals__
         namespace["build_prompt"] = lambda *args: case["title"]
@@ -417,6 +442,9 @@ class Schedule7RegressionTests(unittest.TestCase):
                         case["channel"], case["message_id"], record, lambda: None, "synthetic-inbound"))
         self.assertEqual(record["authorized_ids"], [case["authorized_id"]])
         self.assertEqual(record["authorized_work_ids"], [case["work_id"]])
+        self.assertEqual(record['authorized_work_generations'], {case['work_id']: 1})
+        self.assertEqual(record['action_identity_version'], 2)
+        self.assertEqual(record['action_keys'], [])
 
     def test_restart_and_missing_seen_projection_preserve_initial_baseline(self):
         first = ChannelWorld()

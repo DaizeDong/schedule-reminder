@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 import store
+import capabilities
 import reminder
 import agent_run
 import agent_task
@@ -30,6 +31,17 @@ def test_empty_selection_has_no_ready_capabilities(tmp_path, monkeypatch):
     assert set(readiness['capabilities']) == {'store', 'remind', 'ingest', 'work'}
     assert all(not row['selected'] and row['status'] == 'not_selected' and row['reasons']
                for row in readiness['capabilities'].values())
+
+
+@pytest.mark.parametrize('version_delta', [-1, 0, 1])
+def test_store_readiness_requires_the_current_schema(tmp_path, version_delta):
+    store.init_db()
+    health = store.health()
+    health['schema_user_version'] = store.SCHEMA_USER_VERSION + version_delta
+    result = capabilities.readiness(health, selection='store')
+    assert result['ready'] is (version_delta == 0)
+    assert result['capabilities']['store']['status'] == (
+        'ready' if version_delta == 0 else 'unavailable')
 
 
 def test_explicit_database_in_nested_public_repo_is_refused(tmp_path):
