@@ -1,10 +1,13 @@
 # schedule-reminder, Frozen external contract (`api_version 1.0.0`)
 
-> This is the **only** surface downstream skills may depend on. Call `reminder.py <verb>` via
+> Call `reminder.py <verb>` via
 > subprocess and parse stdout JSON (JSON is always emitted, there is no `--json` flag). **Never**
 > read the `.db` file, build SQL, or import internal tables. Everything below is additive-only within
 > `api_version 1.x`; any delete/rename/semantic change bumps `api_version` and runs a dual-version
 > transition period.
+
+Task Console also has the separately documented, read-only `reminder_linked_items` owner seam;
+its reviewed authority and versioning are described in [linkage review](linkage-review.md).
 
 Contents: [Invocation](#invocation) · [Verbs](#verbs) · [Item fields](#item-fields) ·
 [States](#states--transitions) · [Error codes](#error-codes) · [Idempotency](#idempotency) ·
@@ -29,7 +32,9 @@ python reminder.py [--db PATH] [--actor NAME] <verb> [args...]
 | Verb | Purpose | Key args | Output |
 |---|---|---|---|
 | `init` | create/upgrade DB (idempotent) | none | `{db_path, schema_user_version}` |
-| `add` | create item | `--title` (req), `--kind`, `--due-at`, `--state`, `--priority`, `--progress` (0-100), `--tags a,b`, `--source`, `--idempotency-key`, `--description`, `--ext JSON`, `--recurrence RRULE`, `--rdate JSON`, `--exdate JSON`, `--alarms JSON` | `{item}` |
+| `add` | create or update keyed item | `--title` (req), `--kind`, `--due-at`, `--state`, `--priority`, `--progress` (0-100), `--tags a,b`, `--source`, `--idempotency-key`, `--if-exists update\|return`, `--description`, `--ext JSON`, `--recurrence RRULE`, `--rdate JSON`, `--exdate JSON`, `--alarms JSON` | `{item}` |
+| `creation-preflight` | read cross-source candidates | `--title`, `--source`, `--idempotency-key`, occurrence/content fields | `{decision, matches[], scanned, complete}` |
+| `ensure` | create, reuse or append reviewed follow-up | preflight fields, `--if-exists return`, `--reuse-id`, `--expected-revision`, `--note`, `--distinct-reason` | `{item, decision}` |
 | `get` | fetch by id | `--id` | `{item}` |
 | `list` / `query` | filter + keyset page | `--state`, `--source`, `--kind`, `--due-before`, `--active`, `--limit`, `--cursor` | `{items[], next_cursor}` |
 | `update` | patch fields (not state) | `--id`, `--set field=value` (repeatable), `--ext JSON`, `--idempotency-key` | `{item}` |
@@ -40,7 +45,11 @@ python reminder.py [--db PATH] [--actor NAME] <verb> [args...]
 | `due` | read items due now (read-only) | `--now`, `--lead` | `{items[], now}` |
 | `tick` | dispatch due reminders (scheduler) | `--now`, `--lead`, `--dry-run` | `{dispatched[], retried[], blocked[], skipped[], now}` |
 | `events` | audit trail of an item | `--id` | `{events[]}` |
-| `health` | self-check | `--check-task` | `{health{...}}` |
+| `health` | self-check | `--check-task`, `--capabilities` | `{health{...}}` |
+| `work-feed` | read-only work/action projection | `--limit` (1-10000), `--event-limit` (0-1000) | `{schemaVersion:1, available, items[], events[], sources[], coverage, queue}` |
+| `work-action` | accept an offered action | bounded JSON stdin, below | `{schemaVersion:1, status, action, wakeup, dispatch?}` |
+| `work-action-stop` | persist a stop request | bounded JSON stdin, below | action receipt |
+| `work-action-result` | record linked-task controller result | bounded JSON stdin, below | action receipt |
 
 `--actor NAME` (global) records who acted in the audit stream, pass your skill name.
 
@@ -92,13 +101,58 @@ change or failed audit-event write leaves both the item and its prior events unc
 `ERR_BAD_FIELD` · `ERR_BAD_TIME` · `ERR_BAD_JSON` · `ERR_ILLEGAL_TRANSITION` (carries `current`,
 `to`, `allowed[]`) · `ERR_STATE_CONFLICT` (carries `current`, `expected`) · `ERR_DEPENDENCY_UNMET`
 (carries `unmet[]`) · `ERR_BLOCK_REASON_REQUIRED` · `ERR_USE_TRANSITION` · `ERR_BUSY` ·
-`ERR_INTERNAL`.
+`ERR_INTERNAL` · `ERR_DATA_POLICY` · `ERR_UNINITIALIZED` · `ERR_PERMISSION` · `ERR_CONFLICT` ·
+`ERR_CREATION_REVIEW` (carries candidate IDs and revisions). Action errors use their own safe
+codes, including `stale_recommendation`, `request_conflict`, `another_action_active` and
+`action_schema_upgrade_required`.
 
 ## Idempotency
 
-`add`/`update` accept `--idempotency-key`. Re-issuing `add` with the same key returns the **same
-item id** (UPSERT, ext merged), safe to retry. Reads (`get`/`list`/`query`/`due`) are naturally
-idempotent. Compose the key from your skill + your own record id, e.g. `email-monitor:msg-8841`.
+`add`/`update` accept `--idempotency-key`. Re-issuing `add` with the same key returns the same
+item ID and, by default, updates supplied content and merges ext. `add --if-exists return`
+preserves the keyed item. A stable identity prevents duplicate rows; it does not make a changed
+request equivalent to the original. Compose it from the producer and source occurrence.
+
+`creation-preflight` compares normalized content, source role and occurrence/scope across
+sources. It returns `create`, `reuse` or `review`; similarity is advisory. `ensure` repeats that
+check in the write transaction and returns `created`, `reused`, `merged` or `replayed`. A similar
+candidate needs an exact reviewed ID/revision or an explicit distinct-obligation reason. New
+follow-up text requires `--note` and a new request identity; a legacy keyed item cannot silently
+consume those review options. A changed payload under an existing ensure identity is a conflict.
+Reads are idempotent and never initialize or migrate a database.
+
+## Work projection and action requests
+
+`work-feed` adds a `schemaVersion: 1` projection inside the normal CLI envelope. It separates
+tracked items, agent work and signals, reports bounded coverage and persisted queue reservations,
+and exposes only owner-issued action offers. Missing storage produces `available:false`; summary
+data does not prove liveness, validation or external delivery. Raw `ext` is not forwarded.
+
+The three action verbs accept one UTF-8 JSON object on stdin, at most 131072 bytes. Duplicate JSON
+keys and invalid UTF-8 are rejected. `work-action` accepts `{item_id, action_id, revision, request_id}`
+or `{request: <that object>, context: <string>}` with context limited to 40000 characters. Use the
+offer ID (`complete`, `agent` or `task`) and revision from the feed; request IDs contain 8-120 ASCII
+letters, digits, underscores or hyphens. The same exact request replays its durable receipt.
+
+`complete` commits its receipt and guarded transition together, without a workspace, scheduler or
+notification. An agent action needs an admitted PRIVATE workspace. A reviewed task action returns
+one `dispatch` instruction for Task Console; replay does not issue another instruction.
+`work-action-result` accepts `{action_id: <receipt ID>, result: <controller result>}` and updates
+only a receipt still awaiting dispatch. The action saves the reviewed task ID, exact controller
+name and review revision before dispatch; a result for another controller cannot satisfy it.
+A canonical acknowledged `run_requested`, or observed
+`already_running`, releases the handoff reservation as `task_requested` and leaves the todo state
+unchanged. Incomplete acknowledgement or uncertain cleanup remains `reconcile`; Task Console owns
+task runtime and stop control.
+Historical task receipts without that identity binding remain `reconcile`.
+
+`work-action-stop` accepts the same four request fields, with `action_id` set to the current agent
+receipt ID. The action revision includes the observed execution generation; stopping passes that
+captured generation to the runtime so a replacement run cannot inherit the old stop request.
+Stop intent revokes preparation and runner ownership before external cleanup. A queued
+order that never started is cancelled atomically. Started or uncertain work remains reserved until
+the matching stop result confirms it; a process death alone is insufficient. Stale revisions need
+a fresh observation. See [manual completion](../../../docs/manual-completion.md).
 
 ## Time
 

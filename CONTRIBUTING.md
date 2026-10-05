@@ -33,9 +33,9 @@ clean up their own temporary workspaces; no author-specific workspace setting is
 ## Version sync
 
 Update `.claude-plugin/plugin.json.version` for a release. Keep any explicit current-version claims
-in README and README_CN consistent with that release. Their Roadmap badges and ROADMAP.md are
-intentionally versionless, and CHANGELOG.md preserves historical entries; do not rewrite history
-or add a release claim before that release is made.
+in README and README_CN consistent with that release. Roadmap badges and ROADMAP.md describe
+planned work; CHANGELOG.md preserves historical entries. Do not rewrite history or add a release
+claim before that release is made.
 
 License: MIT (see [LICENSE](LICENSE)).
 
@@ -47,4 +47,14 @@ The route tests execute the canonical code-only notification language rule. Prep
     python tools/prepare_test_dependency.py --source /path/to/notification_language.py --out /tmp/schedule-tests/notification_language.py
     export SCHEDULE_TEST_LANGUAGE_RULE=/tmp/schedule-tests/notification_language.py
 
-CI uses the same validator and receives the artifact through SCHEDULE_LANGUAGE_RULE_B64. An absent secret or a hash mismatch is a dependency failure before test collection. Fork CI needs the dependency provisioned by a trusted runner; it must not skip language assertions or reduce the acceptance floor.
+CI checks out the pinned code-only file, validates its hash and size, and supplies its path through
+`SCHEDULE_TEST_LANGUAGE_RULE`. Missing read access or a hash mismatch fails before test collection.
+Fork CI needs the dependency provisioned by a trusted runner; it must not skip language assertions
+or reduce the acceptance floor. The suite runs on Linux and Windows. Local consumer integration
+also accepts `SCHEDULE_TEST_TASK_CONSOLE_ROOT` pointing to a Task Console checkout; those checks
+compile synthetic declarations and invoke the owner API without registering or running tasks.
+
+The optional automatic completion path requires execution, cleanup, and effective model-family
+evidence from the shared model interface. Missing evidence leaves work in `reconcile` or
+`review_unavailable`; a model's text alone cannot establish completion. Tests cover full behavior
+with generated typed results and separately cover the current interface's missing metadata.

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """schedule-reminder — the stable external contract (CLI + JSON).
 
-This is the ONLY surface downstream skills (email-monitor, daily-hotspots, demand-mining,
-promotion-assistant) may depend on. They call it via subprocess and parse stdout JSON. They MUST
-NOT read the .db file, build SQL, or import internal tables. See ../reference/contract.md.
+Downstream skills (email-monitor, daily-hotspots, demand-mining, promotion-assistant)
+call this CLI via subprocess and parse stdout JSON. They must not read the database,
+build SQL, or import internal tables. Task Console also has the separate read-only
+reminder_linked_items owner seam. See ../reference/contract.md.
 
 Conventions (frozen — additive evolution only; deletes/renames bump api_version):
   * stdout: one JSON object (JSON Lines) on success, with top-level api_version + schema_version.
@@ -49,6 +50,7 @@ except Exception:
 # allow `import store` / `import notify` regardless of CWD
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import store  # noqa: E402
+from reminder_action_store import ActionError
 
 
 def _write(stream, text):
@@ -81,7 +83,9 @@ def _emit(payload):
 
 def _fail(err):
     body = {"api_version": store.API_VERSION, "ok": False}
-    if isinstance(err, store.SkillError):
+    if isinstance(err, ActionError):
+        body.update(error_code=err.code, message=err.code)
+    elif isinstance(err, store.SkillError):
         body.update(err.to_dict())
     else:
         # Unexpected error: surface only the exception *type*, not str(err), which can embed the db
@@ -138,6 +142,18 @@ def cmd_add(a):
     )
     return _emit({"item": item})
 
+
+def cmd_creation(a):
+    fields = dict(kind=a.kind, due_at=a.due_at, scheduled_at=a.scheduled_at,
+                  description=a.description, source=a.source, idempotency_key=a.idempotency_key,
+                  recurrence=a.recurrence, alarms=_json_arg(a.alarms, '--alarms'),
+                  project=a.project, ext=_parse_ext(a.ext), db_path=a.db,
+                  priority=a.priority, tags=_tags(a.tags), wait_until=a.wait_until,
+                  rdate=_json_arg(a.rdate, '--rdate'), exdate=_json_arg(a.exdate, '--exdate'))
+    if a.cmd == 'creation-preflight':
+        return _emit(store.creation_preflight(a.title, **fields))
+    return _emit(store.ensure_item(a.title, actor=a.actor, reuse_id=a.reuse_id,
+                 expected_revision=a.expected_revision, note=a.note, distinct_reason=a.distinct_reason, **fields))
 
 def cmd_get(a):
     item = store.get_item(a.id, db_path=a.db)
@@ -208,6 +224,43 @@ def cmd_health(a):
     return _emit({"health": store.health(db_path=a.db, check_task=a.check_task, capabilities=a.capabilities)})
 
 
+def cmd_work_feed(a):
+    from reminder_work_feed import read_work_feed
+    return _emit(read_work_feed(db_path=a.db, limit=a.limit, event_limit=a.event_limit))
+
+def cmd_work_action(a):
+    import os
+    import reminder_actions
+    raw = sys.stdin.buffer.read(131073)
+    if len(raw) > 131072:
+        raise reminder_actions.ActionError('action_request_too_large')
+    try:
+        from reminder_linked_items import _loads
+        payload = _loads(raw.decode('utf-8'))
+    except (ValueError, UnicodeError) as exc:
+        raise reminder_actions.ActionError('invalid_action_request') from exc
+    if not isinstance(payload, dict):
+        raise reminder_actions.ActionError('invalid_action_request')
+    if a.db:
+        os.environ['SCHEDULE_DB_PATH'] = a.db
+    database = a.db or os.environ.get('SCHEDULE_DB_PATH')
+    if not database:
+        raise reminder_actions.ActionError('action_database_unavailable')
+    workspace = os.environ.get('SCHEDULE_ACTION_WORKSPACE')
+    if a.cmd == 'work-action-result':
+        if set(payload) != {'action_id', 'result'}:
+            raise reminder_actions.ActionError('invalid_task_result')
+        return _emit(reminder_actions.record_result(payload['action_id'], payload['result'], db_path=database))
+    if a.cmd == 'work-action-stop':
+        return _emit(reminder_actions.stop(payload, db_path=database, workspace_root=workspace))
+    if 'request' in payload:
+        if set(payload) != {'request', 'context'} or not isinstance(payload['context'], str) or len(payload['context']) > 40000:
+            raise reminder_actions.ActionError('invalid_action_context')
+        request, context = payload['request'], payload['context']
+    else:
+        request, context = payload, None
+    return _emit(reminder_actions.start(request, db_path=database, workspace_root=workspace, context=context))
+
 def build_parser():
     p = argparse.ArgumentParser(prog="reminder.py", description="schedule-reminder CLI contract")
     p.add_argument("--db", default=None, help="DB path (or SCHEDULE_DB_PATH env)")
@@ -215,6 +268,30 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init").set_defaults(fn=cmd_init)
+
+    s = sub.add_parser("work-feed", help="read-only work projection; never initializes or migrates")
+    s.set_defaults(fn=cmd_work_feed)
+    s.add_argument("--limit", type=int, default=5000)
+    s.add_argument("--event-limit", type=int, default=250)
+    for verb in ('work-action', 'work-action-result', 'work-action-stop'):
+        sub.add_parser(verb).set_defaults(fn=cmd_work_action)
+
+    for verb in ('creation-preflight', 'ensure'):
+        s = sub.add_parser(verb, help='review cross-source candidates before creating an obligation')
+        s.set_defaults(fn=cmd_creation)
+        s.add_argument('--title', required=True)
+        s.add_argument('--kind', default='task', choices=list(store.KINDS))
+        for field in ('due-at', 'scheduled-at', 'description', 'source', 'idempotency-key',
+                      'recurrence', 'alarms', 'project', 'ext', 'tags', 'wait-until', 'rdate', 'exdate'):
+            s.add_argument('--' + field)
+        s.add_argument('--priority', type=int, default=0)
+        if verb == 'ensure':
+            s.add_argument('--if-exists', choices=('return',), default='return',
+                           help='preserve the item attached to an existing identity')
+            s.add_argument('--reuse-id')
+            s.add_argument('--expected-revision')
+            s.add_argument('--note', help='append new instructions to the reviewed item once')
+            s.add_argument('--distinct-reason', help='why a reviewed candidate is a different obligation')
 
     s = sub.add_parser("sweep"); s.set_defaults(fn=cmd_sweep)
     s.add_argument("--now", default=None)

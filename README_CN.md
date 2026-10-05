@@ -13,13 +13,13 @@
 
 ## ⭐ 设计哲学
 
-schedule-reminder 是一个 **T0 基础设施基座**：其他 skill 往它写提醒、从它读进度。所以它唯一的统领原则是
-**「基座是契约，不是存储」**,下游只依赖一个冻结的 CLI/JSON 契约面（带 `api_version`），永远不直接碰数据库，
-因此底层引擎可以无限重写而不破坏任何人。v0.1 把全部预算花在基座绝不能破的保证上：并发安全 + 防崩溃持久化、
-受保护的状态机、幂等写、至少一次投递、未知字段必保留,而不是花哨功能。
+schedule-reminder 是一个 **T0 基础设施基座**：其他 skill 往它写提醒、从它读进度。下游通过带
+`api_version` 的 CLI/JSON 契约，以及单独声明的 Task Console 只读关联接口集成，不直接读取数据库内部结构。
+v0.1 着重保证并发安全、防崩溃持久化、受保护的状态机、幂等写、至少一次投递和未知字段保留。
 
-稳定契约需要更严格的输入与状态检查，代价是拒绝含糊写入。至少一次投递仍可能在故障后
-重试；幂等身份和回执用于核对重复。注册任务、健康报告或源码检查不能单独证明提醒已送达。
+稳定契约需要更严格的输入与状态检查，代价是拒绝含糊写入。到期提醒保留至少一次投递的重试行为。
+带业务事件身份的通知将回执绑定到具体内容；发送结果不确定时保留待核对状态，不自动重发。
+注册任务、健康报告或源码检查不能单独证明提醒已送达。
 
 📜 **[完整设计理念 -> PHILOSOPHY.md](PHILOSOPHY.md)**
 
@@ -61,6 +61,7 @@ python reminder.py init
 python reminder.py add --title "回复招聘" --due-at 2026-06-28T17:00:00Z --priority 1 \
        --source me --idempotency-key me:1
 python reminder.py list --active
+python reminder.py creation-preflight --title "Prepare Acme report" --source my-skill --idempotency-key my-skill:report-1
 python reminder.py transition --id <ID> --to doing --progress 30
 python reminder.py done --id <ID>
 python reminder.py tick --now 2026-06-28T17:00:00Z   # 调度器每 5 分钟跑这个
@@ -79,30 +80,39 @@ python reminder.py tick --now 2026-06-28T17:00:00Z   # 调度器每 5 分钟跑�
 ```
 SQLite (WAL) 单文件             <- 私有存储，下游绝不直接碰
   store.py (带类型函数)         <- 同进程；可信 skill 可 import
-    reminder.py [--actor NAME] <verb>   <- 唯一稳定契约 (api_version 1.0.0)
+    reminder.py [--actor NAME] <verb>   <- 版本化 CLI 契约 (api_version 1.0.0)
+    reminder_linked_items.py           <- 已审查的 Task Console 只读关联接口
 [Windows 任务: PT5M 心跳]  -> reminder.py tick -> 对账到期项 -> Discord relay (出)
 [Windows 任务: PT10M 入站] -> ingest_tick -> 轮询每个可读频道 -> 命中已注册命令则交给它的
-                              处理器,否则交给 dispatch(LLM 判断)                    (入)
+                              处理器，否则交给 dispatch(LLM 判断)                  (入)
 ```
 
 OS 任务只是心跳。`tick` 对账持久表，所以休眠/关机的机器下次运行时会一次性补发**所有**错过的提醒（幂等、至少
-一次 + 去重）,不为每个事件建 OS 触发器，不静默跳过。
+一次 + 去重），不为每个事件建 OS 触发器，不静默跳过。
 
 - **契约**：[`skills/schedule-reminder/reference/contract.md`](skills/schedule-reminder/reference/contract.md)
 - **部署**：[`skills/schedule-reminder/reference/deployment.md`](skills/schedule-reminder/reference/deployment.md)
 - **集成（写给下游 skill）**：[`skills/schedule-reminder/reference/integration.md`](skills/schedule-reminder/reference/integration.md)
 - 入站命令、工作单和提醒的恢复规则见 [operations.md](skills/schedule-reminder/reference/operations.md)。
+- 新建前比较现有事项、关联后续要求及重试身份见[集成说明](skills/schedule-reminder/reference/integration.md)和[派发身份](docs/dispatch-identity.md)。
+- 工作台操作见[手动完成](docs/manual-completion.md)和[任务关联审查](skills/schedule-reminder/reference/linkage-review.md)。
+- 带业务事件身份的通知见[通知回执](skills/schedule-reminder/reference/notification-receipts.md)。
 
 ## 测试范围
 
 15 个验收信号（E1-E15）全程经 subprocess 调冻结 CLI、断言 JSON：CRUD、完整状态转移表（合法 + 非法）、写入
 不变量、到期触发 / 幂等 tick / 错过补发 / 重试退避、并发写 + `PRAGMA integrity_check`、并发读写、幂等去重、
-API golden、未知字段保留、health、RRULE 滚动重复、per-alarm 提前量。外加 Agent Center 总线的隔离模块测试
-,relay 出口、每日 digest、心跳存活、notify 路由、以及双向 ingest/dispatch。E8/E9/E11/E12 为阻断合并的红线。
+API golden、未知字段保留、health、RRULE 滚动重复、per-alarm 提前量。外加 Agent Center 总线、relay 出口、
+每日 digest、心跳存活、notify 路由及双向 ingest/dispatch 的隔离模块测试。E8/E9/E11/E12 为阻断合并的红线。
 
 ```bash
 python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider
 ```
+
+通知路由测试需要通过 `SCHEDULE_TEST_LANGUAGE_RULE` 指定现有的 `notification_language.py`。
+测试只把该代码复制到合成配置中，不读取实际配置或凭据。通过 `SCHEDULE_TEST_TASK_CONSOLE_ROOT`
+指定 Task Console 源码后，还会验证其编译器和工作接口对 reminder CLI 的调用；未指定时明确跳过这些检查。
+这些测试不运行计划任务，也不证明安装后的就绪状态。
 
 ## 局限
 
@@ -111,7 +121,9 @@ python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider
   保持 `ok`。
 - **RRULE 按次滚动。** 提醒成功后，主记录移到下一个未来时间，不会一次建出无限多条记录。支持的字段见契约。
 - **优先 Windows 部署**（`install.ps1` 计划任务）；Unix 给了 cron 行。
-- **数据库必须放本地 NTFS**,绝不放 OneDrive/GDrive/网络盘（WAL 锁 + 同步会损坏库）。
+- **数据库必须放本地 NTFS**，绝不放 OneDrive/GDrive/网络盘（WAL 锁 + 同步会损坏库）。
+- **工作完成依赖 llmcall 的执行证据**。缺少进程约束、清理确认、模型家族身份或审查证据时，工作保留未解决状态。
+  离线测试不能证明本机安装的 llmcall 已提供这些能力。
 
 ## 语言
 

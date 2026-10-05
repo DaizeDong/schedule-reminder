@@ -26,11 +26,16 @@ permissions:
 
 defaults:
   run:
+    shell: bash
     working-directory: schedule-reminder
 
 jobs:
   suite:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         # The guards submodule holds datadir.py, which this repo's code resolves at runtime.
@@ -112,4 +117,4 @@ jobs:
         run: |
           n=$(python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider --collect-only 2>/dev/null | grep -c '::' || true)
           echo "collected $n tests"
-          test "$n" -ge 156 || { echo "::error::only $n tests collected, expected at least 156 -- tests were removed or collection broke"; exit 1; }
+          test "$n" -ge 1100 || { echo "::error::only $n tests collected, expected at least 1100 -- tests were removed or collection broke"; exit 1; }

@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "component": "schedule-reminder",
+  "read": "task-console-status --configured",
+  "tasks": [
+    {
+      "id": "agentcenterdailydigest",
+      "kind": "oneshot",
+      "entrypoint": "task:agentcenterdailydigest",
+      "timeout_seconds": 1200,
+      "concurrency_key": "schedule-reminder/agentcenterdailydigest",
+      "checks": [
+        {
+          "id": "legacy-1",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "agentcenteringesttick",
+      "kind": "oneshot",
+      "entrypoint": "task:agentcenteringesttick",
+      "timeout_seconds": 240,
+      "concurrency_key": "schedule-reminder/agentcenteringesttick",
+      "checks": [
+        {
+          "id": "legacy-1",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "agentcenterworktick",
+      "kind": "dispatcher",
+      "entrypoint": "task:agentcenterworktick",
+      "timeout_seconds": 240,
+      "concurrency_key": "schedule-reminder/agentcenterworktick",
+      "checks": [
+        {
+          "id": "legacy-1",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "scheduleremindertick",
+      "kind": "oneshot",
+      "entrypoint": "task:scheduleremindertick",
+      "timeout_seconds": 600,
+      "concurrency_key": "schedule-reminder/scheduleremindertick",
+      "checks": [
+        {
+          "id": "legacy-1",
+          "required": true
+        }
+      ]
+    }
+  ]
+}

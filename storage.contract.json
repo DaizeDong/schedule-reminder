@@ -5,7 +5,7 @@
   "max_bytes": 134217728,
   "budget_policy": "A 128 MiB working-tree review threshold, excluding Git administration. A threshold breach never authorizes deletion of tasks, receipts, configuration or recovery evidence.",
   "scope": "Paths are relative to the explicitly selected PRIVATE repository root. Root-level state, digest and run paths cover retained installations; current defaults use the data directory. Unlisted integration artifacts require their producer's review and are not implicitly retained.",
-  "protected_paths": ["registry.json", "routes.json", "data/db.sqlite3*", "data/readiness.json", "state/**", "data/state/**", "agent-runs/**", "data/agent-runs/**"],
+  "protected_paths": ["registry.json", "routes.json", "data/db.sqlite3*", "data/readiness.json", "state/**", "data/state/**", "agent-runs/**", "data/agent-runs/**", "data/workspaces/**", "data/notification-payloads/**"],
   "artifacts": [
     {
       "artifact_id": "registry",
@@ -30,7 +30,7 @@
     {
       "artifact_id": "database",
       "path_pattern": "data/db.sqlite3*",
-      "purpose": "Durable tasks, alarms, state transitions, deduplication identities and delivery records, including SQLite sidecars.",
+      "purpose": "Durable tasks, alarms, transitions, operation generations, creation/action/link receipts and notification identities, including SQLite sidecars.",
       "schema": "scripts/store.py and reference/contract.md.",
       "producer": "reminder.py and store.py.",
       "consumer_or_final_deliverable": "The stable reminder CLI and scheduled workers.",
@@ -86,6 +86,26 @@
       "consumer_or_final_deliverable": "Work recovery and verification.",
       "rebuild_or_restore": "Restore alongside the corresponding task-store records after checking the installed run-root selection.",
       "retention_rule": {"class": "core", "rule": "Keep active and unresolved work; review completed groups for dependency-free retirement after preserving selected results."}
+    },
+    {
+      "artifact_id": "action-workspaces",
+      "path_pattern": "data/workspaces/**",
+      "purpose": "Owner-issued per-work-item output directories for optional console agent actions.",
+      "schema": "scripts/reminder_actions.py and the selected task's artifact formats.",
+      "producer": "The owner action API and its authorized work runner.",
+      "consumer_or_final_deliverable": "Requested task artifacts and evidence reviewed before completion.",
+      "rebuild_or_restore": "Restore alongside the corresponding task-store operation and action receipts. A different SCHEDULE_ACTION_WORKSPACE needs its own reviewed companion path entry.",
+      "retention_rule": {"class": "core", "rule": "Keep active or unresolved work and selected final outputs. Review completed temporary workspaces only after preserving requested deliverables."}
+    },
+    {
+      "artifact_id": "notification-payload-snapshots",
+      "path_pattern": "data/notification-payloads/**",
+      "purpose": "Prepared immutable file payloads for a notification attempt, beside the selected database.",
+      "schema": "scripts/notification_receipts.py and relay.py prepared payload contract.",
+      "producer": "The durable notification producer before an explicit file-command transport.",
+      "consumer_or_final_deliverable": "One transport attempt and unresolved send reconciliation.",
+      "rebuild_or_restore": "Keep an unresolved attempt with its database receipt; a relocated database needs the matching sibling path declared separately.",
+      "retention_rule": {"class": "core", "rule": "Do not remove snapshots owned by active or unresolved attempts. The producer removes a transient snapshot only after confirming transport cleanup; retained uncertain sends require review before retirement."}
     },
     {
       "artifact_id": "digest",

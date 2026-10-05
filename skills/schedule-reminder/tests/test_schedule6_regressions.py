@@ -104,6 +104,7 @@ def test_command_intent_failure_prevents_handler(tmp_path, monkeypatch):
 
 def order_bridge(tmp_path, monkeypatch):
     db = database(tmp_path)
+    monkeypatch.setenv('SCHEDULE_DB_PATH', db)
     ext = {**F["unknown_ext"], agent_task.EXT_STATE: agent_task.STATE_RUNNING}
     item = store.add_item(F["title"], state="doing", source=agent_task.WORK_SOURCE, ext=ext, db_path=db)
     calls = []

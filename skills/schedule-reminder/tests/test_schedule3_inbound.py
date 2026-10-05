@@ -133,20 +133,16 @@ def test_ack_failure_does_not_prevent_durable_dispatch(inbox,monkeypatch):
 
 def test_enqueue_keeps_origin_message_separate_from_action_identity(monkeypatch,tmp_path):
     import agent_task
-    calls=[]
-    def rem(*args):
-        calls.append(args)
-        ext=json.loads(args[args.index('--ext')+1])
-        return {'item':{'id':ext[agent_task.EXT_DIR],'ext':ext}}
-    monkeypatch.setattr(agent_task,'rem',rem)
+    agent_task.store.init_db()
+    items=[]
     monkeypatch.setattr(agent_task,'runs_root',lambda:str(tmp_path/'runs'))
     for action in C['agent_plan']['actions']:
-        agent_task.enqueue(F['stream'],action['request'],msg_id=F['message_id'],
-                           idempotency_key=action['request'])
-    for args in calls:
-        ext=json.loads(args[args.index('--ext')+1])
+        items.append(agent_task.enqueue(F['stream'],action['request'],msg_id=F['message_id'],
+                                        idempotency_key=action['request']))
+    for item in items:
+        ext=agent_task.store.get_item(item['id'])['ext']
         assert ext[agent_task.EXT_MSG]==F['message_id']
-    keys=[args[args.index('--idempotency-key')+1] for args in calls]
+    keys=[agent_task.store.get_item(item['id'])['idempotency_key'] for item in items]
     assert len(keys)==2 and keys[0]!=keys[1]
 
 

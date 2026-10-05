@@ -32,6 +32,7 @@ def test_already_exited_control(monkeypatch):
     assert agent_task.kill_tree(3101,31) is False
 
 def test_failed_stop_remains_tracked_then_reaped(monkeypatch):
+    agent_task.store.init_db()
     item={'id':F['message_id'],'title':F['title'],'state':'doing','ext':{
         agent_task.EXT_STATE:agent_task.STATE_RUNNING,agent_task.EXT_PID:3101,
         agent_task.EXT_PSTART:31,agent_task.EXT_STREAM:F['stream']}}
@@ -63,13 +64,12 @@ def test_failed_stop_remains_tracked_then_reaped(monkeypatch):
     assert result==[item['id']]
     assert item['state']=='cancelled'
 
-@pytest.mark.parametrize('mode',['nonzero','exception'])
+@pytest.mark.parametrize('mode',['nonzero','timeout'])
 def test_status_inspection_failure_has_explicit_provenance(tmp_path,monkeypatch,mode):
     (tmp_path/'.git').mkdir(exist_ok=True)
     def run(*a,**k):
-        if mode=='exception': raise subprocess.TimeoutExpired(a,1)
-        return subprocess.CompletedProcess(a,128,'','synthetic status failure')
-    monkeypatch.setattr(agent_run.subprocess,'run',run)
+        return (124, 'synthetic timeout') if mode == 'timeout' else (128, 'synthetic status failure')
+    monkeypatch.setattr(agent_run,'_contained_command',run)
     files,via=agent_run.detect_changes(str(tmp_path),['synthetic-change.txt'])
     assert files==['synthetic-change.txt']
     assert 'unavailable' in via and 'self-reported' in via
@@ -78,7 +78,7 @@ def test_status_inspection_failure_has_explicit_provenance(tmp_path,monkeypatch,
 
 def test_empty_git_status_is_confirmed_clean(tmp_path,monkeypatch):
     (tmp_path/'.git').mkdir(exist_ok=True)
-    monkeypatch.setattr(agent_run.subprocess,'run',lambda *a,**k:subprocess.CompletedProcess(a,0,'',''))
+    monkeypatch.setattr(agent_run,'_contained_command',lambda *a,**k:(0,''))
     assert agent_run.detect_changes(str(tmp_path),['synthetic-change.txt'])==([], 'git')
 
 

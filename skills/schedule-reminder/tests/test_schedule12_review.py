@@ -13,6 +13,7 @@ import relay
 import store
 from make_fixtures import schedule12_review_cases
 from test_agent_exec import _Harness
+from test_agent_review_evidence import real_process
 from test_schedule3_boundary import native_storage
 
 F = schedule12_review_cases()
@@ -122,21 +123,22 @@ def test_complete_final_object_remains_selectable_after_a_malformed_example():
 @pytest.mark.parametrize("answer", F["bad_tails"])
 def test_invalid_contract_cannot_reach_judge_or_finalize(monkeypatch, tmp_path, answer):
     harness = _Harness(monkeypatch, tmp_path, [(0, F["text"])], answers=[answer or " "])
-    result = agent_run._run_approach("wo-1", F["stream"], F["request"], str(tmp_path), 0, ["synthetic"], False)
-    assert result["outcome"] == "stalled"
-    assert harness.finished == harness.reviews == harness.verifies == []
+    result = agent_run._run_approach("wo-1", F["stream"], F["request"], str(tmp_path), 0, ["synthetic"], False, generation=1)
+    assert result["outcome"] == "review_unavailable"
+    assert not any(ok for _, ok, _ in harness.finished)
+    assert harness.reviews == harness.verifies == []
 
 
 def test_explicit_explained_null_verify_retains_review(monkeypatch, tmp_path):
     harness = _Harness(monkeypatch, tmp_path, [], answers=[F["null_tail"]])
-    result = agent_run._run_approach("wo-1", F["stream"], F["request"], str(tmp_path), 0, ["synthetic"], False)
+    result = agent_run._run_approach("wo-1", F["stream"], F["request"], str(tmp_path), 0, ["synthetic"], False, generation=1)
     assert result["outcome"] == "done"
     assert harness.finished and harness.reviews and harness.verifies == []
 
 
 def test_quoted_failing_verifier_blocks_completion(monkeypatch, tmp_path):
     harness = _Harness(monkeypatch, tmp_path, [(1, F["text"])], answers=[json.dumps(F["tails"][0])])
-    result = agent_run._run_approach("wo-1", F["stream"], F["request"], str(tmp_path), 0, ["synthetic"], False)
+    result = agent_run._run_approach("wo-1", F["stream"], F["request"], str(tmp_path), 0, ["synthetic"], False, generation=1)
     assert result["outcome"] == "stalled"
     assert harness.finished == harness.reviews == []
     assert harness.verifies == [F["failing_verify"]] * 2
@@ -188,16 +190,16 @@ def test_native_alternate_stream_refused_without_changing_host_or_index(native_s
 
 
 @pytest.mark.skipif(os.name != "nt", reason="PowerShell 5.1 verifier")
-def test_native_quoted_verifier_runs_and_prevents_completion(monkeypatch, tmp_path):
+def test_native_quoted_verifier_runs_and_prevents_completion(monkeypatch, tmp_path, real_process):
     original = agent_run.run_verify
     harness = _Harness(monkeypatch, tmp_path, [], answers=[json.dumps(F["tails"][0])])
     outcomes = []
-    def verify(command, workspace):
-        outcome = original(command, workspace)
+    def verify(command, workspace, **kwargs):
+        outcome = original(command, workspace, **kwargs)
         outcomes.append(outcome)
         return outcome
     monkeypatch.setattr(agent_run, "run_verify", verify)
-    result = agent_run._run_approach("wo-1", F["stream"], F["request"], str(tmp_path), 0, ["synthetic"], False)
+    result = agent_run._run_approach("wo-1", F["stream"], F["request"], str(tmp_path), 0, ["synthetic"], False, generation=1)
     assert result["outcome"] == "stalled"
     assert outcomes == [(1, "{"), (1, "{")]
     assert harness.finished == harness.reviews == []

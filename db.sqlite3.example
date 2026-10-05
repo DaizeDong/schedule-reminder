@@ -1,10 +1,15 @@
 {
   "format": "SQLite",
-  "schema_user_version": 1,
+  "schema_user_version": 6,
   "tables": [
     "items",
     "events",
-    "meta"
+    "meta",
+    "agent_operations",
+    "notification_receipts",
+    "work_actions",
+    "work_action_stops"
   ],
-  "ddl": "skills/schedule-reminder/scripts/store.py::_DDL"
+  "ddl": "skills/schedule-reminder/scripts/store.py::_DDL",
+  "action_ddl": "skills/schedule-reminder/scripts/reminder_action_store.py::migrate"
 }

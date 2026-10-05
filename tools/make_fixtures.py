@@ -108,6 +108,173 @@ def ssh_alias_publication_cases():
     ]
 
 
+
+def creation_case(source='synthetic-a', request='request-a'):
+    return {'title': 'Prepare Acme report', 'description': 'Review the synthetic quarterly figures.',
+            'due_at': '2030-05-01T12:00:00Z', 'source': source, 'idempotency_key': request}
+
+
+def dispatch_occurrences():
+    return [dict(dispatch_case()[0], actions=[dict(dispatch_case()[0]['actions'][0],
+            due_at='2030-05-%02dT12:00:00Z' % day)]) for day in (1, 2, 3)]
+
+
+def cleanup_recovery_evidence():
+    return {'note': 'Synthetic containment audit confirms the stopped process tree is gone',
+            'evidence_sha256': 'a' * 64}
+
+
+def llm_call_result(*, text='', provider='synthetic-provider', error='', data=None,
+                    attempts=None, effective_model='synthetic-model',
+                    model_family='synthetic-family', execution_started=False,
+                    outcome='success', effects='none', cleanup_confirmed=True,
+                    include_metadata=True):
+    """Generate results without requiring optional fields in installed llmcall."""
+    from types import SimpleNamespace
+    values = {'text': text, 'provider': provider, 'error': error, 'data': data,
+              'attempts': list(attempts or []), 'depth': 0, 'group': None}
+    if include_metadata:
+        values.update(effective_model=effective_model, model_family=model_family,
+                      execution_started=execution_started, outcome=outcome,
+                      effects=effects, cleanup_confirmed=cleanup_confirmed)
+    return SimpleNamespace(**values)
+
+
+def cleanup_call_result(confirmed):
+    """Generate an execution timeout with an explicit cleanup observation."""
+    from types import SimpleNamespace
+    attempt = SimpleNamespace(provider='synthetic-provider', success=False, elapsed=1,
+                              outcome='timeout', execution_started=True,
+                              cleanup_confirmed=confirmed)
+    return llm_call_result(error='synthetic timeout', outcome='timeout',
+                           execution_started=True, effects='possible',
+                           attempts=[attempt], cleanup_confirmed=confirmed)
+
+
+def notification_case():
+    """Generate notification claims, content and transport credentials for tests."""
+    return {
+        'registry': {'streams': {'test': {'channel_id': '10001'}},
+                     'reader': {'bot_token': 'SYNTHETIC_TOKEN'},
+                     'big_brother': {'user_id': '20002'}},
+        'event': {'owner': 'test-owner', 'run_id': 'synthetic-run',
+                  'phase': 'terminal', 'condition': 'success', 'stream': 'test'},
+        'content': '任务已完成', 'changed_content': '任务失败',
+        'attachment': 'Acme synthetic attachment.\n',
+        'changed_attachment': 'Acme changed synthetic attachment.\n',
+        'command_echo_code': 'import sys; print(sys.argv[-1])',
+        'command_wait_code': 'import time; time.sleep(30)',
+        'command_file_code': 'from pathlib import Path; import sys; print(Path(sys.argv[-1][1:]).read_text(encoding="utf-8"), end="")',
+    }
+
+
+def task_control_result():
+    """Generate the controller's acknowledged task request, without a success claim."""
+    return {'schemaVersion': 1, 'ok': True, 'name': 'SyntheticTask', 'verb': 'run',
+            'status': 'run_requested', 'acknowledged': True, 'before': 'Ready',
+            'after': 'Running', 'payload_success': None,
+            'message': 'Synthetic scheduler accepted run'}
+
+
+def task_control_binding():
+    """Generate an owner-reviewed task identity for injected authority controls."""
+    return {'task_id': 'synthetic/task', 'name': task_control_result()['name'],
+            'review_revision': 'sha256:' + 'a' * 64}
+
+
+def linkage_request():
+    """Generate a small request for injected linkage-authority unit tests."""
+    return {
+        'components': [{'component': 'acme-maintenance', 'tasks': [{'id': 'sync'}]}],
+        'bindings': {'tasks': {'acme-maintenance/sync': {'name': 'AcmeSync'}}},
+    }
+
+
+def blocked_queue_database(path):
+    import store
+    store.init_db(str(path))
+    old = store.add_item('Acme interrupted work', source='agent-center:work',
+        ext={'x_agent_exec_state': 'queued'}, db_path=str(path))
+    store.claim_work(old['id'], db_path=str(path))
+    for action, fields in [('spawn', {}), ('start', {'pid': 123, 'pstart': 456}),
+            ('child_start', {'receipt': {'phase': 'actor'}}),
+            ('child_finish', {'receipt': {'outcome': 'timeout'}, 'outcome': 'unknown'})]:
+        store.advance_work(old['id'], 1, action, db_path=str(path), **fields)
+    store.transition(old['id'], 'cancelled', db_path=str(path))
+    waiting = store.add_item('Acme queued work', source='agent-center:work',
+        ext={'x_agent_exec_state': 'queued'}, db_path=str(path))
+    return old, waiting
+
+
+def dispatch_case(workspace=None):
+    return {'actions': [{'op': 'create', 'title': 'Prepare Acme report',
+                         'due_at': '2030-05-01T12:00:00Z'}]}, {
+        'actions': [{'op': 'agent', 'request': 'Prepare the synthetic Acme report',
+                     'workspace': str(workspace) if workspace else None}]}
+
+
+def watchdog_database(path):
+    import store
+    store.init_db(str(path))
+    for key in ('weekly-poll-watchdog', 'monthly-refresh-watchdog', 'research-followup'):
+        store.add_item('Acme monitor ' + key, source='market-intel',
+                       idempotency_key='market-intel:' + key, db_path=str(path))
+    return path
+
+
+def artifact_workspace(path, size=24):
+    """Generate a non-code workspace containing a synthetic report."""
+    path.mkdir(parents=True, exist_ok=True)
+    (path / 'report.txt').write_text(('Acme synthetic report.\n' * (size // 22 + 1))[:size], encoding='utf-8')
+    return path
+
+
+def action_database(path, *, source='user', blocked=False):
+    """Generate a full owner database and one actionable synthetic todo."""
+    import store
+    store.init_db(str(path))
+    item = store.add_item('整理 Acme 报告', description='整理合成资料，输出一份报告。',
+                          source=source, db_path=str(path))
+    if blocked:
+        blocker = store.add_item('Acme prerequisite', source='user', db_path=str(path))
+        item = store.block(item['id'], blocker_id=blocker['id'], db_path=str(path))
+    return item
+
+
+def email_work_database(path):
+    import store
+    store.init_db(str(path))
+    parent = store.add_item('Review Acme invoice', source='email-monitor', kind='task', db_path=str(path))
+    child = store.add_item('Acme invoice received', source='email-monitor', kind='event', db_path=str(path),
+        ext={'x_console_consolidation':{'duplicate_of':parent['id'],'secret':'never forward'}})
+    return parent,child
+
+
+def work_database(path):
+    import sqlite3
+    with sqlite3.connect(path) as conn:
+        conn.executescript('''CREATE TABLE items(id TEXT PRIMARY KEY,title TEXT,state TEXT,source TEXT,
+            description TEXT,priority INTEGER,progress INTEGER,due_at TEXT,scheduled_at TEXT,
+            project TEXT,created_at TEXT,updated_at TEXT,ext TEXT);
+            CREATE TABLE events(seq INTEGER PRIMARY KEY,ts TEXT,item_id TEXT,actor TEXT,event_type TEXT,
+            from_state TEXT,to_state TEXT);''')
+        rows = [
+            ('work-done','Acme result','done','agent-center:work',{'x_agent_exec_state':'done','x_agent_exec_note':'Synthetic summary','secret':'never forward'}),
+            ('work-stalled','Acme draft','blocked','agent-center:work',{'x_agent_exec_state':'stalled'}),
+            ('work-running','Acme active','doing','agent-center:work',{'x_agent_exec_state':'running'}),
+            ('tracked','Synthetic commitment','pending','user',{}),
+            ('signal','Synthetic news','pending','daily-hotspots',{}),
+        ]
+        for item_id,title,state,source,ext in rows:
+            conn.execute('INSERT INTO items VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                (item_id,title,state,source,'Synthetic description',1,0,None,None,'Acme',
+                 '2030-01-01T00:00:00Z','2030-01-02T00:00:00Z',json.dumps(ext)))
+        for seq,item_id in enumerate(('work-done','signal','tracked'),1):
+            conn.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?)',
+                (seq,'2030-01-02T00:00:00Z',item_id,'synthetic','transition','pending','done'))
+    return path
+
+
 def cases():
     return {
         "synthetic_thread_titles": ["\u9700\u56de\u590d:\u5408\u6210\u4efb\u52a1A", "\u5f85\u529e:\u5408\u6210\u4efb\u52a1B"],
@@ -252,8 +419,11 @@ def main():
     for filename, value in {
         'examples.json': public_example(),
         'readiness.json.example': {'schema_version': 1, 'tasks': {}},
-        'db.sqlite3.example': {'format': 'SQLite', 'schema_user_version': 1,
-                               'tables': ['items', 'events', 'meta'], 'ddl': 'skills/schedule-reminder/scripts/store.py::_DDL'},
+        'db.sqlite3.example': {'format': 'SQLite', 'schema_user_version': 6,
+                               'tables': ['items', 'events', 'meta', 'agent_operations',
+                                          'notification_receipts', 'work_actions', 'work_action_stops'],
+                               'ddl': 'skills/schedule-reminder/scripts/store.py::_DDL',
+                               'action_ddl': 'skills/schedule-reminder/scripts/reminder_action_store.py::migrate'},
     }.items():
         (example_root/filename).write_text(json.dumps(value, indent=2)+'\n', encoding='utf-8', newline='\n')
 
@@ -555,7 +725,7 @@ def schedule11_query_cases():
 
 
 def schedule11_regression_source():
-    return "\"\"\"Generated queue-read regressions; all observations and actions are synthetic.\"\"\"\nfrom copy import deepcopy\n\nimport pytest\n\nimport agent_task\nimport agent_tick\nimport dispatch\nfrom make_fixtures import schedule11_query_cases\n\nCASE = schedule11_query_cases()\n\n\ndef pages(monkeypatch, owner, attribute, responses):\n    pending = iter(deepcopy(responses))\n    calls = []\n    def query(*args):\n        calls.append(args)\n        return next(pending)\n    monkeypatch.setattr(owner, attribute, query)\n    return calls\n\n\ndef invoke(role):\n    if role == \"get\":\n        return agent_task.get(CASE[\"identity\"])\n    if role == \"claim\":\n        return agent_task.claim(CASE[\"identity\"])\n    return agent_task.finish(CASE[\"identity\"], True)\n\n\n@pytest.mark.parametrize(\"case\", CASE[\"page_failures\"], ids=lambda case: case[\"name\"])\n@pytest.mark.parametrize(\"consumer\", (\"orders\", \"active_items\"))\ndef test_failed_page_never_returns_a_partial_census(monkeypatch, case, consumer):\n    owner = agent_task if consumer == \"orders\" else dispatch\n    calls = pages(monkeypatch, owner, \"rem\" if consumer == \"orders\" else \"_rem\", case[\"pages\"])\n    with pytest.raises(RuntimeError):\n        (agent_task.orders if consumer == \"orders\" else dispatch._active_items)()\n    assert len(calls) <= len(case[\"pages\"])\n    assert all(call[0] == \"list\" for call in calls)\n\n\n@pytest.mark.parametrize(\"case\", CASE[\"boundary_failures\"], ids=lambda case: case[\"name\"])\n@pytest.mark.parametrize(\"second_census\", (False, True))\ndef test_tick_query_failure_stops_before_claim_or_launch(monkeypatch, case, second_census):\n    responses = deepcopy(case[\"pages\"])\n    if second_census:\n        responses.insert(0, {\"items\": [deepcopy(CASE[\"found\"][\"item\"])], \"next_cursor\": None})\n    pages(monkeypatch, agent_task, \"rem\", responses)\n    effects = []\n    reaped = []\n    monkeypatch.setattr(agent_tick, \"reap\", lambda *_args, **_kwargs: reaped.append(True) or [])\n    monkeypatch.setattr(agent_task, \"claim\", lambda *_args: effects.append(\"claim\"))\n    monkeypatch.setattr(agent_tick, \"launch\", lambda *_args: effects.append(\"launch\"))\n    with pytest.raises(RuntimeError):\n        agent_tick.run(post=False)\n    assert effects == []\n    assert len(reaped) == int(second_census)\n\n\n@pytest.mark.parametrize(\"case\", CASE[\"dispatch_failures\"], ids=lambda case: case[\"name\"])\n@pytest.mark.parametrize(\"replay\", (False, True))\ndef test_dispatch_query_failure_stops_before_any_planner_or_action(monkeypatch, case, replay):\n    owner = dispatch if case[\"route\"] == \"pool\" else agent_task\n    pages(monkeypatch, owner, \"_rem\" if case[\"route\"] == \"pool\" else \"rem\", case[\"pages\"])\n    effects = []\n    monkeypatch.setattr(dispatch, \"call_chain\", lambda *_args, **_kwargs: effects.append(\"model\"))\n    monkeypatch.setattr(dispatch, \"execute\", lambda *_args, **_kwargs: effects.append(\"execute\"))\n    monkeypatch.setattr(dispatch, \"_post\", lambda *_args, **_kwargs: effects.append(\"confirm\"))\n    record = {\"plan\": deepcopy(CASE[\"plan\"]) if replay else None, \"outcomes\": {},\n              \"authorized_ids\": [], \"authorized_work_ids\": []}\n    before = deepcopy(record)\n    with pytest.raises(RuntimeError):\n        dispatch._dispatch(\"reminders\" if case[\"route\"] == \"pool\" else CASE[\"stream\"],\n                           CASE[\"reply\"], None, False, None, None, record,\n                           lambda: effects.append(\"save\"))\n    assert effects == []\n    assert record == before\n\n\n@pytest.mark.parametrize(\"case\", CASE[\"get_failures\"], ids=lambda case: case[\"name\"])\n@pytest.mark.parametrize(\"role\", (\"get\", \"claim\", \"finish\"))\ndef test_failed_get_cannot_transition_patch_or_finalize(monkeypatch, case, role):\n    mutations = []\n    def query(*args):\n        if args[0] == \"get\":\n            return deepcopy(case[\"response\"])\n        mutations.append(args[0])\n        return deepcopy(CASE[\"found\"])\n    monkeypatch.setattr(agent_task, \"rem\", query)\n    monkeypatch.setattr(agent_task, \"patch_ext\", lambda *_args, **_kwargs: mutations.append(\"patch\") or {})\n    with pytest.raises(RuntimeError):\n        invoke(role)\n    assert mutations == []\n\n\n@pytest.mark.parametrize(\"role\", (\"get\", \"claim\", \"finish\"))\ndef test_confirmed_absence_is_distinct_and_performs_no_mutation(monkeypatch, role):\n    calls = pages(monkeypatch, agent_task, \"rem\", [CASE[\"absent\"]])\n    monkeypatch.setattr(agent_task, \"patch_ext\", lambda *_args, **_kwargs: pytest.fail(\"absent item cannot be patched\"))\n    result = invoke(role)\n    if role == \"get\":\n        assert result is None\n    elif role == \"claim\":\n        assert result is False\n    else:\n        assert result[\"_err\"] == \"ERR_NOT_FOUND\"\n    assert calls == [(\"get\", \"--id\", CASE[\"identity\"])]\n\n\n@pytest.mark.parametrize(\"case\", CASE[\"positives\"], ids=lambda case: case[\"name\"])\n@pytest.mark.parametrize(\"consumer\", (\"orders\", \"active_items\"))\ndef test_complete_empty_and_multipage_reads_remain_available(monkeypatch, case, consumer):\n    owner = agent_task if consumer == \"orders\" else dispatch\n    calls = pages(monkeypatch, owner, \"rem\" if consumer == \"orders\" else \"_rem\", case[\"pages\"])\n    result = (agent_task.orders if consumer == \"orders\" else dispatch._active_items)()\n    expected = case[\"expected\"] if consumer == \"orders\" else [\n        {\"id\": item[\"id\"], \"title\": item[\"title\"]} for item in case[\"expected\"]]\n    assert result == expected\n    assert len(calls) == len(case[\"pages\"])\n\n\n@pytest.mark.parametrize(\"case\", CASE[\"positives\"], ids=lambda case: case[\"name\"])\ndef test_complete_census_retains_serial_running_and_stop_guards(monkeypatch, case):\n    pages(monkeypatch, agent_task, \"rem\", case[\"pages\"] + case[\"pages\"])\n    monkeypatch.setattr(agent_tick, \"reap\", lambda *_args, **_kwargs: [])\n    effects = []\n    monkeypatch.setattr(agent_task, \"claim\", lambda *_args: effects.append(\"claim\"))\n    monkeypatch.setattr(agent_tick, \"launch\", lambda *_args: effects.append(\"launch\"))\n    result = agent_tick.run(post=False)\n    assert result[\"launched\"] is None\n    assert result[\"running\"] == (0 if case[\"name\"] == \"empty\" else 1)\n    assert effects == []\n\n\n@pytest.mark.parametrize(\"role\", (\"get\", \"claim\", \"finish\"))\ndef test_successful_get_keeps_normal_claim_and_finish_paths(monkeypatch, role):\n    effects = []\n    def query(*args):\n        if args[0] != \"get\":\n            effects.append(args[0])\n        return deepcopy(CASE[\"found\"])\n    monkeypatch.setattr(agent_task, \"rem\", query)\n    monkeypatch.setattr(agent_task, \"patch_ext\", lambda *_args, **_kwargs: effects.append(\"patch\") or {})\n    result = invoke(role)\n    if role == \"get\":\n        assert result == CASE[\"found\"][\"item\"]\n        assert effects == []\n    elif role == \"claim\":\n        assert result is True\n        assert effects == [\"transition\", \"patch\"]\n    else:\n        assert result == CASE[\"found\"]\n        assert effects == [\"done\"]\n"
+    return '"""Generated queue-read regressions; all observations and actions are synthetic."""\nfrom copy import deepcopy\n\nimport pytest\n\nimport agent_task\nimport agent_tick\nimport dispatch\nimport store\nfrom make_fixtures import schedule11_query_cases\n\nCASE = schedule11_query_cases()\n\n\ndef pages(monkeypatch, owner, attribute, responses):\n    pending = iter(deepcopy(responses))\n    calls = []\n    def query(*args):\n        calls.append(args)\n        return next(pending)\n    monkeypatch.setattr(owner, attribute, query)\n    return calls\n\n\ndef invoke(role):\n    if role == "get":\n        return agent_task.get(CASE["identity"])\n    if role == "claim":\n        return agent_task.claim(CASE["identity"])\n    return agent_task.finish(CASE["identity"], True)\n\n\n@pytest.mark.parametrize("case", CASE["page_failures"], ids=lambda case: case["name"])\n@pytest.mark.parametrize("consumer", ("orders", "active_items"))\ndef test_failed_page_never_returns_a_partial_census(monkeypatch, case, consumer):\n    owner = agent_task if consumer == "orders" else dispatch\n    calls = pages(monkeypatch, owner, "rem" if consumer == "orders" else "_rem", case["pages"])\n    with pytest.raises(RuntimeError):\n        (agent_task.orders if consumer == "orders" else dispatch._active_items)()\n    assert len(calls) <= len(case["pages"])\n    assert all(call[0] == "list" for call in calls)\n\n\n@pytest.mark.parametrize("case", CASE["boundary_failures"], ids=lambda case: case["name"])\n@pytest.mark.parametrize("second_census", (False, True))\ndef test_tick_query_failure_stops_before_claim_or_launch(monkeypatch, case, second_census):\n    responses = deepcopy(case["pages"])\n    if second_census:\n        responses.insert(0, {"items": [deepcopy(CASE["found"]["item"])], "next_cursor": None})\n    pages(monkeypatch, agent_task, "rem", responses)\n    effects = []\n    reaped = []\n    monkeypatch.setattr(agent_tick, "reap", lambda *_args, **_kwargs: reaped.append(True) or [])\n    monkeypatch.setattr(agent_task, "claim", lambda *_args: effects.append("claim"))\n    monkeypatch.setattr(agent_tick, "launch", lambda *_args: effects.append("launch"))\n    with pytest.raises(RuntimeError):\n        agent_tick.run(post=False)\n    assert effects == []\n    assert len(reaped) == int(second_census)\n\n\n@pytest.mark.parametrize("case", CASE["dispatch_failures"], ids=lambda case: case["name"])\n@pytest.mark.parametrize("replay", (False, True))\ndef test_dispatch_query_failure_stops_before_any_planner_or_action(monkeypatch, case, replay):\n    owner = dispatch if case["route"] == "pool" else agent_task\n    pages(monkeypatch, owner, "_rem" if case["route"] == "pool" else "rem", case["pages"])\n    effects = []\n    monkeypatch.setattr(dispatch, "call_chain", lambda *_args, **_kwargs: effects.append("model"))\n    monkeypatch.setattr(dispatch, "execute", lambda *_args, **_kwargs: effects.append("execute"))\n    monkeypatch.setattr(dispatch, "_post", lambda *_args, **_kwargs: effects.append("confirm"))\n    record = {"plan": deepcopy(CASE["plan"]) if replay else None, "outcomes": {},\n              "authorized_ids": [], "authorized_work_ids": []}\n    before = deepcopy(record)\n    with pytest.raises(RuntimeError):\n        dispatch._dispatch("reminders" if case["route"] == "pool" else CASE["stream"],\n                           CASE["reply"], None, False, None, None, record,\n                           lambda: effects.append("save"))\n    assert effects == []\n    assert record == before\n\n\n@pytest.mark.parametrize("case", CASE["get_failures"], ids=lambda case: case["name"])\n@pytest.mark.parametrize("role", ("get", "claim", "finish"))\ndef test_failed_get_cannot_transition_patch_or_finalize(monkeypatch, case, role):\n    mutations = []\n    def query(*args):\n        if args[0] == "get":\n            return deepcopy(case["response"])\n        mutations.append(args[0])\n        return deepcopy(CASE["found"])\n    monkeypatch.setattr(agent_task, "rem", query)\n    monkeypatch.setattr(agent_task, "patch_ext", lambda *_args, **_kwargs: mutations.append("patch") or {})\n    with pytest.raises(RuntimeError):\n        invoke(role)\n    assert mutations == []\n\n\n@pytest.mark.parametrize("role", ("get", "claim", "finish"))\ndef test_confirmed_absence_is_distinct_and_performs_no_mutation(monkeypatch, role):\n    calls = pages(monkeypatch, agent_task, "rem", [CASE["absent"]])\n    monkeypatch.setattr(agent_task, "patch_ext", lambda *_args, **_kwargs: pytest.fail("absent item cannot be patched"))\n    result = invoke(role)\n    if role == "get":\n        assert result is None\n    elif role == "claim":\n        assert result is False\n    else:\n        assert result["_err"] == "ERR_NOT_FOUND"\n    assert calls == [("get", "--id", CASE["identity"])]\n\n\n@pytest.mark.parametrize("case", CASE["positives"], ids=lambda case: case["name"])\n@pytest.mark.parametrize("consumer", ("orders", "active_items"))\ndef test_complete_empty_and_multipage_reads_remain_available(monkeypatch, case, consumer):\n    owner = agent_task if consumer == "orders" else dispatch\n    calls = pages(monkeypatch, owner, "rem" if consumer == "orders" else "_rem", case["pages"])\n    result = (agent_task.orders if consumer == "orders" else dispatch._active_items)()\n    expected = case["expected"] if consumer == "orders" else [\n        {"id": item["id"], "title": item["title"]} for item in case["expected"]]\n    assert result == expected\n    assert len(calls) == len(case["pages"])\n\n\n@pytest.mark.parametrize("case", CASE["positives"], ids=lambda case: case["name"])\ndef test_complete_census_retains_serial_running_and_stop_guards(monkeypatch, case):\n    store.init_db()\n    pages(monkeypatch, agent_task, "rem", case["pages"] + case["pages"])\n    monkeypatch.setattr(agent_tick, "reap", lambda *_args, **_kwargs: [])\n    effects = []\n    monkeypatch.setattr(agent_task, "claim", lambda *_args: effects.append("claim"))\n    monkeypatch.setattr(agent_tick, "launch", lambda *_args: effects.append("launch"))\n    result = agent_tick.run(post=False)\n    assert result["launched"] is None\n    assert result["running"] == (0 if case["name"] == "empty" else 1)\n    assert effects == []\n\n\n@pytest.mark.parametrize("role", ("get", "claim", "finish"))\ndef test_successful_get_keeps_normal_claim_and_finish_paths(monkeypatch, role):\n    store.init_db()\n    item = CASE["found"]["item"]\n    store.add_item(item["title"], source=agent_task.WORK_SOURCE, ext=item["ext"], _id=item["id"])\n    effects = []\n    def query(*args):\n        if args[0] != "get":\n            effects.append(args[0])\n        return deepcopy(CASE["found"])\n    monkeypatch.setattr(agent_task, "rem", query)\n    monkeypatch.setattr(agent_task, "patch_ext", lambda *_args, **_kwargs: effects.append("patch") or {})\n    result = invoke(role)\n    if role == "get":\n        assert result == CASE["found"]["item"]\n        assert effects == []\n    elif role == "claim":\n        assert result is True\n        assert effects == []\n        assert store.get_item(CASE["identity"])["state"] == "doing"\n        assert agent_task.operation(CASE["identity"])["generation"] == 1\n    else:\n        assert result == CASE["found"]\n        assert effects == ["done"]\n'
 
 
 def schedule12_review_cases():

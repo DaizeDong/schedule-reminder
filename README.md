@@ -14,17 +14,17 @@ Track todos, events and progress in a crash-safe SQLite store; fire due reminder
 ## ⭐ Design Philosophy
 
 schedule-reminder is a **T0 infrastructure base**: other skills write reminders into it and read task
-progress out of it. So its single governing principle is **"a base is the contract, not the
-storage"**, downstream depends on a frozen CLI/JSON surface (with an `api_version`), never on the
-database, so the engine can be rewritten forever without breaking anyone. v0.1 spends its whole
-budget on the guarantees a base must never break: concurrency-safe + crash-safe persistence, a
+progress out of it. Downstream integrations use the versioned CLI/JSON surface (with an
+`api_version`) and the documented read-only Task Console linkage seam, never database internals.
+v0.1 focused on concurrency-safe + crash-safe persistence, a
 guarded state machine, idempotent writes, at-least-once delivery, and MUST-PRESERVE unknown fields,
 not on flashy features.
 
 A stable contract requires stricter input and state checks, at the cost of refusing
-ambiguous writes. At-least-once delivery can still retry after a failure; idempotency
-identities and receipts reconcile duplicates. Task registration, health reports and
-source inspection do not alone prove delivery.
+ambiguous writes. Due reminders retain at-least-once retry behavior. Identified business-event
+notifications use payload-bound receipts and preserve uncertain sends for reconciliation;
+uncertainty does not authorize an automatic resend. Task registration, health reports and source
+inspection do not alone prove delivery.
 
 📜 **[Read the full design philosophy -> PHILOSOPHY.md](PHILOSOPHY.md)**
 
@@ -73,6 +73,7 @@ python reminder.py init
 python reminder.py add --title "Reply to recruiter" --due-at 2026-06-28T17:00:00Z --priority 1 \
        --source me --idempotency-key me:1
 python reminder.py list --active
+python reminder.py creation-preflight --title "Prepare Acme report" --source my-skill --idempotency-key my-skill:report-1
 python reminder.py transition --id <ID> --to doing --progress 30
 python reminder.py done --id <ID>
 python reminder.py tick --now 2026-06-28T17:00:00Z   # the scheduler runs this every 5 min
@@ -92,7 +93,8 @@ See [examples.json](examples.json) for synthetic output reproduced by tools/make
 ```
 SQLite (WAL) single file        <- private storage, downstream NEVER touches it
   store.py (typed functions)    <- in-process; trusted skills may import
-    reminder.py [--actor NAME] <verb>   <- the ONLY stable contract (api_version 1.0.0)
+    reminder.py [--actor NAME] <verb>   <- versioned CLI contract (api_version 1.0.0)
+    reminder_linked_items.py           <- read-only, reviewed Task Console linkage
 [Windows task: PT5M heartbeat] -> reminder.py tick -> reconcile due -> Discord relay (out)
 [Windows task: PT10M ingest]   -> ingest_tick -> poll every readable channel -> a registered
                                   command handler, else dispatch (LLM judge)              (in)
@@ -106,6 +108,9 @@ triggers, no silent skips.
 - **Deployment:** [`skills/schedule-reminder/reference/deployment.md`](skills/schedule-reminder/reference/deployment.md)
 - **Integration (for downstream skills):** [`skills/schedule-reminder/reference/integration.md`](skills/schedule-reminder/reference/integration.md)
 - **Delivery and work recovery:** [operations.md](skills/schedule-reminder/reference/operations.md).
+- **Creation and follow-ups:** [integration.md](skills/schedule-reminder/reference/integration.md) and [dispatch identity](docs/dispatch-identity.md).
+- **Work feed and completion:** [manual completion](docs/manual-completion.md) and [reviewed task linkage](skills/schedule-reminder/reference/linkage-review.md).
+- **Identified notifications:** [business-event receipts](skills/schedule-reminder/reference/notification-receipts.md).
 - **Source layout and storage retention:** [storage.md](docs/storage.md) and [storage.contract.json](storage.contract.json).
 
 ## Test coverage and evidence
@@ -128,6 +133,11 @@ unchanged into its synthetic profile; it does not load the operator's configurat
 Without the dependency, those checks report its absence. Live scheduled-task checks remain separate
 from offline capability tests.
 
+Creation, action-receipt and linkage tests cover synthetic retries and concurrent changes.
+Set `SCHEDULE_TEST_TASK_CONSOLE_ROOT` to a canonical Task Console checkout to also exercise its
+compiler and work API against the real reminder CLI. Those consumer checks explicitly skip when
+the checkout is not provided; no Scheduler task is run by them.
+
 ## Limitations
 
 - **SQLite ≥ 3.51.3 recommended.** Earlier versions carry a WAL-reset multi-writer corruption bug;
@@ -137,6 +147,9 @@ from offline capability tests.
 - **Recurrence uses rolling expansion.** The supported RRULE subset advances the master row to the next future occurrence; it does not materialize an infinite series. See the contract for supported fields.
 - **Windows-first deployment** (scheduled task via `install.ps1`); cron line provided for Unix.
 - **DB must stay on local NTFS**, never a OneDrive/GDrive/network path (WAL lock + sync corruption).
+- **Work completion needs llmcall execution evidence.** Missing process containment, cleanup
+  confirmation, model-family identity or review evidence leaves the run unresolved. Offline
+  controls do not establish that an installed llmcall version provides those capabilities.
 
 ## Languages
 
