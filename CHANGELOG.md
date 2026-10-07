@@ -1,13 +1,5 @@
 # Changelog
 
-## Storage metadata
-
-- Declare narrow diagnostic output families with private owner/selection manifests,
-  conditional source-copy and bundle holds, rebuildable validation, and historical
-  private design-document holds. Existing ownership, protected paths and budgets stay unchanged.
-- Keep unidentified state producers and action containers as explicit gaps. Metadata
-  declarations do not establish runtime success, complete owner recovery or authorize retirement.
-
 All notable changes to this project are documented here (Keep a Changelog style).
 
 ## [Unreleased]
@@ -18,6 +10,11 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - Persist notification claims under a stable business-event identity. Uncertain sends require reconciliation, and retries preserve the prepared target and payload.
 
 ### Changed
+- Declare narrow diagnostic output families with private owner/selection manifests,
+  conditional source-copy and bundle holds, rebuildable validation, and historical
+  private design-document holds. Existing ownership, protected paths and budgets stay unchanged.
+- Keep unidentified state producers and action containers as explicit gaps. Metadata
+  declarations do not establish runtime success, complete owner recovery or authorize retirement.
 - Resolve default configuration through the pinned companion discovery API. Inbox state, work runs and digest records use the companion root; DATA overrides remain independent and durable dispatch records retain their DATA state directory. Uninitialized reads stay inert and writes still require PRIVATE proof.
 - Declare narrow PRIVATE storage ownership for replay state and work records, with conditional retirement holds for historical console and upgrade groups. Arbitrary action outputs need owner-linked selected-output evidence; unknown paths remain failed coverage checks.
 - Set the aggregate storage review threshold to 64 MiB. Required tasks, receipts and recovery evidence remain protected when capacity review fails.
