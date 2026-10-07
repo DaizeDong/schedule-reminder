@@ -1148,6 +1148,279 @@
         "rule": "No new development writes. Hold until useful unique code, required DATA, selected results, registration and rollback evidence are extracted into their owning current families; reconcile incomplete transactions, consumer/process dependencies and SQLite state. Retirement requires verified inactivity and a separately authorized concrete removal plan. This classification asserts neither completed closure nor present removability."
       },
       "max_bytes": 100663296
+    },
+    {
+      "artifact_id": "action-diagnostic-report",
+      "path_pattern": "data/todo-actions/*/report.md",
+      "purpose": "Selected diagnostic evidence or reproducer for a reviewed owner-linked action.",
+      "schema": "Private owner-action selection manifest, evidence/delivery.json artifact hashes and the named diagnostic format.",
+      "producer": "Reviewed diagnostic action and its retained offline evidence utilities.",
+      "consumer_or_final_deliverable": "The matching owner review, selected diagnostic conclusion and unresolved recovery.",
+      "rebuild_or_restore": "Restore the selected bytes and manifest from PRIVATE history with their matching owner identities and source revision; never replay a production action to rebuild evidence.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep owner-linked, hash-selected diagnostic reports, reproducers and receipt evidence while the matching work, review or recovery is unresolved. The path family is eligibility for selected evidence, not automatic selection of every same-named output. Preserve the private owner-action linkage, selected-output manifest, source revision and required workspace reconciliation before retirement. A delivery receipt proves artifact provenance; it does not prove work completion or current runtime success."
+      }
+    },
+    {
+      "artifact_id": "action-diagnostic-evidence-collector",
+      "path_pattern": "data/todo-actions/*/collect_evidence.py",
+      "purpose": "Selected diagnostic evidence or reproducer for a reviewed owner-linked action.",
+      "schema": "Private owner-action selection manifest, evidence/delivery.json artifact hashes and the named diagnostic format.",
+      "producer": "Reviewed diagnostic action and its retained offline evidence utilities.",
+      "consumer_or_final_deliverable": "The matching owner review, selected diagnostic conclusion and unresolved recovery.",
+      "rebuild_or_restore": "Restore the selected bytes and manifest from PRIVATE history with their matching owner identities and source revision; never replay a production action to rebuild evidence.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep owner-linked, hash-selected diagnostic reports, reproducers and receipt evidence while the matching work, review or recovery is unresolved. The path family is eligibility for selected evidence, not automatic selection of every same-named output. Preserve the private owner-action linkage, selected-output manifest, source revision and required workspace reconciliation before retirement. A delivery receipt proves artifact provenance; it does not prove work completion or current runtime success."
+      }
+    },
+    {
+      "artifact_id": "action-diagnostic-regression-reproducer",
+      "path_pattern": "data/todo-actions/*/run_regression.py",
+      "purpose": "Selected diagnostic evidence or reproducer for a reviewed owner-linked action.",
+      "schema": "Private owner-action selection manifest, evidence/delivery.json artifact hashes and the named diagnostic format.",
+      "producer": "Reviewed diagnostic action and its retained offline evidence utilities.",
+      "consumer_or_final_deliverable": "The matching owner review, selected diagnostic conclusion and unresolved recovery.",
+      "rebuild_or_restore": "Restore the selected bytes and manifest from PRIVATE history with their matching owner identities and source revision; never replay a production action to rebuild evidence.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep owner-linked, hash-selected diagnostic reports, reproducers and receipt evidence while the matching work, review or recovery is unresolved. The path family is eligibility for selected evidence, not automatic selection of every same-named output. Preserve the private owner-action linkage, selected-output manifest, source revision and required workspace reconciliation before retirement. A delivery receipt proves artifact provenance; it does not prove work completion or current runtime success."
+      }
+    },
+    {
+      "artifact_id": "action-diagnostic-diagnosis-verifier",
+      "path_pattern": "data/todo-actions/*/verify_diagnosis.py",
+      "purpose": "Selected diagnostic evidence or reproducer for a reviewed owner-linked action.",
+      "schema": "Private owner-action selection manifest, evidence/delivery.json artifact hashes and the named diagnostic format.",
+      "producer": "Reviewed diagnostic action and its retained offline evidence utilities.",
+      "consumer_or_final_deliverable": "The matching owner review, selected diagnostic conclusion and unresolved recovery.",
+      "rebuild_or_restore": "Restore the selected bytes and manifest from PRIVATE history with their matching owner identities and source revision; never replay a production action to rebuild evidence.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep owner-linked, hash-selected diagnostic reports, reproducers and receipt evidence while the matching work, review or recovery is unresolved. The path family is eligibility for selected evidence, not automatic selection of every same-named output. Preserve the private owner-action linkage, selected-output manifest, source revision and required workspace reconciliation before retirement. A delivery receipt proves artifact provenance; it does not prove work completion or current runtime success."
+      }
+    },
+    {
+      "artifact_id": "action-diagnostic-verification-wrapper",
+      "path_pattern": "data/todo-actions/*/verify.ps1",
+      "purpose": "Selected diagnostic evidence or reproducer for a reviewed owner-linked action.",
+      "schema": "Private owner-action selection manifest, evidence/delivery.json artifact hashes and the named diagnostic format.",
+      "producer": "Reviewed diagnostic action and its retained offline evidence utilities.",
+      "consumer_or_final_deliverable": "The matching owner review, selected diagnostic conclusion and unresolved recovery.",
+      "rebuild_or_restore": "Restore the selected bytes and manifest from PRIVATE history with their matching owner identities and source revision; never replay a production action to rebuild evidence.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep owner-linked, hash-selected diagnostic reports, reproducers and receipt evidence while the matching work, review or recovery is unresolved. The path family is eligibility for selected evidence, not automatic selection of every same-named output. Preserve the private owner-action linkage, selected-output manifest, source revision and required workspace reconciliation before retirement. A delivery receipt proves artifact provenance; it does not prove work completion or current runtime success."
+      }
+    },
+    {
+      "artifact_id": "action-diagnostic-runtime-evidence",
+      "path_pattern": "data/todo-actions/*/evidence/runtime.json",
+      "purpose": "Selected diagnostic evidence or reproducer for a reviewed owner-linked action.",
+      "schema": "Private owner-action selection manifest, evidence/delivery.json artifact hashes and the named diagnostic format.",
+      "producer": "Reviewed diagnostic action and its retained offline evidence utilities.",
+      "consumer_or_final_deliverable": "The matching owner review, selected diagnostic conclusion and unresolved recovery.",
+      "rebuild_or_restore": "Restore the selected bytes and manifest from PRIVATE history with their matching owner identities and source revision; never replay a production action to rebuild evidence.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep owner-linked, hash-selected diagnostic reports, reproducers and receipt evidence while the matching work, review or recovery is unresolved. The path family is eligibility for selected evidence, not automatic selection of every same-named output. Preserve the private owner-action linkage, selected-output manifest, source revision and required workspace reconciliation before retirement. A delivery receipt proves artifact provenance; it does not prove work completion or current runtime success."
+      }
+    },
+    {
+      "artifact_id": "action-diagnostic-historical-failures",
+      "path_pattern": "data/todo-actions/*/evidence/historical-failures.json",
+      "purpose": "Selected diagnostic evidence or reproducer for a reviewed owner-linked action.",
+      "schema": "Private owner-action selection manifest, evidence/delivery.json artifact hashes and the named diagnostic format.",
+      "producer": "Reviewed diagnostic action and its retained offline evidence utilities.",
+      "consumer_or_final_deliverable": "The matching owner review, selected diagnostic conclusion and unresolved recovery.",
+      "rebuild_or_restore": "Restore the selected bytes and manifest from PRIVATE history with their matching owner identities and source revision; never replay a production action to rebuild evidence.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep owner-linked, hash-selected diagnostic reports, reproducers and receipt evidence while the matching work, review or recovery is unresolved. The path family is eligibility for selected evidence, not automatic selection of every same-named output. Preserve the private owner-action linkage, selected-output manifest, source revision and required workspace reconciliation before retirement. A delivery receipt proves artifact provenance; it does not prove work completion or current runtime success."
+      }
+    },
+    {
+      "artifact_id": "action-diagnostic-task-readback",
+      "path_pattern": "data/todo-actions/*/evidence/task-readback.json",
+      "purpose": "Selected diagnostic evidence or reproducer for a reviewed owner-linked action.",
+      "schema": "Private owner-action selection manifest, evidence/delivery.json artifact hashes and the named diagnostic format.",
+      "producer": "Reviewed diagnostic action and its retained offline evidence utilities.",
+      "consumer_or_final_deliverable": "The matching owner review, selected diagnostic conclusion and unresolved recovery.",
+      "rebuild_or_restore": "Restore the selected bytes and manifest from PRIVATE history with their matching owner identities and source revision; never replay a production action to rebuild evidence.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep owner-linked, hash-selected diagnostic reports, reproducers and receipt evidence while the matching work, review or recovery is unresolved. The path family is eligibility for selected evidence, not automatic selection of every same-named output. Preserve the private owner-action linkage, selected-output manifest, source revision and required workspace reconciliation before retirement. A delivery receipt proves artifact provenance; it does not prove work completion or current runtime success."
+      }
+    },
+    {
+      "artifact_id": "action-diagnostic-selected-patch",
+      "path_pattern": "data/todo-actions/*/evidence/existing-fix.patch",
+      "purpose": "Selected diagnostic evidence or reproducer for a reviewed owner-linked action.",
+      "schema": "Private owner-action selection manifest, evidence/delivery.json artifact hashes and the named diagnostic format.",
+      "producer": "Reviewed diagnostic action and its retained offline evidence utilities.",
+      "consumer_or_final_deliverable": "The matching owner review, selected diagnostic conclusion and unresolved recovery.",
+      "rebuild_or_restore": "Restore the selected bytes and manifest from PRIVATE history with their matching owner identities and source revision; never replay a production action to rebuild evidence.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep owner-linked, hash-selected diagnostic reports, reproducers and receipt evidence while the matching work, review or recovery is unresolved. The path family is eligibility for selected evidence, not automatic selection of every same-named output. Preserve the private owner-action linkage, selected-output manifest, source revision and required workspace reconciliation before retirement. A delivery receipt proves artifact provenance; it does not prove work completion or current runtime success."
+      }
+    },
+    {
+      "artifact_id": "action-diagnostic-source-before",
+      "path_pattern": "data/todo-actions/*/evidence/agent_run.before.py",
+      "purpose": "Selected diagnostic evidence or reproducer for a reviewed owner-linked action.",
+      "schema": "Private owner-action selection manifest, evidence/delivery.json artifact hashes and the named diagnostic format.",
+      "producer": "Reviewed diagnostic action and its retained offline evidence utilities.",
+      "consumer_or_final_deliverable": "The matching owner review, selected diagnostic conclusion and unresolved recovery.",
+      "rebuild_or_restore": "Restore the selected bytes and manifest from PRIVATE history with their matching owner identities and source revision; never replay a production action to rebuild evidence.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep owner-linked, hash-selected diagnostic reports, reproducers and receipt evidence while the matching work, review or recovery is unresolved. The path family is eligibility for selected evidence, not automatic selection of every same-named output. Preserve the private owner-action linkage, selected-output manifest, source revision and required workspace reconciliation before retirement. A delivery receipt proves artifact provenance; it does not prove work completion or current runtime success."
+      }
+    },
+    {
+      "artifact_id": "action-diagnostic-source-after",
+      "path_pattern": "data/todo-actions/*/evidence/agent_run.fixed.py",
+      "purpose": "Selected diagnostic evidence or reproducer for a reviewed owner-linked action.",
+      "schema": "Private owner-action selection manifest, evidence/delivery.json artifact hashes and the named diagnostic format.",
+      "producer": "Reviewed diagnostic action and its retained offline evidence utilities.",
+      "consumer_or_final_deliverable": "The matching owner review, selected diagnostic conclusion and unresolved recovery.",
+      "rebuild_or_restore": "Restore the selected bytes and manifest from PRIVATE history with their matching owner identities and source revision; never replay a production action to rebuild evidence.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep owner-linked, hash-selected diagnostic reports, reproducers and receipt evidence while the matching work, review or recovery is unresolved. The path family is eligibility for selected evidence, not automatic selection of every same-named output. Preserve the private owner-action linkage, selected-output manifest, source revision and required workspace reconciliation before retirement. A delivery receipt proves artifact provenance; it does not prove work completion or current runtime success."
+      }
+    },
+    {
+      "artifact_id": "action-diagnostic-verification-result",
+      "path_pattern": "data/todo-actions/*/evidence/verification.json",
+      "purpose": "Selected diagnostic evidence or reproducer for a reviewed owner-linked action.",
+      "schema": "Private owner-action selection manifest, evidence/delivery.json artifact hashes and the named diagnostic format.",
+      "producer": "Reviewed diagnostic action and its retained offline evidence utilities.",
+      "consumer_or_final_deliverable": "The matching owner review, selected diagnostic conclusion and unresolved recovery.",
+      "rebuild_or_restore": "Restore the selected bytes and manifest from PRIVATE history with their matching owner identities and source revision; never replay a production action to rebuild evidence.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep owner-linked, hash-selected diagnostic reports, reproducers and receipt evidence while the matching work, review or recovery is unresolved. The path family is eligibility for selected evidence, not automatic selection of every same-named output. Preserve the private owner-action linkage, selected-output manifest, source revision and required workspace reconciliation before retirement. A delivery receipt proves artifact provenance; it does not prove work completion or current runtime success."
+      }
+    },
+    {
+      "artifact_id": "action-diagnostic-positive-regression-result",
+      "path_pattern": "data/todo-actions/*/evidence/regression-positive.txt",
+      "purpose": "Selected diagnostic evidence or reproducer for a reviewed owner-linked action.",
+      "schema": "Private owner-action selection manifest, evidence/delivery.json artifact hashes and the named diagnostic format.",
+      "producer": "Reviewed diagnostic action and its retained offline evidence utilities.",
+      "consumer_or_final_deliverable": "The matching owner review, selected diagnostic conclusion and unresolved recovery.",
+      "rebuild_or_restore": "Restore the selected bytes and manifest from PRIVATE history with their matching owner identities and source revision; never replay a production action to rebuild evidence.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep owner-linked, hash-selected diagnostic reports, reproducers and receipt evidence while the matching work, review or recovery is unresolved. The path family is eligibility for selected evidence, not automatic selection of every same-named output. Preserve the private owner-action linkage, selected-output manifest, source revision and required workspace reconciliation before retirement. A delivery receipt proves artifact provenance; it does not prove work completion or current runtime success."
+      }
+    },
+    {
+      "artifact_id": "action-diagnostic-negative-regression-result",
+      "path_pattern": "data/todo-actions/*/evidence/regression-negative.txt",
+      "purpose": "Selected diagnostic evidence or reproducer for a reviewed owner-linked action.",
+      "schema": "Private owner-action selection manifest, evidence/delivery.json artifact hashes and the named diagnostic format.",
+      "producer": "Reviewed diagnostic action and its retained offline evidence utilities.",
+      "consumer_or_final_deliverable": "The matching owner review, selected diagnostic conclusion and unresolved recovery.",
+      "rebuild_or_restore": "Restore the selected bytes and manifest from PRIVATE history with their matching owner identities and source revision; never replay a production action to rebuild evidence.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep owner-linked, hash-selected diagnostic reports, reproducers and receipt evidence while the matching work, review or recovery is unresolved. The path family is eligibility for selected evidence, not automatic selection of every same-named output. Preserve the private owner-action linkage, selected-output manifest, source revision and required workspace reconciliation before retirement. A delivery receipt proves artifact provenance; it does not prove work completion or current runtime success."
+      }
+    },
+    {
+      "artifact_id": "action-diagnostic-delivery-manifest",
+      "path_pattern": "data/todo-actions/*/evidence/delivery.json",
+      "purpose": "Selected diagnostic evidence or reproducer for a reviewed owner-linked action.",
+      "schema": "Private owner-action selection manifest, evidence/delivery.json artifact hashes and the named diagnostic format.",
+      "producer": "Reviewed diagnostic action and its retained offline evidence utilities.",
+      "consumer_or_final_deliverable": "The matching owner review, selected diagnostic conclusion and unresolved recovery.",
+      "rebuild_or_restore": "Restore the selected bytes and manifest from PRIVATE history with their matching owner identities and source revision; never replay a production action to rebuild evidence.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep owner-linked, hash-selected diagnostic reports, reproducers and receipt evidence while the matching work, review or recovery is unresolved. The path family is eligibility for selected evidence, not automatic selection of every same-named output. Preserve the private owner-action linkage, selected-output manifest, source revision and required workspace reconciliation before retirement. A delivery receipt proves artifact provenance; it does not prove work completion or current runtime success."
+      }
+    },
+    {
+      "artifact_id": "action-diagnostic-source-copy",
+      "path_pattern": "data/todo-actions/*/repository/**",
+      "purpose": "Historical source copy supporting selected diagnostic evidence; current source authority stays in the canonical source checkout.",
+      "schema": "Recorded private source revision, retained Git refs and reviewed byte-equivalence evidence.",
+      "producer": "Reviewed diagnostic action source-copy preparation.",
+      "consumer_or_final_deliverable": "Selected diagnostic interpretation and conditional source recovery.",
+      "rebuild_or_restore": "Restore the recorded source revision and reviewed useful differences from PRIVATE history; do not adopt copied runtime state or superseded caller policy overrides.",
+      "retention_rule": {
+        "class": "retired",
+        "rule": "No new development writes without an explicit owner run. Hold until the matching owner review and recovery, retained source revision/refs, useful unique code, selected results, receipt dependencies and workspace references are reconciled. Retirement requires verified inactivity and a separately authorized concrete removal plan. This classification asserts neither completion, reconciliation nor current removability."
+      }
+    },
+    {
+      "artifact_id": "action-diagnostic-bundle",
+      "path_pattern": "data/todo-actions/*/schedule-reminder.bundle",
+      "purpose": "Historical source bundle backing the selected diagnostic source revision and recovery.",
+      "schema": "Git bundle with recorded source revision, refs and selected-evidence dependency.",
+      "producer": "Reviewed diagnostic action bundle preparation.",
+      "consumer_or_final_deliverable": "Selected diagnostic interpretation and conditional source recovery.",
+      "rebuild_or_restore": "Verify retained refs and selected source bytes before restoring; a bundle is not an independent live source authority.",
+      "retention_rule": {
+        "class": "retired",
+        "rule": "No new development writes without an explicit owner run. Hold until the matching owner review and recovery, retained source revision/refs, useful unique code, selected results, receipt dependencies and workspace references are reconciled. Retirement requires verified inactivity and a separately authorized concrete removal plan. This classification asserts neither completion, reconciliation nor current removability."
+      }
+    },
+    {
+      "artifact_id": "action-diagnostic-validation",
+      "path_pattern": "data/todo-actions/*/validation/**",
+      "purpose": "Rebuildable isolated synthetic regression outputs for the retained diagnostic reproducer.",
+      "schema": "run_regression.py isolated positive/negative validation records and selected result receipts.",
+      "producer": "The retained offline diagnostic regression reproducer.",
+      "consumer_or_final_deliverable": "Selected diagnostic regression conclusion and unresolved verification review.",
+      "rebuild_or_restore": "Regenerate synthetic inputs from tools/make_fixtures.py and the reviewed reproducer in initialized PRIVATE storage; do not invoke production actions or external delivery.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while the matching owner review, source/reproducer dependency or recovery is unresolved. Preserve selected results and confirm writer/process inactivity before a separately authorized retirement. Synthetic validation does not establish production success or reconcile workspace references."
+      }
+    },
+    {
+      "artifact_id": "historical-private-architecture",
+      "path_pattern": "ARCHITECTURE.md",
+      "purpose": "Historical private design document retained for governance and recovery review.",
+      "schema": "Private Markdown design history; generic current tool behavior belongs to source documentation.",
+      "producer": "Historical private design and review process.",
+      "consumer_or_final_deliverable": "Review of any still-required private deployment, operating and recovery decisions.",
+      "rebuild_or_restore": "Restore the matching private Git revision for historical interpretation; preserve required decisions in their current PRIVATE owner reference.",
+      "retention_rule": {
+        "class": "retired",
+        "rule": "Freeze historical prose and compare active deployment, operating and recovery dependencies with current owner references. Hold until governance and recovery closure, verified inactivity and a separately authorized concrete removal plan. Do not publish private topology or treat this classification as deletion permission."
+      }
+    },
+    {
+      "artifact_id": "historical-private-push-architecture",
+      "path_pattern": "PUSH_ARCHITECTURE.md",
+      "purpose": "Historical private design document retained for governance and recovery review.",
+      "schema": "Private Markdown design history; generic current tool behavior belongs to source documentation.",
+      "producer": "Historical private design and review process.",
+      "consumer_or_final_deliverable": "Review of any still-required private deployment, operating and recovery decisions.",
+      "rebuild_or_restore": "Restore the matching private Git revision for historical interpretation; preserve required decisions in their current PRIVATE owner reference.",
+      "retention_rule": {
+        "class": "retired",
+        "rule": "Freeze historical prose and compare active deployment, operating and recovery dependencies with current owner references. Hold until governance and recovery closure, verified inactivity and a separately authorized concrete removal plan. Do not publish private topology or treat this classification as deletion permission."
+      }
+    },
+    {
+      "artifact_id": "historical-private-reminder-redesign",
+      "path_pattern": "REMINDER_REDESIGN.md",
+      "purpose": "Historical private design document retained for governance and recovery review.",
+      "schema": "Private Markdown design history; generic current tool behavior belongs to source documentation.",
+      "producer": "Historical private design and review process.",
+      "consumer_or_final_deliverable": "Review of any still-required private deployment, operating and recovery decisions.",
+      "rebuild_or_restore": "Restore the matching private Git revision for historical interpretation; preserve required decisions in their current PRIVATE owner reference.",
+      "retention_rule": {
+        "class": "retired",
+        "rule": "Freeze historical prose and compare active deployment, operating and recovery dependencies with current owner references. Hold until governance and recovery closure, verified inactivity and a separately authorized concrete removal plan. Do not publish private topology or treat this classification as deletion permission."
+      }
     }
   ]
 }

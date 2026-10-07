@@ -1,5 +1,13 @@
 # Changelog
 
+## Storage metadata
+
+- Declare narrow diagnostic output families with private owner/selection manifests,
+  conditional source-copy and bundle holds, rebuildable validation, and historical
+  private design-document holds. Existing ownership, protected paths and budgets stay unchanged.
+- Keep unidentified state producers and action containers as explicit gaps. Metadata
+  declarations do not establish runtime success, complete owner recovery or authorize retirement.
+
 All notable changes to this project are documented here (Keep a Changelog style).
 
 ## [Unreleased]

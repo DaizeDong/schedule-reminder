@@ -55,6 +55,28 @@ and any required pending state. A hash manifest without that linkage is insuffic
 Until those facts are reviewed, workspace files remain protected inventory gaps;
 the contract does not classify arbitrary cloned source, scripts or logs as core.
 
+The diagnostic families name fifteen selected report, reproducer, evidence and
+delivery-manifest leaves under `data/todo-actions/*/`. The work-item segment is
+structural; owner identities and selected byte hashes remain in PRIVATE manifests.
+These paths identify eligible formats, not automatic core selection of every
+same-named output. Keep selected evidence with its owner-action linkage while
+work, review or recovery is unresolved. A delivery receipt proves provenance,
+not completion or current runtime success; missing workspace references still
+require reconciliation.
+
+Diagnostic `repository/**` copies and the named `schedule-reminder.bundle` have a
+conditional `retired` hold. Review useful source differences, selected refs/results
+and recovery dependencies before any separately authorized retirement. Copied
+source does not replace current source authority or restore superseded caller
+policy overrides. Diagnostic `validation/**` is rebuildable synthetic evidence;
+preserve selected results and confirm writer inactivity before retirement. No
+declaration creates a workspace, runs an action or authorizes deletion.
+
+The single-level action directories themselves remain gaps: the matcher checks
+paths and cannot prove directory type or owner linkage. Files outside the named
+families also remain gaps. State files without a confirmed producer retain their
+gap and recovery hold; metadata coverage cannot establish a live writer binding.
+
 The historical `data/task-console/console.sqlite3*` set belongs to the console
 schema; the current console binding selects its separate private companion. The
 `data/todo-action-upgrade/` namespace holds owner-database upgrade, isolated acceptance,
@@ -66,9 +88,12 @@ separately authorized retirement. Historical status does not prove that these
 requirements have passed. The retained original reminder import remains a separate
 recovery dependency and is never another live scheduler.
 
-`DIRECTORY-LAYOUT.md` is an exact current recovery reference. Other undeclared private
-design documents and state files without a confirmed producer remain gaps until
-their authority, consumer and recovery dependencies are reviewed. `retired/` is a
+`DIRECTORY-LAYOUT.md` is an exact current recovery reference. The historical private
+`ARCHITECTURE.md`, `PUSH_ARCHITECTURE.md` and `REMINDER_REDESIGN.md` documents have a
+conditional `retired` governance hold. Compare required private operating/recovery
+decisions with current owner references before separately authorized retirement;
+do not publish private topology. Other unreviewed design documents and state files
+without a confirmed producer remain gaps. `retired/` is a
 temporary reviewed namespace pending removal. The aggregate review threshold is 64 MiB,
 excluding Git administration. A breached threshold remains a failed capacity check;
 required state and recovery evidence remain protected. Budgets never authorize
