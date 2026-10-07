@@ -77,7 +77,7 @@ _STATE_DIR = None
 
 
 def state_dir():
-    return _STATE_DIR or str(private_data.data_dir()/"state")
+    return _STATE_DIR or str(private_data.config_root()/"state")
 
 
 def prepare_state():

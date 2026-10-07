@@ -158,7 +158,7 @@ def runs_root():
     private companion that already holds every other piece of bus state. Assembled with os.path.join
     rather than written as a literal path, matching the rest of the bus. There is no in-repo
     fallback: if this cannot be created the runner fails loudly instead of writing into the repo."""
-    return os.environ.get("AGENT_CENTER_RUNS") or str(private_data.data_dir()/"agent-runs")
+    return os.environ.get("AGENT_CENTER_RUNS") or str(private_data.config_root()/"agent-runs")
 
 
 def run_dir(item, create=False):

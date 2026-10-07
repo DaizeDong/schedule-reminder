@@ -488,7 +488,7 @@ def main():
     a = ap.parse_args()
     reply = a.reply
     if reply is None:
-        p = os.path.join(_STATE_DIR or str(private_data.data_dir()/"state"), "%s.inbox" % a.stream)
+        p = os.path.join(_STATE_DIR or str(private_data.config_root()/"state"), "%s.inbox" % a.stream)
         reply = open(p, encoding="utf-8").read() if os.path.exists(p) else ""
     if not reply.strip():
         print(json.dumps({"ok": False, "reason": "empty reply"}))

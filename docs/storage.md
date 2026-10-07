@@ -16,13 +16,63 @@ relative to the selected private repository root, not to this source checkout.
 | `guards/` | Pinned security and private-data boundary checks |
 | `style/` | Pinned documentation checks |
 
-`private_data.py` selects `SCHEDULE_REMINDER_CONFIG`, or `AGENT_CENTER_CONFIG`, then
-the default configuration root. Current data defaults to its `data` directory;
-explicit database, run and digest selections may use other PRIVATE locations.
-The contract also describes retained root-level `state`, `agent-runs` and digest
-layouts. An entry in the contract does not create a directory or change the installed
-consumer's selected path. See [deployment](../skills/schedule-reminder/reference/deployment.md)
-for initialization and SQLite-aware backup requirements.
+`private_data.py` selects the initialized PRIVATE companion through
+`SCHEDULE_REMINDER_CONFIG`, `AGENT_CENTER_CONFIG` or its configured discovery.
+Without an explicit config pointer, the pinned Guards resolver selects an initialized
+sibling companion before a home companion. DATA overrides do not select the config
+root. Missing storage remains inert for reads; missing Guards or an unproven inferred
+companion fails explicitly, and every write still requires PRIVATE proof.
+Current defaults use root-level `state/`, `agent-runs/` and `digest.json`; the sole
+reminder database is `data/db.sqlite3`. The contract also declares known leaves for
+retained `data/state/`, `data/agent-runs/` and `data/digest.json` selections. Explicit
+overrides need their own reviewed path families and PRIVATE write proof. An entry
+does not create a directory or change the installed consumer's selected path. See
+[deployment](../skills/schedule-reminder/reference/deployment.md) for initialization
+and SQLite-aware backup requirements.
+
+State ownership covers cursor files, inbox projections, reaction identities/baselines
+and durable inbound/dispatch JSON records. One inbox pattern covers text, reaction
+and migration projections without overlapping owners. Preserve replay identities
+and uncertain actions with their matching task-store receipts. Diagnostics, atomic
+staging and locks have separate conditional retention; an old timestamp or a newer
+cursor proves neither writer inactivity nor successful delivery.
+Ingest staging follows the root inbox state directory; durable dispatch retry records
+retain their distinct default under `data/state/dispatch/`.
+
+Run ownership names request/event files and the known approach/round leaves in both
+current attempt and verified earlier layouts. Keep active or unresolved work and
+evidence required to interpret its matching generation and attempt. Worker logs
+are diagnostics with a conditional hold during unresolved recovery. Once completed
+rounds no longer support selected results or recovery, preserve the useful result
+once and review the remaining development records for retirement. Model answers,
+verification text and a directory's existence do not independently prove completion.
+
+The installed action workspace is `data/todo-actions/`. Its producer creates a
+per-work-item directory and permits task-specific output formats. That does not
+establish a stable contract for every descendant. A requested final output needs a
+manifest linked to its owner action/work-item identity, selected outputs and hashes,
+and any required pending state. A hash manifest without that linkage is insufficient.
+Until those facts are reviewed, workspace files remain protected inventory gaps;
+the contract does not classify arbitrary cloned source, scripts or logs as core.
+
+The historical `data/task-console/console.sqlite3*` set belongs to the console
+schema; the current console binding selects its separate private companion. The
+`data/todo-action-upgrade/` namespace holds owner-database upgrade, isolated acceptance,
+registration and launcher staging evidence. Both are `retired` with a conditional
+hold, and accept no new development writes. Extract useful unique code, required
+DATA, selected conclusions and rollback evidence, then reconcile incomplete
+registrations, unique DB history, consumers, processes and SQLite state before a
+separately authorized retirement. Historical status does not prove that these
+requirements have passed. The retained original reminder import remains a separate
+recovery dependency and is never another live scheduler.
+
+`DIRECTORY-LAYOUT.md` is an exact current recovery reference. Other undeclared private
+design documents and state files without a confirmed producer remain gaps until
+their authority, consumer and recovery dependencies are reviewed. `retired/` is a
+temporary reviewed namespace pending removal. The aggregate review threshold is 64 MiB,
+excluding Git administration. A breached threshold remains a failed capacity check;
+required state and recovery evidence remain protected. Budgets never authorize
+deletion or make a development archive a required output.
 
 Use the shared storage checker from the canonical skill-smith source checkout:
 
@@ -31,15 +81,9 @@ python skills/skill-smith/scripts/storage_contract.py validate --repo <source-ch
 python skills/skill-smith/scripts/storage_contract.py check --repo <source-checkout> --companion <private-repository-root> --json
 ```
 
-The explicit companion path must be the PRIVATE Git worktree root. Its folder name
-does not establish visibility or governance. The checker validates declared path
-coverage and sizes; domain scripts validate record contents. Externally managed
-integration artifacts and old design documents that have not been classified remain
-inventory gaps until their producers, consumers and recovery dependencies are reviewed.
-Do not add a broad retention rule merely to turn an unknown inventory green.
-
-Keep current tasks, cursors, action identities, required configuration and recovery
-evidence. Extract useful code and selected results from completed development groups,
-then retire their redundant workspaces. `retired/` is temporary pending removal, not
-an archive. A size threshold requires review and never authorizes deletion. Moving
-an artifact into PRIVATE storage changes its location but does not reclaim space.
+The explicit companion path must be the exact PRIVATE Git worktree root, including
+configuration and recovery files. Checking only its `data/` child is invalid. Folder
+names do not establish visibility. The checker proves PRIVATE admission and validates
+metadata coverage and sizes; domain scripts validate record contents. Undeclared,
+ambiguous or unobserved requirements remain failed checks after schema validation.
+Moving data into PRIVATE storage changes its location and does not reclaim space.
