@@ -7,6 +7,7 @@ import os
 import subprocess
 import stat
 import time
+from types import SimpleNamespace
 
 SOURCE = Path(__file__).resolve().parents[3]
 
@@ -16,7 +17,19 @@ def config_root():
     if selected:
         path = assert_writable_path(selected).resolve()
         return path.parent if path.suffix.lower() == '.json' else path
-    return Path.home()/'.schedule-reminder-config'
+    resolver = _shared_resolver()
+    # A DATA override selects output storage, not the registry/inbox companion.
+    resolver.os = SimpleNamespace(**{
+        **vars(os),
+        'environ': {name: value for name, value in os.environ.items()
+                    if name != 'SCHEDULE_REMINDER_DATA_DIR'},
+    })
+    try:
+        root = resolver.resolve_companion_root('schedule-reminder')
+    except RuntimeError as error:
+        raise ValueError('Schedule companion discovery failed: '+str(error)) from error
+    # An absent path keeps uninitialized reads inert; writes still require PRIVATE proof.
+    return assert_writable_path(root or Path.home()/'.schedule-reminder-config').resolve()
 
 
 def data_dir():
@@ -55,6 +68,24 @@ def _shared_boundary():
     if not all(callable(getattr(module, name, None)) for name in
                ("prove_private_companion", "read_private_companion_git")):
         raise ValueError("Guards dependency lacks the supported PRIVATE proof API")
+    return module
+
+
+def _shared_resolver():
+    """Load portable discovery from this consumer's pinned Guards dependency."""
+    import importlib.util
+    path = SOURCE/'guards/tools/datadir.py'
+    assert_writable_path(path)
+    if not path.is_file():
+        raise ValueError('Guards dependency is missing; initialize the reviewed submodule')
+    try:
+        spec = importlib.util.spec_from_file_location('_schedule_companion_resolver', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except (OSError, ImportError, ValueError) as error:
+        raise ValueError('Guards companion discovery API is unavailable') from error
+    if not callable(getattr(module, 'resolve_companion_root', None)):
+        raise ValueError('Guards dependency lacks the supported companion discovery API')
     return module
 
 

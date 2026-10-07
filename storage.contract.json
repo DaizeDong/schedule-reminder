@@ -2,10 +2,22 @@
   "schema_version": 1,
   "tool": "schedule-reminder",
   "layout": "separate_companion",
-  "max_bytes": 134217728,
-  "budget_policy": "A 128 MiB working-tree review threshold, excluding Git administration. A threshold breach never authorizes deletion of tasks, receipts, configuration or recovery evidence.",
-  "scope": "Paths are relative to the explicitly selected PRIVATE repository root. Root-level state, digest and run paths cover retained installations; current defaults use the data directory. Unlisted integration artifacts require their producer's review and are not implicitly retained.",
-  "protected_paths": ["registry.json", "routes.json", "data/db.sqlite3*", "data/readiness.json", "state/**", "data/state/**", "agent-runs/**", "data/agent-runs/**", "data/workspaces/**", "data/notification-payloads/**"],
+  "max_bytes": 67108864,
+  "budget_policy": "A 64 MiB aggregate working-tree review threshold, excluding Git administration. A threshold breach remains a failed capacity check and never authorizes deletion of required state, configuration, selected deliverables or recovery evidence.",
+  "scope": "Paths are relative to the exact initialized PRIVATE companion Git root. Defaults use root-level state/, agent-runs/ and digest.json; the sole reminder DB and action workspace use data/. Explicit environment overrides need reviewed path families and PRIVATE write proof. Known writer leaves are declared; arbitrary action-workspace outputs require owner-action and selected-output manifest review and remain gaps until classified.",
+  "protected_paths": [
+    "registry.json",
+    "routes.json",
+    "data/db.sqlite3*",
+    "data/readiness.json",
+    "state/**",
+    "data/state/**",
+    "agent-runs/**",
+    "data/agent-runs/**",
+    "data/workspaces/**",
+    "data/notification-payloads/**",
+    "data/todo-actions/**"
+  ],
   "artifacts": [
     {
       "artifact_id": "registry",
@@ -15,7 +27,10 @@
       "producer": "agent_center_admin.py and reviewed operator configuration.",
       "consumer_or_final_deliverable": "Relay delivery, inbound polling and registered commands.",
       "rebuild_or_restore": "Restore the selected private configuration and validate live credentials separately.",
-      "retention_rule": {"class": "core", "rule": "Keep the active configuration and versions needed to interpret unresolved deliveries; retain history in PRIVATE storage."}
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep the active configuration and versions needed to interpret unresolved deliveries; retain history in PRIVATE storage."
+      }
     },
     {
       "artifact_id": "external-route-configuration",
@@ -25,7 +40,10 @@
       "producer": "Reviewed integration configuration.",
       "consumer_or_final_deliverable": "The installed routing integration and operator recovery.",
       "rebuild_or_restore": "Restore the approved private version; confirm the consuming integration before changing it.",
-      "retention_rule": {"class": "core", "rule": "Preserve until consumer and recovery dependencies have been reviewed."}
+      "retention_rule": {
+        "class": "core",
+        "rule": "Preserve until consumer and recovery dependencies have been reviewed."
+      }
     },
     {
       "artifact_id": "database",
@@ -35,7 +53,10 @@
       "producer": "reminder.py and store.py.",
       "consumer_or_final_deliverable": "The stable reminder CLI and scheduled workers.",
       "rebuild_or_restore": "Use SQLite's backup API or a cold checkpointed snapshot; do not restore a live WAL database by copying only its main file.",
-      "retention_rule": {"class": "core", "rule": "Retain current state and required audit history. Remove sidecars only through SQLite or after a verified cold shutdown."}
+      "retention_rule": {
+        "class": "core",
+        "rule": "Retain current state and required audit history. Remove sidecars only through SQLite or after a verified cold shutdown."
+      }
     },
     {
       "artifact_id": "readiness",
@@ -45,107 +66,36 @@
       "producer": "scheduler_worker.py after confirmed delivery.",
       "consumer_or_final_deliverable": "reminder.py health and installation readiness.",
       "rebuild_or_restore": "A real successful worker delivery regenerates evidence; copied or synthetic receipts cannot establish external readiness.",
-      "retention_rule": {"class": "core", "rule": "Retain the latest measured evidence; freshness is evaluated by health, independently of storage retention."}
-    },
-    {
-      "artifact_id": "current-inbound-state",
-      "path_pattern": "data/state/**",
-      "purpose": "Cursors, inbox projections, reaction identities, durable inbound actions and ingest diagnostics.",
-      "schema": "scripts/ingest.py, inbound.py and ingest_tick.py.",
-      "producer": "Ingest and dispatch workers.",
-      "consumer_or_final_deliverable": "Replay-safe inbound delivery and operator diagnosis.",
-      "rebuild_or_restore": "Restore cursors and durable action records together with the task store; do not reset them as a cache cleanup.",
-      "retention_rule": {"class": "core", "rule": "Keep unresolved records, current cursors and deduplication identities. Retire diagnostics only after extracting necessary evidence and proving no active writer or recovery dependency."}
-    },
-    {
-      "artifact_id": "retained-inbound-state",
-      "path_pattern": "state/**",
-      "purpose": "Inbound state retained by earlier or explicitly configured installations.",
-      "schema": "The installed ingest consumer; current source formats are documented by scripts/ingest.py and inbound.py.",
-      "producer": "Installed ingest and dispatch workers.",
-      "consumer_or_final_deliverable": "Installed inbound consumers and migration recovery.",
-      "rebuild_or_restore": "Resolve the installed consumer's state path before restoration or migration; directory age does not establish inactivity.",
-      "retention_rule": {"class": "core", "rule": "Preserve active cursors and action identities until migration is verified and replay dependencies are reconciled."}
-    },
-    {
-      "artifact_id": "current-work-records",
-      "path_pattern": "data/agent-runs/**",
-      "purpose": "Durable requests, attempt results, event history, process identity and verification evidence for queued work.",
-      "schema": "scripts/agent_task.py, agent_tick.py and agent_run.py.",
-      "producer": "The work queue and agent worker.",
-      "consumer_or_final_deliverable": "Work recovery, verification and requested final deliverables.",
-      "rebuild_or_restore": "Restore with the matching task-store state and validate process identity before recovery.",
-      "retention_rule": {"class": "core", "rule": "Keep active and unresolved work. Extract selected results before retiring completed development groups; copied source trees and redundant drafts gain no retention exception."}
-    },
-    {
-      "artifact_id": "retained-work-records",
-      "path_pattern": "agent-runs/**",
-      "purpose": "Work records retained by earlier installations or selected with AGENT_CENTER_RUNS.",
-      "schema": "Installed work consumer; current source uses scripts/agent_task.py and agent_run.py.",
-      "producer": "Installed work queue and agent worker.",
-      "consumer_or_final_deliverable": "Work recovery and verification.",
-      "rebuild_or_restore": "Restore alongside the corresponding task-store records after checking the installed run-root selection.",
-      "retention_rule": {"class": "core", "rule": "Keep active and unresolved work; review completed groups for dependency-free retirement after preserving selected results."}
-    },
-    {
-      "artifact_id": "action-workspaces",
-      "path_pattern": "data/workspaces/**",
-      "purpose": "Owner-issued per-work-item output directories for optional console agent actions.",
-      "schema": "scripts/reminder_actions.py and the selected task's artifact formats.",
-      "producer": "The owner action API and its authorized work runner.",
-      "consumer_or_final_deliverable": "Requested task artifacts and evidence reviewed before completion.",
-      "rebuild_or_restore": "Restore alongside the corresponding task-store operation and action receipts. A different SCHEDULE_ACTION_WORKSPACE needs its own reviewed companion path entry.",
-      "retention_rule": {"class": "core", "rule": "Keep active or unresolved work and selected final outputs. Review completed temporary workspaces only after preserving requested deliverables."}
-    },
-    {
-      "artifact_id": "notification-payload-snapshots",
-      "path_pattern": "data/notification-payloads/**",
-      "purpose": "Prepared immutable file payloads for a notification attempt, beside the selected database.",
-      "schema": "scripts/notification_receipts.py and relay.py prepared payload contract.",
-      "producer": "The durable notification producer before an explicit file-command transport.",
-      "consumer_or_final_deliverable": "One transport attempt and unresolved send reconciliation.",
-      "rebuild_or_restore": "Keep an unresolved attempt with its database receipt; a relocated database needs the matching sibling path declared separately.",
-      "retention_rule": {"class": "core", "rule": "Do not remove snapshots owned by active or unresolved attempts. The producer removes a transient snapshot only after confirming transport cleanup; retained uncertain sends require review before retirement."}
+      "retention_rule": {
+        "class": "core",
+        "rule": "Retain the latest measured evidence; freshness is evaluated by health, independently of storage retention."
+      }
     },
     {
       "artifact_id": "digest",
       "path_pattern": "data/digest.json",
-      "purpose": "Configured daily summary contributors.",
+      "purpose": "Contributor registry for an explicit retained data/digest.json selection.",
       "schema": "scripts/digest.py contributor registry.",
-      "producer": "digest.py registration commands.",
+      "producer": "Installed digest registration commands with the selected override.",
       "consumer_or_final_deliverable": "Daily summary generation.",
       "rebuild_or_restore": "Restore approved contributor commands and configuration from PRIVATE history.",
-      "retention_rule": {"class": "core", "rule": "Retain the active contributor registry; remove obsolete contributors through reviewed configuration changes."}
+      "retention_rule": {
+        "class": "core",
+        "rule": "Retain the active contributor registry; remove obsolete contributors through reviewed configuration changes."
+      }
     },
     {
       "artifact_id": "retained-digest",
       "path_pattern": "digest.json",
-      "purpose": "Contributor registry retained by an installed or explicitly selected digest path.",
+      "purpose": "Current root-level daily contributor registry or an explicitly selected digest path.",
       "schema": "Installed digest consumer; current source accepts AGENT_CENTER_DIGEST.",
-      "producer": "Installed digest registration commands.",
+      "producer": "scripts/digest.py registration commands.",
       "consumer_or_final_deliverable": "Installed daily summary generation.",
       "rebuild_or_restore": "Restore the approved private registry after checking the installed path selection.",
-      "retention_rule": {"class": "core", "rule": "Keep while selected by an installed consumer or needed for migration recovery."}
-    },
-    {
-      "artifact_id": "synthetic-verification",
-      "path_pattern": "data/verification/**",
-      "purpose": "Disposable synthetic database checks created by the explicit verification utility.",
-      "schema": "scripts/verify_expired_email_active.py.",
-      "producer": "Explicit offline verification runs.",
-      "consumer_or_final_deliverable": "A retained verification result, when requested.",
-      "rebuild_or_restore": "Regenerate with the verification utility in initialized PRIVATE storage.",
-      "retention_rule": {"class": "rebuildable", "rule": "Remove inactive synthetic workspaces after preserving the selected result; never substitute them for live delivery evidence."}
-    },
-    {
-      "artifact_id": "verification-scripts",
-      "path_pattern": "data/verify/**",
-      "purpose": "Temporary scripts used to verify an agent result.",
-      "schema": "scripts/agent_run.py verification command adapter.",
-      "producer": "The agent verification worker.",
-      "consumer_or_final_deliverable": "Agent result verification.",
-      "rebuild_or_restore": "Regenerate from the retained attempt verification contract.",
-      "retention_rule": {"class": "rebuildable", "rule": "Remove only after the verification process has ended and its result is retained."}
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep while selected by an installed consumer or needed for migration recovery."
+      }
     },
     {
       "artifact_id": "companion-readme",
@@ -155,7 +105,10 @@
       "producer": "Companion maintainer.",
       "consumer_or_final_deliverable": "Configuration setup and recovery.",
       "rebuild_or_restore": "Restore the current private installation instructions from companion history.",
-      "retention_rule": {"class": "core", "rule": "Keep one current setup reference; public source owns generic design and policy."}
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep one current setup reference; public source owns generic design and policy."
+      }
     },
     {
       "artifact_id": "tracking-rules",
@@ -165,7 +118,10 @@
       "producer": "Companion maintainer.",
       "consumer_or_final_deliverable": "Versioned PRIVATE runtime storage.",
       "rebuild_or_restore": "Restore reviewed rules; runtime writers reject ignored durable DATA paths.",
-      "retention_rule": {"class": "core", "rule": "Keep current tracking rules. Transient locks may be ignored only when their durable owners remain versionable."}
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep current tracking rules. Transient locks may be ignored only when their durable owners remain versionable."
+      }
     },
     {
       "artifact_id": "sync-diagnostics",
@@ -176,7 +132,10 @@
       "producer": "Installed companion synchronization job.",
       "consumer_or_final_deliverable": "Backup failure diagnosis.",
       "rebuild_or_restore": "Future synchronization runs create new diagnostics; preserve unique unresolved failure evidence first.",
-      "retention_rule": {"class": "rebuildable", "rule": "Review at 1 MiB; retain current diagnostics and unresolved failures, then rotate only after checking the active writer."}
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Review at 1 MiB; retain current diagnostics and unresolved failures, then rotate only after checking the active writer."
+      }
     },
     {
       "artifact_id": "integration-rollback",
@@ -187,7 +146,10 @@
       "producer": "Reviewed source consolidation.",
       "consumer_or_final_deliverable": "Integration review and rollback until source reconciliation is complete.",
       "rebuild_or_restore": "Apply the recorded patch only to its documented base after checking its hash and scope.",
-      "retention_rule": {"class": "retired", "rule": "Keep only while integration or rollback remains unresolved; remove after final verification and explicit maintenance authorization. Do not accumulate a parallel archive of source history."}
+      "retention_rule": {
+        "class": "retired",
+        "rule": "Keep only while integration or rollback remains unresolved; remove after final verification and explicit maintenance authorization. Do not accumulate a parallel archive of source history."
+      }
     },
     {
       "artifact_id": "pending-retirement",
@@ -198,7 +160,994 @@
       "producer": "Reviewed maintenance relocation.",
       "consumer_or_final_deliverable": "Final retirement review only.",
       "rebuild_or_restore": "Synthetic tests are regenerated from tools/make_fixtures.py and the source tests. This directory is not a recovery dependency.",
-      "retention_rule": {"class": "retired", "rule": "Remove after the exact removal action is authorized and inactivity is rechecked. Relocation is not disk reclamation and does not make development outputs core state."}
+      "retention_rule": {
+        "class": "retired",
+        "rule": "Remove after the exact removal action is authorized and inactivity is rechecked. Relocation is not disk reclamation and does not make development outputs core state."
+      }
+    },
+    {
+      "artifact_id": "legacy-reminder-import-20260820",
+      "path_pattern": "imports/legacy-reminder-20260820/**",
+      "purpose": "Preserved original reminder database and ID reconciliation; never a second live scheduler.",
+      "schema": "Historical items/events/meta SQLite schema and reconciliation.json.",
+      "producer": "Reviewed directory maintenance",
+      "consumer_or_final_deliverable": "Historical recovery and source obligation audit",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep complete original history; absent old IDs never imply reactivation."
+      },
+      "rebuild_or_restore": "Restore D102 consistent SQLite snapshot or original archive into a historical import only."
+    },
+    {
+      "artifact_id": "state-cursors",
+      "path_pattern": "state/*.last",
+      "purpose": "Current channel cursors and retained earlier stream/channel cursor formats.",
+      "schema": "scripts/ingest.py state path and migration contracts.",
+      "producer": "The selected ingest worker.",
+      "consumer_or_final_deliverable": "Replay-safe inbound observation and migration recovery.",
+      "rebuild_or_restore": "Restore alongside matching durable inbound records and task-store receipts; resolve installed path selection before enabling polling.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep unresolved work, current cursors and identities needed to prevent replay. Preserve legacy projections until matching durable records and recovery dependencies are reconciled. Retire selected completed history only after required receipts and evidence are preserved; directory age or an advanced cursor proves neither delivery nor inactivity."
+      }
+    },
+    {
+      "artifact_id": "state-inbox-projections",
+      "path_pattern": "state/*.inbox",
+      "purpose": "Text, reaction and migration-review inbox projections; one pattern avoids overlapping owners.",
+      "schema": "scripts/ingest.py state path and migration contracts.",
+      "producer": "The selected ingest worker.",
+      "consumer_or_final_deliverable": "Replay-safe inbound observation and migration recovery.",
+      "rebuild_or_restore": "Restore alongside matching durable inbound records and task-store receipts; resolve installed path selection before enabling polling.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep unresolved work, current cursors and identities needed to prevent replay. Preserve legacy projections until matching durable records and recovery dependencies are reconciled. Retire selected completed history only after required receipts and evidence are preserved; directory age or an advanced cursor proves neither delivery nor inactivity."
+      }
+    },
+    {
+      "artifact_id": "state-reaction-identities",
+      "path_pattern": "state/*.reactions.seen",
+      "purpose": "Bounded reaction deduplication identities retained for the configured consumer.",
+      "schema": "scripts/ingest.py state path and migration contracts.",
+      "producer": "The selected ingest worker.",
+      "consumer_or_final_deliverable": "Replay-safe inbound observation and migration recovery.",
+      "rebuild_or_restore": "Restore alongside matching durable inbound records and task-store receipts; resolve installed path selection before enabling polling.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep unresolved work, current cursors and identities needed to prevent replay. Preserve legacy projections until matching durable records and recovery dependencies are reconciled. Retire selected completed history only after required receipts and evidence are preserved; directory age or an advanced cursor proves neither delivery nor inactivity."
+      }
+    },
+    {
+      "artifact_id": "state-reaction-baselines",
+      "path_pattern": "state/*.reaction-baseline.json",
+      "purpose": "Per-channel reaction baselines used by the selected ingest consumer.",
+      "schema": "scripts/ingest.py state path and migration contracts.",
+      "producer": "The selected ingest worker.",
+      "consumer_or_final_deliverable": "Replay-safe inbound observation and migration recovery.",
+      "rebuild_or_restore": "Restore alongside matching durable inbound records and task-store receipts; resolve installed path selection before enabling polling.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep unresolved work, current cursors and identities needed to prevent replay. Preserve legacy projections until matching durable records and recovery dependencies are reconciled. Retire selected completed history only after required receipts and evidence are preserved; directory age or an advanced cursor proves neither delivery nor inactivity."
+      }
+    },
+    {
+      "artifact_id": "state-inbound-records",
+      "path_pattern": "state/inbound/*.json",
+      "purpose": "Durable inbound action and reconciliation records.",
+      "schema": "scripts/inbound.py record identity and atomic publication contract.",
+      "producer": "scripts/inbound.py stage and dispatch record writers.",
+      "consumer_or_final_deliverable": "Pending inbound dispatch, duplicate prevention and recovery.",
+      "rebuild_or_restore": "Restore with matching task-store identities and selected state root; reconcile uncertain delivery before replay.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep unresolved work, current cursors and identities needed to prevent replay. Preserve legacy projections until matching durable records and recovery dependencies are reconciled. Retire selected completed history only after required receipts and evidence are preserved; directory age or an advanced cursor proves neither delivery nor inactivity."
+      }
+    },
+    {
+      "artifact_id": "state-inbound-publication-locks",
+      "path_pattern": "state/inbound/*.json.lock",
+      "purpose": "Temporary coordination or unpublished bytes for one durable inbound record.",
+      "schema": "scripts/inbound.py atomic writer and private_data.file_lock.",
+      "producer": "The active inbound publication or processing worker.",
+      "consumer_or_final_deliverable": "One active state operation and its recovery.",
+      "rebuild_or_restore": "Recreate only after the previous operation outcome is reconciled.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while any writer, publication or processing outcome is unresolved; remove only after inactivity and final durable record are verified."
+      }
+    },
+    {
+      "artifact_id": "state-inbound-process-locks",
+      "path_pattern": "state/inbound/*.json.process.lock",
+      "purpose": "Temporary coordination or unpublished bytes for one durable inbound record.",
+      "schema": "scripts/inbound.py atomic writer and private_data.file_lock.",
+      "producer": "The active inbound publication or processing worker.",
+      "consumer_or_final_deliverable": "One active state operation and its recovery.",
+      "rebuild_or_restore": "Recreate only after the previous operation outcome is reconciled.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while any writer, publication or processing outcome is unresolved; remove only after inactivity and final durable record are verified."
+      }
+    },
+    {
+      "artifact_id": "state-inbound-atomic-staging",
+      "path_pattern": "state/inbound/*.json.*.tmp",
+      "purpose": "Temporary coordination or unpublished bytes for one durable inbound record.",
+      "schema": "scripts/inbound.py atomic writer and private_data.file_lock.",
+      "producer": "The active inbound publication or processing worker.",
+      "consumer_or_final_deliverable": "One active state operation and its recovery.",
+      "rebuild_or_restore": "Recreate only after the previous operation outcome is reconciled.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while any writer, publication or processing outcome is unresolved; remove only after inactivity and final durable record are verified."
+      }
+    },
+    {
+      "artifact_id": "state-dispatch-records",
+      "path_pattern": "state/dispatch/*.json",
+      "purpose": "Durable dispatch action and reconciliation records.",
+      "schema": "scripts/inbound.py record identity and atomic publication contract.",
+      "producer": "scripts/inbound.py stage and dispatch record writers.",
+      "consumer_or_final_deliverable": "Pending inbound dispatch, duplicate prevention and recovery.",
+      "rebuild_or_restore": "Restore with matching task-store identities and selected state root; reconcile uncertain delivery before replay.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep unresolved work, current cursors and identities needed to prevent replay. Preserve legacy projections until matching durable records and recovery dependencies are reconciled. Retire selected completed history only after required receipts and evidence are preserved; directory age or an advanced cursor proves neither delivery nor inactivity."
+      }
+    },
+    {
+      "artifact_id": "state-dispatch-publication-locks",
+      "path_pattern": "state/dispatch/*.json.lock",
+      "purpose": "Temporary coordination or unpublished bytes for one durable dispatch record.",
+      "schema": "scripts/inbound.py atomic writer and private_data.file_lock.",
+      "producer": "The active inbound publication or processing worker.",
+      "consumer_or_final_deliverable": "One active state operation and its recovery.",
+      "rebuild_or_restore": "Recreate only after the previous operation outcome is reconciled.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while any writer, publication or processing outcome is unresolved; remove only after inactivity and final durable record are verified."
+      }
+    },
+    {
+      "artifact_id": "state-dispatch-atomic-staging",
+      "path_pattern": "state/dispatch/*.json.*.tmp",
+      "purpose": "Temporary coordination or unpublished bytes for one durable dispatch record.",
+      "schema": "scripts/inbound.py atomic writer and private_data.file_lock.",
+      "producer": "The active inbound publication or processing worker.",
+      "consumer_or_final_deliverable": "One active state operation and its recovery.",
+      "rebuild_or_restore": "Recreate only after the previous operation outcome is reconciled.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while any writer, publication or processing outcome is unresolved; remove only after inactivity and final durable record are verified."
+      }
+    },
+    {
+      "artifact_id": "state-baseline-locks",
+      "path_pattern": "state/*.reaction-baseline.json.lock",
+      "purpose": "Temporary coordination or atomic bytes for reaction baseline publication.",
+      "schema": "scripts/ingest.py reaction baseline writer and scripts/inbound.py atomic writer.",
+      "producer": "The active ingest baseline writer.",
+      "consumer_or_final_deliverable": "One pending reaction baseline update.",
+      "rebuild_or_restore": "Recreate only after the previous update outcome is known.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while writer or publication outcome is unresolved; retire only after verified inactivity and final baseline reconciliation."
+      }
+    },
+    {
+      "artifact_id": "state-baseline-staging",
+      "path_pattern": "state/*.reaction-baseline.json.*.tmp",
+      "purpose": "Temporary coordination or atomic bytes for reaction baseline publication.",
+      "schema": "scripts/ingest.py reaction baseline writer and scripts/inbound.py atomic writer.",
+      "producer": "The active ingest baseline writer.",
+      "consumer_or_final_deliverable": "One pending reaction baseline update.",
+      "rebuild_or_restore": "Recreate only after the previous update outcome is known.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while writer or publication outcome is unresolved; retire only after verified inactivity and final baseline reconciliation."
+      }
+    },
+    {
+      "artifact_id": "state-ingest-diagnostics",
+      "path_pattern": "state/ingest_tick.log",
+      "purpose": "Ingest diagnostics; not a replacement for cursors or delivery receipts.",
+      "schema": "scripts/ingest_tick.py log output.",
+      "producer": "The installed ingest diagnostics writer.",
+      "consumer_or_final_deliverable": "Current incident diagnosis and specifically selected operational evidence.",
+      "rebuild_or_restore": "Future runs produce new diagnostics; preserve selected unique historical evidence before rotation.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Rotate after the relevant diagnosis ends and no unresolved work or selected evidence depends on the log; coordinate with its writer."
+      },
+      "max_bytes": 4194304
+    },
+    {
+      "artifact_id": "data-state-cursors",
+      "path_pattern": "data/state/*.last",
+      "purpose": "Current channel cursors and retained earlier stream/channel cursor formats.",
+      "schema": "scripts/ingest.py state path and migration contracts.",
+      "producer": "The selected ingest worker.",
+      "consumer_or_final_deliverable": "Replay-safe inbound observation and migration recovery.",
+      "rebuild_or_restore": "Restore alongside matching durable inbound records and task-store receipts; resolve installed path selection before enabling polling.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep unresolved work, current cursors and identities needed to prevent replay. Preserve legacy projections until matching durable records and recovery dependencies are reconciled. Retire selected completed history only after required receipts and evidence are preserved; directory age or an advanced cursor proves neither delivery nor inactivity."
+      }
+    },
+    {
+      "artifact_id": "data-state-inbox-projections",
+      "path_pattern": "data/state/*.inbox",
+      "purpose": "Text, reaction and migration-review inbox projections; one pattern avoids overlapping owners.",
+      "schema": "scripts/ingest.py state path and migration contracts.",
+      "producer": "The selected ingest worker.",
+      "consumer_or_final_deliverable": "Replay-safe inbound observation and migration recovery.",
+      "rebuild_or_restore": "Restore alongside matching durable inbound records and task-store receipts; resolve installed path selection before enabling polling.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep unresolved work, current cursors and identities needed to prevent replay. Preserve legacy projections until matching durable records and recovery dependencies are reconciled. Retire selected completed history only after required receipts and evidence are preserved; directory age or an advanced cursor proves neither delivery nor inactivity."
+      }
+    },
+    {
+      "artifact_id": "data-state-reaction-identities",
+      "path_pattern": "data/state/*.reactions.seen",
+      "purpose": "Bounded reaction deduplication identities retained for the configured consumer.",
+      "schema": "scripts/ingest.py state path and migration contracts.",
+      "producer": "The selected ingest worker.",
+      "consumer_or_final_deliverable": "Replay-safe inbound observation and migration recovery.",
+      "rebuild_or_restore": "Restore alongside matching durable inbound records and task-store receipts; resolve installed path selection before enabling polling.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep unresolved work, current cursors and identities needed to prevent replay. Preserve legacy projections until matching durable records and recovery dependencies are reconciled. Retire selected completed history only after required receipts and evidence are preserved; directory age or an advanced cursor proves neither delivery nor inactivity."
+      }
+    },
+    {
+      "artifact_id": "data-state-reaction-baselines",
+      "path_pattern": "data/state/*.reaction-baseline.json",
+      "purpose": "Per-channel reaction baselines used by the selected ingest consumer.",
+      "schema": "scripts/ingest.py state path and migration contracts.",
+      "producer": "The selected ingest worker.",
+      "consumer_or_final_deliverable": "Replay-safe inbound observation and migration recovery.",
+      "rebuild_or_restore": "Restore alongside matching durable inbound records and task-store receipts; resolve installed path selection before enabling polling.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep unresolved work, current cursors and identities needed to prevent replay. Preserve legacy projections until matching durable records and recovery dependencies are reconciled. Retire selected completed history only after required receipts and evidence are preserved; directory age or an advanced cursor proves neither delivery nor inactivity."
+      }
+    },
+    {
+      "artifact_id": "data-state-inbound-records",
+      "path_pattern": "data/state/inbound/*.json",
+      "purpose": "Durable inbound action and reconciliation records.",
+      "schema": "scripts/inbound.py record identity and atomic publication contract.",
+      "producer": "scripts/inbound.py stage and dispatch record writers.",
+      "consumer_or_final_deliverable": "Pending inbound dispatch, duplicate prevention and recovery.",
+      "rebuild_or_restore": "Restore with matching task-store identities and selected state root; reconcile uncertain delivery before replay.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep unresolved work, current cursors and identities needed to prevent replay. Preserve legacy projections until matching durable records and recovery dependencies are reconciled. Retire selected completed history only after required receipts and evidence are preserved; directory age or an advanced cursor proves neither delivery nor inactivity."
+      }
+    },
+    {
+      "artifact_id": "data-state-inbound-publication-locks",
+      "path_pattern": "data/state/inbound/*.json.lock",
+      "purpose": "Temporary coordination or unpublished bytes for one durable inbound record.",
+      "schema": "scripts/inbound.py atomic writer and private_data.file_lock.",
+      "producer": "The active inbound publication or processing worker.",
+      "consumer_or_final_deliverable": "One active state operation and its recovery.",
+      "rebuild_or_restore": "Recreate only after the previous operation outcome is reconciled.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while any writer, publication or processing outcome is unresolved; remove only after inactivity and final durable record are verified."
+      }
+    },
+    {
+      "artifact_id": "data-state-inbound-process-locks",
+      "path_pattern": "data/state/inbound/*.json.process.lock",
+      "purpose": "Temporary coordination or unpublished bytes for one durable inbound record.",
+      "schema": "scripts/inbound.py atomic writer and private_data.file_lock.",
+      "producer": "The active inbound publication or processing worker.",
+      "consumer_or_final_deliverable": "One active state operation and its recovery.",
+      "rebuild_or_restore": "Recreate only after the previous operation outcome is reconciled.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while any writer, publication or processing outcome is unresolved; remove only after inactivity and final durable record are verified."
+      }
+    },
+    {
+      "artifact_id": "data-state-inbound-atomic-staging",
+      "path_pattern": "data/state/inbound/*.json.*.tmp",
+      "purpose": "Temporary coordination or unpublished bytes for one durable inbound record.",
+      "schema": "scripts/inbound.py atomic writer and private_data.file_lock.",
+      "producer": "The active inbound publication or processing worker.",
+      "consumer_or_final_deliverable": "One active state operation and its recovery.",
+      "rebuild_or_restore": "Recreate only after the previous operation outcome is reconciled.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while any writer, publication or processing outcome is unresolved; remove only after inactivity and final durable record are verified."
+      }
+    },
+    {
+      "artifact_id": "data-state-dispatch-records",
+      "path_pattern": "data/state/dispatch/*.json",
+      "purpose": "Durable dispatch action and reconciliation records.",
+      "schema": "scripts/inbound.py record identity and atomic publication contract.",
+      "producer": "scripts/inbound.py stage and dispatch record writers.",
+      "consumer_or_final_deliverable": "Pending inbound dispatch, duplicate prevention and recovery.",
+      "rebuild_or_restore": "Restore with matching task-store identities and selected state root; reconcile uncertain delivery before replay.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep unresolved work, current cursors and identities needed to prevent replay. Preserve legacy projections until matching durable records and recovery dependencies are reconciled. Retire selected completed history only after required receipts and evidence are preserved; directory age or an advanced cursor proves neither delivery nor inactivity."
+      }
+    },
+    {
+      "artifact_id": "data-state-dispatch-publication-locks",
+      "path_pattern": "data/state/dispatch/*.json.lock",
+      "purpose": "Temporary coordination or unpublished bytes for one durable dispatch record.",
+      "schema": "scripts/inbound.py atomic writer and private_data.file_lock.",
+      "producer": "The active inbound publication or processing worker.",
+      "consumer_or_final_deliverable": "One active state operation and its recovery.",
+      "rebuild_or_restore": "Recreate only after the previous operation outcome is reconciled.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while any writer, publication or processing outcome is unresolved; remove only after inactivity and final durable record are verified."
+      }
+    },
+    {
+      "artifact_id": "data-state-dispatch-atomic-staging",
+      "path_pattern": "data/state/dispatch/*.json.*.tmp",
+      "purpose": "Temporary coordination or unpublished bytes for one durable dispatch record.",
+      "schema": "scripts/inbound.py atomic writer and private_data.file_lock.",
+      "producer": "The active inbound publication or processing worker.",
+      "consumer_or_final_deliverable": "One active state operation and its recovery.",
+      "rebuild_or_restore": "Recreate only after the previous operation outcome is reconciled.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while any writer, publication or processing outcome is unresolved; remove only after inactivity and final durable record are verified."
+      }
+    },
+    {
+      "artifact_id": "data-state-baseline-locks",
+      "path_pattern": "data/state/*.reaction-baseline.json.lock",
+      "purpose": "Temporary coordination or atomic bytes for reaction baseline publication.",
+      "schema": "scripts/ingest.py reaction baseline writer and scripts/inbound.py atomic writer.",
+      "producer": "The active ingest baseline writer.",
+      "consumer_or_final_deliverable": "One pending reaction baseline update.",
+      "rebuild_or_restore": "Recreate only after the previous update outcome is known.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while writer or publication outcome is unresolved; retire only after verified inactivity and final baseline reconciliation."
+      }
+    },
+    {
+      "artifact_id": "data-state-baseline-staging",
+      "path_pattern": "data/state/*.reaction-baseline.json.*.tmp",
+      "purpose": "Temporary coordination or atomic bytes for reaction baseline publication.",
+      "schema": "scripts/ingest.py reaction baseline writer and scripts/inbound.py atomic writer.",
+      "producer": "The active ingest baseline writer.",
+      "consumer_or_final_deliverable": "One pending reaction baseline update.",
+      "rebuild_or_restore": "Recreate only after the previous update outcome is known.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while writer or publication outcome is unresolved; retire only after verified inactivity and final baseline reconciliation."
+      }
+    },
+    {
+      "artifact_id": "data-state-ingest-diagnostics",
+      "path_pattern": "data/state/ingest_tick.log",
+      "purpose": "Ingest diagnostics; not a replacement for cursors or delivery receipts.",
+      "schema": "scripts/ingest_tick.py log output.",
+      "producer": "The installed ingest diagnostics writer.",
+      "consumer_or_final_deliverable": "Current incident diagnosis and specifically selected operational evidence.",
+      "rebuild_or_restore": "Future runs produce new diagnostics; preserve selected unique historical evidence before rotation.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Rotate after the relevant diagnosis ends and no unresolved work or selected evidence depends on the log; coordinate with its writer."
+      },
+      "max_bytes": 4194304
+    },
+    {
+      "artifact_id": "agent-runs-events-jsonl",
+      "path_pattern": "agent-runs/*/events.jsonl",
+      "purpose": "Durable work request or operation event history.",
+      "schema": "scripts/agent_task.py work identity and request/event contract.",
+      "producer": "The work queue and agent worker.",
+      "consumer_or_final_deliverable": "Work recovery, duplicate prevention and matching requested deliverables.",
+      "rebuild_or_restore": "Restore with matching task-store operation generations and selected run root.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-request-txt",
+      "path_pattern": "agent-runs/*/request.txt",
+      "purpose": "Durable work request or operation event history.",
+      "schema": "scripts/agent_task.py work identity and request/event contract.",
+      "producer": "The work queue and agent worker.",
+      "consumer_or_final_deliverable": "Work recovery, duplicate prevention and matching requested deliverables.",
+      "rebuild_or_restore": "Restore with matching task-store operation generations and selected run root.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-run-diagnostics",
+      "path_pattern": "agent-runs/*/run.log",
+      "purpose": "Worker process diagnostics for one work item.",
+      "schema": "scripts/agent_tick.py worker log and recovery log_tail consumer.",
+      "producer": "The detached agent worker.",
+      "consumer_or_final_deliverable": "Work recovery diagnosis and selected operational evidence.",
+      "rebuild_or_restore": "New execution creates different evidence; extract required unresolved failure details before retirement.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while process cleanup, execution or recovery is unresolved; rotate after those dependencies end and required selected evidence is retained."
+      },
+      "max_bytes": 4194304
+    },
+    {
+      "artifact_id": "agent-runs-lifecycle-lock",
+      "path_pattern": "agent-runs/.lifecycle.lock",
+      "purpose": "Run-root lifecycle coordination lock.",
+      "schema": "scripts/agent_task.py and private_data.file_lock.",
+      "producer": "The owning queue lifecycle operation.",
+      "consumer_or_final_deliverable": "One active queue lifecycle operation.",
+      "rebuild_or_restore": "Recreate after checking that the previous owner is inactive.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold until the lifecycle owner and operation outcome are known; an old timestamp is not inactivity proof."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-enqueue-lock",
+      "path_pattern": "agent-runs/*/.enqueue.lock",
+      "purpose": "Per-work enqueue coordination or unpublished request bytes.",
+      "schema": "scripts/agent_task.py enqueue request publication.",
+      "producer": "The owning queue writer.",
+      "consumer_or_final_deliverable": "One active enqueue and its recovery.",
+      "rebuild_or_restore": "Recreate after request publication and matching task-store operation are reconciled.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while enqueue outcome is unresolved; retire only after writer inactivity and final request/receipt reconciliation."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-request-txt-tmp",
+      "path_pattern": "agent-runs/*/request.txt.tmp",
+      "purpose": "Per-work enqueue coordination or unpublished request bytes.",
+      "schema": "scripts/agent_task.py enqueue request publication.",
+      "producer": "The owning queue writer.",
+      "consumer_or_final_deliverable": "One active enqueue and its recovery.",
+      "rebuild_or_restore": "Recreate after request publication and matching task-store operation are reconciled.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while enqueue outcome is unresolved; retire only after writer inactivity and final request/receipt reconciliation."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-attempt-prompt-txt",
+      "path_pattern": "agent-runs/*/*/a[0-9]*/r[0-9]*/prompt.txt",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-attempt-actor-json",
+      "path_pattern": "agent-runs/*/*/a[0-9]*/r[0-9]*/actor.json",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-attempt-answer-txt",
+      "path_pattern": "agent-runs/*/*/a[0-9]*/r[0-9]*/answer.txt",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-attempt-verify-txt",
+      "path_pattern": "agent-runs/*/*/a[0-9]*/r[0-9]*/verify.txt",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-attempt-before-diff",
+      "path_pattern": "agent-runs/*/*/a[0-9]*/r[0-9]*/before.diff",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-attempt-after-diff",
+      "path_pattern": "agent-runs/*/*/a[0-9]*/r[0-9]*/after.diff",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-attempt-review-prompt-txt",
+      "path_pattern": "agent-runs/*/*/a[0-9]*/r[0-9]*/review-prompt.txt",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-attempt-evidence-json",
+      "path_pattern": "agent-runs/*/*/a[0-9]*/r[0-9]*/evidence.json",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-attempt-review-json",
+      "path_pattern": "agent-runs/*/*/a[0-9]*/r[0-9]*/review.json",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-legacy-approach-result",
+      "path_pattern": "agent-runs/*/a[0-9]*/last.json",
+      "purpose": "Historical approach result in the verified earlier run layout.",
+      "schema": "Historical scripts/agent_run.py last.json writer and installed task-store operation contract.",
+      "producer": "The earlier agent approach worker.",
+      "consumer_or_final_deliverable": "Historical work recovery and selected conclusions.",
+      "rebuild_or_restore": "Restore only with corresponding historical task-store state; inspect current run-root selection separately.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-legacy-prompt-txt",
+      "path_pattern": "agent-runs/*/a[0-9]*/r[0-9]*/prompt.txt",
+      "purpose": "Historical round record in the verified earlier run layout.",
+      "schema": "Historical scripts/agent_run.py round writer and verification contract.",
+      "producer": "The earlier agent execution/review worker.",
+      "consumer_or_final_deliverable": "Historical unresolved work and selected result interpretation.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-legacy-answer-txt",
+      "path_pattern": "agent-runs/*/a[0-9]*/r[0-9]*/answer.txt",
+      "purpose": "Historical round record in the verified earlier run layout.",
+      "schema": "Historical scripts/agent_run.py round writer and verification contract.",
+      "producer": "The earlier agent execution/review worker.",
+      "consumer_or_final_deliverable": "Historical unresolved work and selected result interpretation.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-legacy-verify-txt",
+      "path_pattern": "agent-runs/*/a[0-9]*/r[0-9]*/verify.txt",
+      "purpose": "Historical round record in the verified earlier run layout.",
+      "schema": "Historical scripts/agent_run.py round writer and verification contract.",
+      "producer": "The earlier agent execution/review worker.",
+      "consumer_or_final_deliverable": "Historical unresolved work and selected result interpretation.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "agent-runs-legacy-review-txt",
+      "path_pattern": "agent-runs/*/a[0-9]*/r[0-9]*/review.txt",
+      "purpose": "Historical round record in the verified earlier run layout.",
+      "schema": "Historical scripts/agent_run.py round writer and verification contract.",
+      "producer": "The earlier agent execution/review worker.",
+      "consumer_or_final_deliverable": "Historical unresolved work and selected result interpretation.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-events-jsonl",
+      "path_pattern": "data/agent-runs/*/events.jsonl",
+      "purpose": "Durable work request or operation event history.",
+      "schema": "scripts/agent_task.py work identity and request/event contract.",
+      "producer": "The work queue and agent worker.",
+      "consumer_or_final_deliverable": "Work recovery, duplicate prevention and matching requested deliverables.",
+      "rebuild_or_restore": "Restore with matching task-store operation generations and selected run root.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-request-txt",
+      "path_pattern": "data/agent-runs/*/request.txt",
+      "purpose": "Durable work request or operation event history.",
+      "schema": "scripts/agent_task.py work identity and request/event contract.",
+      "producer": "The work queue and agent worker.",
+      "consumer_or_final_deliverable": "Work recovery, duplicate prevention and matching requested deliverables.",
+      "rebuild_or_restore": "Restore with matching task-store operation generations and selected run root.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-run-diagnostics",
+      "path_pattern": "data/agent-runs/*/run.log",
+      "purpose": "Worker process diagnostics for one work item.",
+      "schema": "scripts/agent_tick.py worker log and recovery log_tail consumer.",
+      "producer": "The detached agent worker.",
+      "consumer_or_final_deliverable": "Work recovery diagnosis and selected operational evidence.",
+      "rebuild_or_restore": "New execution creates different evidence; extract required unresolved failure details before retirement.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while process cleanup, execution or recovery is unresolved; rotate after those dependencies end and required selected evidence is retained."
+      },
+      "max_bytes": 4194304
+    },
+    {
+      "artifact_id": "data-agent-runs-lifecycle-lock",
+      "path_pattern": "data/agent-runs/.lifecycle.lock",
+      "purpose": "Run-root lifecycle coordination lock.",
+      "schema": "scripts/agent_task.py and private_data.file_lock.",
+      "producer": "The owning queue lifecycle operation.",
+      "consumer_or_final_deliverable": "One active queue lifecycle operation.",
+      "rebuild_or_restore": "Recreate after checking that the previous owner is inactive.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold until the lifecycle owner and operation outcome are known; an old timestamp is not inactivity proof."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-enqueue-lock",
+      "path_pattern": "data/agent-runs/*/.enqueue.lock",
+      "purpose": "Per-work enqueue coordination or unpublished request bytes.",
+      "schema": "scripts/agent_task.py enqueue request publication.",
+      "producer": "The owning queue writer.",
+      "consumer_or_final_deliverable": "One active enqueue and its recovery.",
+      "rebuild_or_restore": "Recreate after request publication and matching task-store operation are reconciled.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while enqueue outcome is unresolved; retire only after writer inactivity and final request/receipt reconciliation."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-request-txt-tmp",
+      "path_pattern": "data/agent-runs/*/request.txt.tmp",
+      "purpose": "Per-work enqueue coordination or unpublished request bytes.",
+      "schema": "scripts/agent_task.py enqueue request publication.",
+      "producer": "The owning queue writer.",
+      "consumer_or_final_deliverable": "One active enqueue and its recovery.",
+      "rebuild_or_restore": "Recreate after request publication and matching task-store operation are reconciled.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold while enqueue outcome is unresolved; retire only after writer inactivity and final request/receipt reconciliation."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-attempt-prompt-txt",
+      "path_pattern": "data/agent-runs/*/*/a[0-9]*/r[0-9]*/prompt.txt",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-attempt-actor-json",
+      "path_pattern": "data/agent-runs/*/*/a[0-9]*/r[0-9]*/actor.json",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-attempt-answer-txt",
+      "path_pattern": "data/agent-runs/*/*/a[0-9]*/r[0-9]*/answer.txt",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-attempt-verify-txt",
+      "path_pattern": "data/agent-runs/*/*/a[0-9]*/r[0-9]*/verify.txt",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-attempt-before-diff",
+      "path_pattern": "data/agent-runs/*/*/a[0-9]*/r[0-9]*/before.diff",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-attempt-after-diff",
+      "path_pattern": "data/agent-runs/*/*/a[0-9]*/r[0-9]*/after.diff",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-attempt-review-prompt-txt",
+      "path_pattern": "data/agent-runs/*/*/a[0-9]*/r[0-9]*/review-prompt.txt",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-attempt-evidence-json",
+      "path_pattern": "data/agent-runs/*/*/a[0-9]*/r[0-9]*/evidence.json",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-attempt-review-json",
+      "path_pattern": "data/agent-runs/*/*/a[0-9]*/r[0-9]*/review.json",
+      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
+      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
+      "producer": "The owned agent execution and verification worker.",
+      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-legacy-approach-result",
+      "path_pattern": "data/agent-runs/*/a[0-9]*/last.json",
+      "purpose": "Historical approach result in the verified earlier run layout.",
+      "schema": "Historical scripts/agent_run.py last.json writer and installed task-store operation contract.",
+      "producer": "The earlier agent approach worker.",
+      "consumer_or_final_deliverable": "Historical work recovery and selected conclusions.",
+      "rebuild_or_restore": "Restore only with corresponding historical task-store state; inspect current run-root selection separately.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-legacy-prompt-txt",
+      "path_pattern": "data/agent-runs/*/a[0-9]*/r[0-9]*/prompt.txt",
+      "purpose": "Historical round record in the verified earlier run layout.",
+      "schema": "Historical scripts/agent_run.py round writer and verification contract.",
+      "producer": "The earlier agent execution/review worker.",
+      "consumer_or_final_deliverable": "Historical unresolved work and selected result interpretation.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-legacy-answer-txt",
+      "path_pattern": "data/agent-runs/*/a[0-9]*/r[0-9]*/answer.txt",
+      "purpose": "Historical round record in the verified earlier run layout.",
+      "schema": "Historical scripts/agent_run.py round writer and verification contract.",
+      "producer": "The earlier agent execution/review worker.",
+      "consumer_or_final_deliverable": "Historical unresolved work and selected result interpretation.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-legacy-verify-txt",
+      "path_pattern": "data/agent-runs/*/a[0-9]*/r[0-9]*/verify.txt",
+      "purpose": "Historical round record in the verified earlier run layout.",
+      "schema": "Historical scripts/agent_run.py round writer and verification contract.",
+      "producer": "The earlier agent execution/review worker.",
+      "consumer_or_final_deliverable": "Historical unresolved work and selected result interpretation.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "data-agent-runs-legacy-review-txt",
+      "path_pattern": "data/agent-runs/*/a[0-9]*/r[0-9]*/review.txt",
+      "purpose": "Historical round record in the verified earlier run layout.",
+      "schema": "Historical scripts/agent_run.py round writer and verification contract.",
+      "producer": "The earlier agent execution/review worker.",
+      "consumer_or_final_deliverable": "Historical unresolved work and selected result interpretation.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
+      }
+    },
+    {
+      "artifact_id": "notification-payload-snapshots",
+      "path_pattern": "data/notification-payloads/*.txt",
+      "purpose": "Immutable text payload for one prepared notification attempt.",
+      "schema": "scripts/notification_receipts.py payload_artifact contract: one 32-character lowercase hexadecimal identity plus .txt.",
+      "producer": "Durable notification preparation before explicit file-command transport.",
+      "consumer_or_final_deliverable": "One transport attempt and unresolved send reconciliation.",
+      "rebuild_or_restore": "Restore with the matching database receipt; a relocated database needs its sibling payload family declared separately.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Hold snapshots for active or unresolved sends. Only the owning transport may clean a confirmed transient attempt; reconcile selected retained sends before retirement."
+      },
+      "max_bytes": 4194304
+    },
+    {
+      "artifact_id": "synthetic-verification",
+      "path_pattern": "data/verification/expired-email-synthetic-*/verification.sqlite3*",
+      "purpose": "Temporary synthetic database from the explicit expired-email verification utility.",
+      "schema": "scripts/verify_expired_email_active.py and tools/make_fixtures.py.",
+      "producer": "Explicit offline synthetic verification.",
+      "consumer_or_final_deliverable": "A requested verification conclusion.",
+      "rebuild_or_restore": "Regenerate with the source fixture generator and verification utility in initialized PRIVATE storage.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Retire inactive synthetic workspaces after preserving a selected result; synthetic checks do not establish live delivery."
+      },
+      "max_bytes": 16777216
+    },
+    {
+      "artifact_id": "verification-scripts",
+      "path_pattern": "data/verify/agent_verify_*.ps1",
+      "purpose": "Temporary PowerShell wrapper for one agent verification command.",
+      "schema": "scripts/agent_run.py run_verify wrapper.",
+      "producer": "The agent verification worker.",
+      "consumer_or_final_deliverable": "One verification process and its recorded result.",
+      "rebuild_or_restore": "Regenerate from the retained verification command.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Hold until the process ends and the result is retained; retire only after process cleanup is known."
+      },
+      "max_bytes": 1048576
+    },
+    {
+      "artifact_id": "directory-layout",
+      "path_pattern": "DIRECTORY-LAYOUT.md",
+      "purpose": "Current private path selection and migration consistency reference.",
+      "schema": "Markdown linked by companion README.md.",
+      "producer": "Reviewed configuration migration.",
+      "consumer_or_final_deliverable": "Installed consumer path selection and restoration.",
+      "rebuild_or_restore": "Restore the reviewed layout reference and verify live selections separately.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep while installation and recovery references depend on it."
+      }
+    },
+    {
+      "artifact_id": "historical-console-database",
+      "path_pattern": "data/task-console/console.sqlite3*",
+      "purpose": "Historical console observation database and SQLite sidecars; current console binding uses its separate companion.",
+      "schema": "task-console/scripts/task_console/schema.sql, console_ingest.py and console_store.py.",
+      "producer": "The historical task-console ingestion and console-store writers.",
+      "consumer_or_final_deliverable": "Reconciliation of unique console history, ingestion receipts and recovery dependencies.",
+      "rebuild_or_restore": "Restore a consistent private SQLite snapshot; console schema does not promise complete reconstruction from JSONL.",
+      "retention_rule": {
+        "class": "retired",
+        "rule": "No new development writes. Hold until useful unique code, required DATA, selected results, registration and rollback evidence are extracted into their owning current families; reconcile incomplete transactions, consumer/process dependencies and SQLite state. Retirement requires verified inactivity and a separately authorized concrete removal plan. This classification asserts neither completed closure nor present removability."
+      },
+      "max_bytes": 33554432
+    },
+    {
+      "artifact_id": "historical-owner-upgrade",
+      "path_pattern": "data/todo-action-upgrade/**",
+      "purpose": "Historical owner-database upgrade, isolated acceptance, registration and launcher staging outputs.",
+      "schema": "task-console/docs/todo-actions.md upgrade-copy protocol; task-console registration/runtime journals and receipts; reminder store SQLite schema.",
+      "producer": "Reviewed owner-database upgrade and isolated acceptance workflow using reminder store and task-console registration/runtime.",
+      "consumer_or_final_deliverable": "Review of selected conclusions, unique DB history and unresolved registration/rollback dependencies.",
+      "rebuild_or_restore": "Restore only matching private SQLite snapshots, launcher bindings and registration journal/receipt identities; do not run a candidate DB as another live scheduler.",
+      "retention_rule": {
+        "class": "retired",
+        "rule": "No new development writes. Hold until useful unique code, required DATA, selected results, registration and rollback evidence are extracted into their owning current families; reconcile incomplete transactions, consumer/process dependencies and SQLite state. Retirement requires verified inactivity and a separately authorized concrete removal plan. This classification asserts neither completed closure nor present removability."
+      },
+      "max_bytes": 100663296
     }
   ]
 }

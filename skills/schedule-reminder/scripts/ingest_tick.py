@@ -43,7 +43,7 @@ def _log(msg):
         stamp = "?"
     line = "%s %s" % (stamp, msg)
     print(line, file=sys.stderr)
-    path = _LOG or str(private_data.data_dir()/"state"/"ingest_tick.log")
+    path = _LOG or str(private_data.config_root()/"state"/"ingest_tick.log")
     private_data.prepare_parent(path)
     with private_data.open_for_write(path, "a", encoding="utf-8") as f:
         f.write(line + "\n")

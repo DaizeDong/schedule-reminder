@@ -10,6 +10,9 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - Persist notification claims under a stable business-event identity. Uncertain sends require reconciliation, and retries preserve the prepared target and payload.
 
 ### Changed
+- Resolve default configuration through the pinned companion discovery API. Inbox state, work runs and digest records use the companion root; DATA overrides remain independent and durable dispatch records retain their DATA state directory. Uninitialized reads stay inert and writes still require PRIVATE proof.
+- Declare narrow PRIVATE storage ownership for replay state and work records, with conditional retirement holds for historical console and upgrade groups. Arbitrary action outputs need owner-linked selected-output evidence; unknown paths remain failed coverage checks.
+- Set the aggregate storage review threshold to 64 MiB. Required tasks, receipts and recovery evidence remain protected when capacity review fails.
 - Migrate storage additively to schema 6 for operation generations and receipts. Agent workers preserve initial evidence and cleanup reservations; missing execution or model-family metadata prevents automatic completion without replaying the actor. Linux and Windows CI exercise the supported paths.
 - Reconcile package metadata and README/ROADMAP version displays with the existing 0.6.0 history entry. The channel enumeration, deterministic command routing, channel-ID cursors, and attachment-capable relay remain in current source. This corrects metadata drift; it does not create a new release or alter the historical release date.
 - Document current PRIVATE runtime storage, capability-selected installation and readiness evidence, owner-bound inbound staging, and reviewed work recovery. Source availability and successful health JSON remain separate from measured external readiness.

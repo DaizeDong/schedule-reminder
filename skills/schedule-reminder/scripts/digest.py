@@ -45,7 +45,7 @@ for _s in (sys.stdout, sys.stderr):
 
 
 def _path() -> str:
-    return os.environ.get("AGENT_CENTER_DIGEST") or str(private_data.data_dir()/"digest.json")
+    return os.environ.get("AGENT_CENTER_DIGEST") or str(private_data.config_root()/"digest.json")
 
 
 
