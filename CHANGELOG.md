@@ -20,6 +20,7 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - Persist notification claims under a stable business-event identity. Uncertain sends require reconciliation, and retries preserve the prepared target and payload.
 
 ### Changed
+- Install the Guards runtime from the reviewed submodule during dependency setup, and check dependency consistency before the offline suite.
 - Declare narrow diagnostic output families with private owner/selection manifests,
   conditional source-copy and bundle holds, rebuildable validation, and historical
   private design-document holds. Existing ownership, protected paths and budgets stay unchanged.
