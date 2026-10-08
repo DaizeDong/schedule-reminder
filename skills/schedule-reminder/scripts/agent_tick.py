@@ -26,9 +26,14 @@ for _s in (sys.stdout, sys.stderr):
 
 RUNNER = os.path.join(_HERE, "agent_run.py")
 
-_DETACHED_PROCESS = 0x00000008
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 _CREATE_NO_WINDOW = 0x08000000
+# No DETACHED_PROCESS: Windows ignores CREATE_NO_WINDOW when DETACHED_PROCESS is also set, so
+# the runner would have NO console and every console program it starts (reminder.py through
+# python.exe, gh, git, powershell) would allocate a visible window of its own. With
+# CREATE_NO_WINDOW alone the runner owns one hidden console that its children inherit.
+# Lifetime is unchanged: neither flag affects job membership or survival after the tick exits.
+RUNNER_CREATION_FLAGS = _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW
 
 # A just-claimed order has no pid yet: the claim and the spawn cannot be atomic. Within this window
 # a missing pid means "starting", not "dead". Without it a tick could reap the run the previous tick
@@ -197,7 +202,7 @@ def launch(item, *, generation=None, post_reports=True):
     try:
         flags = 0
         if sys.platform == "win32":
-            flags = _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW
+            flags = RUNNER_CREATION_FLAGS
         kw = {"creationflags": flags} if sys.platform == "win32" else {"start_new_session": True}
         argv = [exe, "-B", RUNNER, "--id", item["id"], "--generation", str(generation)]
         if not post_reports:

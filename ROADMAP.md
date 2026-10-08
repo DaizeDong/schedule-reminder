@@ -30,3 +30,10 @@ new release declaration.
 ## Future work
 
 Expand calendar interoperability and recurrence support through additive contract changes. Improve inspection tools without coupling consumers to database internals. New integrations initialize a PRIVATE companion and register only the capabilities they use.
+
+## Configuration maintenance status
+
+The explicit settings contract, blank registry initializer and read-only configuration doctor are
+implemented. Their offline checks do not establish installed worker readiness, external delivery,
+restoration success or publication. Database initialization remains an explicit separate operation.
+See [CONFIG.md](CONFIG.md) for scope and [storage](docs/storage.md) for retention review limits.

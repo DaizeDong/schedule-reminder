@@ -7,7 +7,7 @@ WHY THIS EXISTS
     module is the single, frozen egress every downstream skill calls — so the transport (webhook vs
     bot vs anything else) can change forever without touching any skill.
 
-REGISTRY (secret, never committed)
+REGISTRY (secret, versioned only in the PRIVATE companion)
     Discovery order: env AGENT_CENTER_CONFIG, else the registry file in the Agent Center config dir.
     Shape: {"streams": {"<name>": {"webhook": "...", "username": "..."}}, "big_brother": {...}}
     A stream normally posts to its webhook; a notification-only stream may instead carry only a

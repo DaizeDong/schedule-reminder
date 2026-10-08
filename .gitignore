@@ -37,3 +37,6 @@ Thumbs.db
 PROGRESS.md
 scratchpad/
 *.log
+
+# Public-source secret exclusion; native configuration lives in PRIVATE storage.
+*.env

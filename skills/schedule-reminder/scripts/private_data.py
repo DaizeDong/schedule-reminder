@@ -10,6 +10,7 @@ import time
 from types import SimpleNamespace
 
 SOURCE = Path(__file__).resolve().parents[3]
+CREATE_NO_WINDOW = 0x08000000
 
 
 def config_root():
@@ -45,7 +46,11 @@ def _query(argv):
     env = dict(os.environ, GIT_OPTIONAL_LOCKS="0")
     if argv[0] == "gh":
         env["GH_HOST"] = "github.com"
-    result = subprocess.run(argv, capture_output=True, text=True, encoding='utf-8', timeout=20, env=env)
+    # Output is captured, so no console is needed: without CREATE_NO_WINDOW a windowless caller
+    # (a pythonw tick, a detached runner) gets a new visible console for every proof query.
+    flags = {'creationflags': CREATE_NO_WINDOW} if os.name == 'nt' else {}
+    result = subprocess.run(argv, capture_output=True, text=True, encoding='utf-8', timeout=20, env=env,
+                            **flags)
     if result.returncode:
         raise ValueError('PRIVATE repository proof unavailable')
     return result.stdout.strip()

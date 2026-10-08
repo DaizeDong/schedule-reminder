@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "repository_kind": "skill",
+  "configuration": "settings",
+  "rationale": "Native configuration controls selected runtime resources and private state; storage discovery alone cannot establish readiness.",
+  "documentation": [
+    "README.md",
+    "README_CN.md",
+    "CONFIG.md"
+  ],
+  "settings": {
+    "schema_document": "CONFIG.md",
+    "discovery_document": "CONFIG.md",
+    "environment": "SCHEDULE_REMINDER_CONFIG",
+    "aliases": [
+      "SCHEDULE_REMINDER_CONFIG_DIR",
+      "AGENT_CENTER_CONFIG"
+    ],
+    "precedence": [
+      "explicit --config registry file / initializer --out root",
+      "AGENT_CENTER_CONFIG selects registry file independently",
+      "SCHEDULE_REMINDER_CONFIG selects companion root",
+      "SCHEDULE_REMINDER_CONFIG_DIR",
+      "sibling schedule-reminder-config",
+      "~/.schedule-reminder-config",
+      "~/.schedule-reminder-data; DATA_DIR only selects runtime DATA"
+    ],
+    "required_fields": [
+      "streams"
+    ],
+    "initializer": {
+      "path": "tools/init_config.py",
+      "args": [
+        "--out",
+        "{output}"
+      ]
+    },
+    "doctor": {
+      "path": "tools/verify_config.py",
+      "args": [
+        "--json"
+      ]
+    }
+  }
+}

@@ -4,7 +4,17 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ## [Unreleased]
 
+### Configuration lifecycle
+- Declare native registry settings explicitly and add a non-overwriting initializer plus a local schema/private-storage doctor. Empty registries stay NOT READY.
+- Match inbound ownership requirements and the runtime readers' UTF-8 format; missing owner identity and BOM registries remain NOT READY without rewriting settings.
+- Preserve independent AGENT_CENTER_CONFIG, companion and DATA/database override semantics; configuration readiness is separate from database migration, Scheduler registration and delivery receipts.
+- Align current entry and philosophy guidance with the documented read-only linkage seam and Windows installer.
+
+
 ### Added
+- `tools/llmcall_contract.py` and its tests check every `llmcall.call` site against
+  `inspect.signature(llmcall.call)` of the installed package, read in a clean child interpreter.
+  A synthetic call in the retired shape (`cwd=`, `cancel=`, `requirements=`) is the negative control.
 - Expose revision-bound work feeds, manual completion, reviewed Task Console links and durable action receipts through the owner CLI.
 - Add creation preflight and `ensure` for obligation reuse, explicit follow-ups and occurrence-aware request identities.
 - Persist notification claims under a stable business-event identity. Uncertain sends require reconciliation, and retries preserve the prepared target and payload.
@@ -23,6 +33,27 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - Document current PRIVATE runtime storage, capability-selected installation and readiness evidence, owner-bound inbound staging, and reviewed work recovery. Source availability and successful health JSON remain separate from measured external readiness.
 
 ### Fixed
+- Stop a revoked or lost work order's running model call. The order already ran inside
+  `llmcall.process.execution_scope(cancel=...)`; llmcall 0.3.1 polls that token while a call runs.
+  Pollers now get a `PolledCancellation` that reuses the ownership answer for
+  `AGENT_EXEC_CANCEL_POLL_SECONDS` (default 30 s) and latches once set, because each answer costs a
+  PRIVATE proof (measured 4 to 5 s, about 54 git subprocesses and one `gh` query) and the pollers
+  ask every fraction of a second. This also ends the back-to-back proofs that `verify` commands
+  ran through `llmcall.process.run`. Decision points between phases keep the exact check.
+- Give agent work orders their full phase budgets again under llmcall 0.3.0 (act 1800 s, review
+  420 s, overridable through `AGENT_EXEC_ACT_TIMEOUT` and `AGENT_EXEC_REVIEW_TIMEOUT`). The 180 s
+  llmcall default ended agent work mid-task. Reconciled from the unbranched installed line
+  (`rescue/c886f69`).
+- Derive work-order execution evidence from the installed llmcall 0.3.0 `Result`: model family from
+  `llmcall.rung_group` of the answering rung, start and cleanup from each attempt's reason and
+  tree-ownership note. Untyped results stay unresolved. Without this every 0.3.0 call was journaled
+  as unknown cleanup and no work order could complete.
+- Refuse explicit per-call execution `requirements` before launch, because llmcall 0.3.0 cannot
+  express them, instead of widening them to the installed agent policy.
+- Start the work-order runner with `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW` and no
+  `DETACHED_PROCESS`, which made Windows ignore `CREATE_NO_WINDOW` and gave every console child of
+  the runner its own visible window. The `gh` visibility query behind PRIVATE proof also starts
+  without a window.
 - Accept the apply sender's `allow_drop` reload argument during route verification while keeping the probe's configuration writes and reloads replaced.
 - Verify JavaScript model-mapping senders through their real settings and notification entrypoints. Absolute per-sender directory overrides support source installations while language-rule checks still run before delivery.
 - Recheck transient zero-link filesystem observations during runtime path admission, up to three observations. Concurrent SQLite sidecar removal can resolve to a missing or ordinary file; persistent zero links, symlinks, reparse points and hardlinks still refuse. Opened-file inode checks remain strict.
