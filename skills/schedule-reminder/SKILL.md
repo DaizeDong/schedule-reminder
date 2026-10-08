@@ -129,3 +129,6 @@ have separate receipts; a Scheduler acknowledgement does not complete the todo. 
 for stdin schemas and [manual completion](../../docs/manual-completion.md).
 
 CLI output is always JSON. Global --db and --actor options precede the verb; --json is not supported.
+
+Configuration lifecycle: [CONFIG.md](../../CONFIG.md) defines registry initialization and the local
+doctor. A configuration READY result does not replace measured capability health.

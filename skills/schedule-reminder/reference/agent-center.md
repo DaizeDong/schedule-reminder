@@ -274,10 +274,34 @@ calls, command execution and database changes. It is not a dry run. See
   `review_unavailable`. A confirmed failure before execution can be recorded as `failed`.
   Only known verification failures or an explicit `CONTINUE:` verdict may continue the loop.
   Repeated unchanged failures rotate the prompt approach, while llmcall routing remains unchanged.
-- **Current capability limit.** The installed llmcall result lacks typed execution outcome,
-  cleanup and actual model-family fields. Schedule preserves that absence instead of inferring
-  them from response text or a provider label. Such results cannot establish automatic completion;
-  successful automatic completion is covered by synthetic typed-evidence tests.
+- **Execution evidence from llmcall 0.3.0.** The installed `Result` has no typed outcome,
+  cleanup or model-id fields, so `agent_run.execution_evidence` derives them from llmcall's own
+  public records and from nothing else (never from response text):
+  - model family is `llmcall.rung_group(provider)` of the rung that answered. llmcall refuses a
+    model from another catalogue on a rung, so the group is the family; `effective_model` names
+    the rung and `model_source` is `llmcall-rung`, because 0.3.0 does not report a model id;
+  - a rung skipped for budget or an already-refused group never started, a rung that answered
+    started, and every other launched rung is unknown;
+  - cleanup is confirmed only when no rung reported `process_cleanup_failed` and every rung that
+    ran was tree-owned (no `supervision` note). Anything else stays unconfirmed and the order goes
+    to `reconcile`.
+  Only a genuine installed `llmcall.Result` is translated; any other untyped result stays
+  unresolved and cannot complete. `tools/llmcall_contract.py` pins the field and reason names
+  this relies on against the installed package.
+- **What 0.3.0 cannot express.** Per-call `requirements` (tool or permission limits) have no
+  equivalent: `mode="agent"` grants the installed full agent policy on every rung. A caller that
+  passes explicit requirements to `agent_run._llm` is refused before launch
+  (`capability_unavailable`), never widened silently.
+- **Revocation reaches a running call.** `run_order` runs the whole order inside
+  `llmcall.process.execution_scope(cancel=...)`. llmcall 0.3.1 and later poll that token while a
+  model call runs and stop the client tree once it is set; commands (`verify`, git evidence) run
+  through `llmcall.process.run` with the same token. Both pollers ask every fraction of a second,
+  and one ownership answer costs a PRIVATE proof (measured at 4 to 5 s: about 54 git subprocesses
+  and one `gh` visibility query) plus a CLI read, so they get a `PolledCancellation`: the answer is
+  reused for `AGENT_EXEC_CANCEL_POLL_SECONDS` (default 30 s) and latched once set. A revoked or
+  lost order therefore stops within about 35 s. The runner's own decision points between phases
+  still ask the exact `OperationCancellation`. Under llmcall 0.3.0 the token is ignored while a
+  model call runs, so the order waits for that call's phase budget.
 - **Liveness is `(pid, process creation time)`.** Windows recycles pids, so a pid-only probe reads a
   recycled number as the live holder, and `os.kill(pid, 0)` is not an existence check there at all.
   Failed identity queries remain uncertainty. Stop intent is saved before tree termination;
@@ -293,13 +317,21 @@ calls, command execution and database changes. It is not a dry run. See
   reservation before release. The digest records the operator's audit; the command does not
   independently prove its contents. Recovery releases cleanup ownership without replaying work
   or marking the task successful.
-- **The runner is detached** (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`),
-  and writes output into its private run directory. Native process tests and installed scheduler
+- **The runner is started with `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`** under `python.exe`
+  (never `pythonw.exe`), and writes output into its private run directory. `DETACHED_PROCESS` is
+  deliberately absent: Windows ignores `CREATE_NO_WINDOW` when both are set, which left the runner
+  with no console, so each console program it started opened a visible window. The runner now has
+  one hidden console that its children inherit. Native process tests and installed scheduler
   validation are separate from source review.
 - **Installed llmcall policy applies throughout.** Actor calls use `llmcall.call(prompt,
-  mode="agent")`; reviewer calls use judge mode with the observed actor family as `avoid`.
-  The runner does not override `LLMCALL_AGENT_RUNNER` or pin providers, models, timeout or fallback.
-  It does not pass unsupported `cwd`, `cancel` or `requirements` arguments to `llmcall.call`.
+  mode="agent", timeout=ACT_TIMEOUT)`; reviewer calls use judge mode with
+  `timeout=REVIEW_TIMEOUT` and the observed actor family as `avoid`. The phase budgets
+  (`AGENT_EXEC_ACT_TIMEOUT`, default 1800 s; `AGENT_EXEC_REVIEW_TIMEOUT`, default 420 s) are the
+  whole chain budget for one act or one review. Without them llmcall's 180 s default ends agent work
+  mid-task. The runner does not override `LLMCALL_AGENT_RUNNER` or pin providers, models or
+  fallback. The working directory is the runner's process cwd (it changes into the workspace
+  first), and it passes no `cwd`, `cancel` or `requirements` arguments, which 0.3.0 does not accept;
+  cancellation travels through the execution scope instead.
 - **Terminal reports carry evidence**, the changed files, the command, its actual output, and the
   reviewer's verdict. The word 已处理 is banned from them by test; it is the word that made four days
   of doing nothing look like four days of handling it.

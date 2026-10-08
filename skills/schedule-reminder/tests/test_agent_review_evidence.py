@@ -130,8 +130,10 @@ def test_independent_review_finishes_only_owned_generation(monkeypatch, tmp_path
     assert agent_task.get(harness.item_id)["progress"] == 100
     assert agent_task.operation(harness.item_id)["outcome"] == "done"
     assert harness.options[1]["avoid"] == "family-agent"
+    assert [options["timeout"] for options in harness.options] == [
+        float(agent_run.ACT_TIMEOUT), float(agent_run.REVIEW_TIMEOUT)]
     for options in harness.options:
-        assert not {"chain", "model", "effort", "timeout", "cwd", "cancel", "requirements"}.intersection(options)
+        assert not {"chain", "model", "effort", "cwd", "cancel", "requirements"}.intersection(options)
 
 
 def test_unknown_actor_family_never_calls_reviewer(monkeypatch, tmp_path):

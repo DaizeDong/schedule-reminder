@@ -12,7 +12,7 @@ import os
 import re
 import sys
 import tempfile
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 import subprocess
 import private_data
 from contextvars import ContextVar
@@ -30,10 +30,14 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-# Attempts vary the prompt. Provider, model, deadline and fallback remain llmcall policy.
+# Attempts vary the prompt. Provider, model and fallback remain llmcall policy.
 APPROACH_CHAINS = (("inspect evidence",), ("test a smaller hypothesis",), ("revisit assumptions",))
 REVIEW_CHAIN = None
-ACT_TIMEOUT = REVIEW_TIMEOUT = None
+# The phase budget is the WHOLE llmcall chain budget for one act or one review. It is not
+# provider routing: without it llmcall's short default (180s in 0.3.0) ends agent work mid-task,
+# which is the regression the installed runtime fixed on 2026-10-03 and this line keeps fixed.
+ACT_TIMEOUT = int(os.environ.get("AGENT_EXEC_ACT_TIMEOUT") or 1800)
+REVIEW_TIMEOUT = int(os.environ.get("AGENT_EXEC_REVIEW_TIMEOUT") or 420)
 VERIFY_TIMEOUT = int(os.environ.get("AGENT_EXEC_VERIFY_TIMEOUT") or 600)
 STALL_ROUNDS = int(os.environ.get("AGENT_EXEC_STALL_ROUNDS") or 3)
 MAX_APPROACHES = len(APPROACH_CHAINS)
@@ -74,15 +78,130 @@ def fence(text, limit=900):
 
 
 # --------------------------------------------------------------------------- llmcall
-def _llm(prompt, chain, timeout, mode, *, workspace=None, cancel=None, actor_family=None):
-    """Preserve installed routing; return its unmodified result as execution evidence."""
+def _llm(prompt, chain, timeout, mode, *, workspace=None, cancel=None, actor_family=None,
+         requirements=None):
+    """Preserve installed routing; return execution evidence for the call.
+
+    llmcall 0.3.0 `call()` takes only prompt/mode/timeout/avoid/log from this runner. The
+    working directory is the process cwd (`_execute_order` changes into the workspace before
+    any call). A revoked operation is checked before and after the call. While the call runs,
+    llmcall 0.3.1 and later also poll `run_order`'s execution_scope token (a PolledCancellation)
+    and stop the client tree once it is set; 0.3.0 ignores the token, so there the running call
+    ends only at its budget. Explicit `requirements` have no 0.3.0 equivalent, so a caller that
+    supplies them is refused before launch instead of being silently widened to the installed
+    full-permission agent policy.
+    """
     if mode not in ("judge", "research", "agent"):
         raise ValueError("invalid llmcall mode: %r" % mode)
     if cancel is not None and cancel.is_set():
         raise CleanupUncertain("operation revoked before model call")
+    if requirements is not None:
+        return CallEvidence(error="explicit execution requirements are not expressible in "
+                                  "installed llmcall; refused before launch",
+                            outcome="capability_unavailable", execution_started=False,
+                            cleanup_confirmed=True)
     import llmcall
     options = {"avoid": actor_family} if actor_family else {}
-    return llmcall.call(prompt, mode=mode, log=lambda m: _log("llmcall: " + m), **options)
+    if timeout is not None:
+        options["timeout"] = float(timeout)
+    return execution_evidence(llmcall.call(prompt, mode=mode, log=lambda m: _log("llmcall: " + m),
+                                           **options))
+
+
+# Rungs llmcall skips WITHOUT launching anything; every other failed rung may have started.
+_NOT_LAUNCHED = frozenset(("budget_exhausted", "group_already_refused"))
+_CLEANUP_FAILED = "process_cleanup_failed"
+
+
+@dataclass
+class AttemptEvidence:
+    provider: object = None
+    ok: bool = False
+    ms: object = None
+    reason: object = None
+    group: object = None
+    supervision: object = None
+    error: object = None
+    outcome: object = None
+    execution_started: object = None
+    cleanup_confirmed: object = None
+
+
+@dataclass
+class CallEvidence:
+    """The receipt fields this runner journals, derived from an installed llmcall Result.
+
+    llmcall 0.3.0 reports the answering rung (`provider`) and its policy group, not a resolved
+    model id. The rung's group is authoritative for model family (llmcall refuses a model from
+    another catalogue on a rung), so `model_family` is that group and `effective_model` names
+    the rung, with `model_source` saying so. Execution and cleanup are derived per attempt:
+    a skipped rung never started, a rung that answered started, and any other launched rung is
+    unknown. Cleanup is confirmed only when no rung reported a cleanup failure and every rung
+    that ran was tree-owned.
+    """
+    text: str = ""
+    provider: object = None
+    error: object = None
+    data: object = None
+    attempts: list = field(default_factory=list)
+    effective_provider: object = None
+    effective_model: object = None
+    model_family: object = None
+    model_source: object = None
+    execution_started: object = None
+    outcome: object = None
+    cleanup_confirmed: object = None
+    call_id: object = None
+    policy_source: object = None
+    effects: object = None
+
+
+def execution_evidence(result):
+    """Translate only a genuine installed llmcall Result; anything else stays as returned.
+
+    A receipt-bearing result keeps its own evidence, and an untyped object stays untyped so the
+    runner keeps treating it as unresolved rather than inventing confidence for it.
+    """
+    try:
+        import llmcall
+    except ImportError:
+        return result
+    result_type = getattr(llmcall, "Result", None)
+    if not isinstance(result_type, type) or not isinstance(result, result_type):
+        return result
+    attempts = []
+    for attempt in getattr(result, "attempts", None) or ():
+        ok = getattr(attempt, "ok", False) is True
+        reason = getattr(attempt, "reason", None)
+        started = True if ok else False if reason in _NOT_LAUNCHED else None
+        cleanup = (False if reason == _CLEANUP_FAILED else True if started is False
+                   else None if getattr(attempt, "supervision", None) else True)
+        outcome = ("success" if ok else "skipped" if started is False
+                   else "cleanup_failed" if cleanup is False else "failed")
+        attempts.append(AttemptEvidence(
+            provider=getattr(attempt, "provider", None), ok=ok, ms=getattr(attempt, "ms", None),
+            reason=reason, group=getattr(attempt, "group", None),
+            supervision=getattr(attempt, "supervision", None), error=getattr(attempt, "error", None),
+            outcome=outcome, execution_started=started, cleanup_confirmed=cleanup))
+    starts = [a.execution_started for a in attempts]
+    started = True if True in starts else None if None in starts else False
+    cleanups = [a.cleanup_confirmed for a in attempts]
+    cleanup = False if False in cleanups else None if None in cleanups else True
+    provider = getattr(result, "provider", None)
+    answered = bool(result) and bool((getattr(result, "text", "") or "").strip())
+    group = getattr(llmcall, "rung_group", None)
+    family = group(provider) if answered and provider and callable(group) else None
+    if answered and cleanup is not False:
+        outcome = "success"
+    else:
+        outcome = "cleanup_failed" if cleanup is False else "failed"
+    return CallEvidence(
+        text=getattr(result, "text", "") or "", provider=provider,
+        error=None if outcome == "success" else (getattr(result, "error", None) or "no provider answered"),
+        data=getattr(result, "data", None), attempts=attempts, effective_provider=provider,
+        effective_model=provider if family else None, model_family=family,
+        model_source="llmcall-rung" if family else None, execution_started=started,
+        outcome=outcome, cleanup_confirmed=cleanup)
 
 
 def _result_record(result):
@@ -108,7 +227,11 @@ def independent_review(actor, reviewer):
 
 
 class OperationCancellation:
-    """The common process module polls this alongside its own deadline; DB failure revokes work."""
+    """Exact ownership check for the runner's own decision points; DB failure revokes work.
+
+    One answer costs an ownership query: a PRIVATE storage proof (about 54 git subprocesses and one
+    `gh` visibility query, measured at 4 to 5 s) plus a CLI read. Pollers get a PolledCancellation
+    around it instead, never this object directly."""
     def __init__(self, item_id, generation):
         self.item_id, self.generation = item_id, generation
 
@@ -117,6 +240,38 @@ class OperationCancellation:
             return not agent_task.owns(self.item_id, self.generation)
         except Exception:
             return True
+
+
+CANCEL_POLL_SECONDS = float(os.environ.get("AGENT_EXEC_CANCEL_POLL_SECONDS") or 30)
+
+
+class PolledCancellation:
+    """The token handed to pollers: llmcall's running model call and llmcall.process commands.
+
+    Both ask every fraction of a second, and an unthrottled ownership query per ask would run the
+    PRIVATE proof back to back for the whole act budget. The underlying answer is therefore
+    reused for CANCEL_POLL_SECONDS (AGENT_EXEC_CANCEL_POLL_SECONDS) and latched once set, so a
+    revoked or lost order is stopped within about one interval plus one query.
+    """
+    def __init__(self, exact, interval=None, clock=None):
+        import time
+        self.exact = exact
+        self.interval = CANCEL_POLL_SECONDS if interval is None else float(interval)
+        self._clock = clock or time.monotonic
+        self._checked_at = None
+        self._set = False
+
+    def is_set(self):
+        if self._set:
+            return True
+        if self._checked_at is not None and self._clock() - self._checked_at < self.interval:
+            return False
+        try:
+            self._set = bool(self.exact.is_set())
+        except Exception:
+            self._set = True
+        self._checked_at = self._clock()
+        return self._set
 
 
 class CleanupUncertain(RuntimeError):
@@ -181,8 +336,9 @@ class CommandResult(tuple):
 
 def _contained_command(argv, workspace, timeout, cancel=None):
     from llmcall import process
+    polled = cancel if cancel is None or isinstance(cancel, PolledCancellation) else PolledCancellation(cancel)
     result = _observed_call("command", process.run, argv, "", timeout,
-                            context=process.resolve_context(cwd=workspace), cancel=cancel)
+                            context=process.resolve_context(cwd=workspace), cancel=polled)
     return CommandResult(result)
 
 
@@ -489,7 +645,8 @@ def run_order(item_id, post_reports=True, *, generation=None):
     workspace = ext.get(agent_task.EXT_WORKSPACE) or agent_task.default_workspace()
     try:
         from llmcall import process
-        with process.execution_scope(cancel=OperationCancellation(item_id, generation)):
+        # Pollers (llmcall's running model call, llmcall.process commands) see the throttled token.
+        with process.execution_scope(cancel=PolledCancellation(OperationCancellation(item_id, generation))):
             return _execute_order(item, generation, stream, workspace, post_reports)
     except Exception as exc:
         agent_task.finish(item_id, False, "runner interrupted: " + type(exc).__name__,

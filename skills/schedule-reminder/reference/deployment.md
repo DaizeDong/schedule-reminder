@@ -26,7 +26,7 @@ Set `SCHEDULE_REMINDER_CONFIG` to an initialized PRIVATE versioned companion roo
 directory is the default DATA home; `SCHEDULE_REMINDER_DATA_DIR` may select another PRIVATE
 location. `AGENT_CENTER_CONFIG` selects the registry file. Explicit `reminder.py --db` overrides
 `SCHEDULE_DB_PATH`; every write still proves the nearest governing Git repository PRIVATE using
-its origin and current GitHub visibility. Linked worktrees are supported. A nested PUBLIC
+all publication routes and current GitHub visibility. Linked worktrees are supported. A nested PUBLIC
 repository, unknown visibility, Git metadata, unmanaged storage, or public source destination is
 refused before output creation. Permission denial is reported separately from policy refusal.
 
@@ -95,3 +95,7 @@ reviewer model-family identities plus the original workspace baseline and actual
 Offline synthetic tests exercise those checks but do not establish support in an installed
 llmcall version. `agent_task.py status` observes reservations; `recover-cleanup` accepts an explicit,
 generation-bound operator review, not a retry of the work. See [Agent Center](agent-center.md).
+
+Configuration setup and the local registry doctor are specified in [CONFIG.md](../../../CONFIG.md).
+They do not initialize or migrate the database or register tasks. The shipped installer targets
+Windows Task Scheduler; no maintained Unix cron installer is provided.

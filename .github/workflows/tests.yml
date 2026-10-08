@@ -109,6 +109,9 @@ jobs:
           python -B tools/prepare_test_dependency.py --source "$RUNNER_TEMP/notification-language-locked.py" --out "$RUNNER_TEMP/schedule-test-dependencies/notification_language.py"
           echo "SCHEDULE_TEST_LANGUAGE_RULE=$RUNNER_TEMP/schedule-test-dependencies/notification_language.py" >> "$GITHUB_ENV"
 
+      - name: Native configuration lifecycle
+        run: python -B -m pytest tests/test_config_lifecycle.py -q -p no:cacheprovider
+
       - name: Acceptance suite
         run: |
           test -d skills/schedule-reminder/tests || { echo "::error::the test suite is MISSING -- an absent suite is not a passing suite"; exit 1; }

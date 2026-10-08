@@ -634,7 +634,8 @@ def test_runner_does_not_install_a_runner_policy(monkeypatch):
 
 def test_approaches_vary_prompts_without_provider_selection():
     assert len(set(chain[0] for chain in agent_run.APPROACH_CHAINS)) == agent_run.MAX_APPROACHES
-    assert agent_run.ACT_TIMEOUT is None and agent_run.REVIEW_TIMEOUT is None
+    # The phase budgets are the chain budgets for one act and one review, not routing.
+    assert (agent_run.ACT_TIMEOUT, agent_run.REVIEW_TIMEOUT) == (1800, 420)
     assert agent_run.REVIEW_CHAIN is None
 
 
@@ -648,3 +649,5 @@ def test_actor_and_reviewer_keep_installed_routing(monkeypatch):
         agent_run._llm("", None, None, mode)
     assert [call["mode"] for call in calls] == ["agent", "judge"]
     assert all(not ({"chain", "providers", "model", "timeout", "fallback"} & call.keys()) for call in calls)
+    agent_run._llm("", None, agent_run.ACT_TIMEOUT, "agent")
+    assert calls[-1]["timeout"] == 1800.0 and not ({"chain", "model"} & calls[-1].keys())

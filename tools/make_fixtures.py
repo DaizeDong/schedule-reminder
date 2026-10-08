@@ -996,3 +996,14 @@ exports.notify = (text) => {
 
 if __name__ == '__main__':
     main()
+
+
+def configuration_registry_cases():
+    """Synthetic native registry inputs for configuration-only validation."""
+    return {
+        "unknown_fields": {"streams": {}, "future_extension": {"keep": True}},
+        "bot_destination": {"streams": {"example": {"channel_id": "10001"}},
+                            "reader": {"bot_token": "synthetic"}},
+        "guild_id": "10002",
+        "owner_id": "10003",
+    }

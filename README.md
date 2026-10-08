@@ -65,6 +65,10 @@ task registration. `health` still returns a successful JSON report when readines
 inspect `health.readiness.ready`. See [deployment](skills/schedule-reminder/reference/deployment.md)
 for PRIVATE storage, task readback, worker receipts, and the unmeasured ingest/work boundary.
 
+## Config
+
+Set `SCHEDULE_REMINDER_CONFIG` to the selected PRIVATE companion root. To switch configurations, select the other root and update any `AGENT_CENTER_CONFIG` file override together. Settings live in the selected PRIVATE registry. See [CONFIG.md](CONFIG.md) for the schema, independent registry/DATA overrides, initialization, switching and recovery. `tools/init_config.py` preserves existing settings; `tools/verify_config.py --json` checks local configuration only. Database initialization and measured capability health remain separate operations.
+
 ## Quick start
 
 ```bash
@@ -145,7 +149,7 @@ the checkout is not provided; no Scheduler task is run by them.
   pysqlite3-binary` (auto-detected). The bundled test suite verifies `integrity_check` stays `ok`
   under concurrency on the host SQLite.
 - **Recurrence uses rolling expansion.** The supported RRULE subset advances the master row to the next future occurrence; it does not materialize an infinite series. See the contract for supported fields.
-- **Windows-first deployment** (scheduled task via `install.ps1`); cron line provided for Unix.
+- **Windows-first deployment** (scheduled task via `install.ps1`); no maintained Unix cron installer is shipped.
 - **DB must stay on local NTFS**, never a OneDrive/GDrive/network path (WAL lock + sync corruption).
 - **Work completion needs llmcall execution evidence.** Missing process containment, cleanup
   confirmation, model-family identity or review evidence leaves the run unresolved. Offline

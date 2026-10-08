@@ -15,7 +15,9 @@ it can never break.
   every schema tweak is a breaking change across the fleet, and concurrent writers corrupt shared
   files.
 - **Decision it produced:** three layers, SQLite (private) → `store.py` (in-process) →
-  `reminder.py <verb>` (the **only** public surface). Downstream depends on a frozen CLI/JSON
+  `reminder.py <verb>` (the primary versioned public surface). Current integrations also use the
+  documented read-only Task Console linkage seam; direct database mutation remains unsupported.
+  The v0.1 decisions and E1-E13 acceptance references below are historical. Downstream depends on a frozen CLI/JSON
   contract with an `api_version`; the engine underneath can be rewritten freely. E11 golden-tests the
   verb set, field set, and state enum so a breaking change cannot ship silently.
 

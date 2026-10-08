@@ -53,6 +53,10 @@ pwsh -File skills/schedule-reminder/scripts/install.ps1 -Capabilities store,remi
 
 默认选择 store 和 remind；空选择不执行安装，ingest 和 work 可单独选用。安装器只有在所选能力的就绪证据齐全时才返回成功，任务注册成功不等于已就绪。`health` 能正常输出 JSON 时仍返回成功，具体状态请查看 `health.readiness.ready`。PRIVATE 存储、任务回读及尚未测量的 ingest/work 就绪边界见[部署说明](skills/schedule-reminder/reference/deployment.md)。
 
+## 配置
+
+将 `SCHEDULE_REMINDER_CONFIG` 指向选定的 PRIVATE 伴生仓。切换配置时，同步调整根目录及已设置的 `AGENT_CENTER_CONFIG` 文件覆盖值。[CONFIG.md](CONFIG.md) 说明 registry 格式、配置与 DATA 的独立覆盖规则、初始化和恢复。`tools/init_config.py` 保留已有配置；`tools/verify_config.py --json` 只检查本地配置。数据库仍由 `reminder.py init` 初始化，运行能力是否就绪要看 `health.readiness.ready`。
+
 ## 快速开始
 
 ```bash
@@ -120,7 +124,7 @@ python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider
   的升级路径：`pip install pysqlite3-binary`（自动检测）。测试套件会验证本机 SQLite 在并发下 `integrity_check`
   保持 `ok`。
 - **RRULE 按次滚动。** 提醒成功后，主记录移到下一个未来时间，不会一次建出无限多条记录。支持的字段见契约。
-- **优先 Windows 部署**（`install.ps1` 计划任务）；Unix 给了 cron 行。
+- **优先 Windows 部署**（`install.ps1` 计划任务）；目前未提供维护中的 Unix cron 安装方式。
 - **数据库必须放本地 NTFS**，绝不放 OneDrive/GDrive/网络盘（WAL 锁 + 同步会损坏库）。
 - **工作完成依赖 llmcall 的执行证据**。缺少进程约束、清理确认、模型家族身份或审查证据时，工作保留未解决状态。
   离线测试不能证明本机安装的 llmcall 已提供这些能力。
