@@ -92,7 +92,8 @@ jobs:
           test -f requirements.txt || { echo "::error::requirements.txt is MISSING"; exit 1; }
           python -m pip install --quiet -r requirements.txt
           python -m pip install --quiet pytest
-          python -c "import llmcall; print('llmcall ok')"
+          python -m pip check
+          python -c "from fleet_guards.runtime import companion_resolver; import llmcall; print('runtime dependencies ok')"
 
       # NOT wrapped in `if [ -d ... ]`, for the reason the pii-guard workflow spells out: a step
       # that skips itself when its own subject is missing reports success for a run that examined

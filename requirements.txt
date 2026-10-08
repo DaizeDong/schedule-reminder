@@ -1,2 +1,6 @@
+# Build the canonical runtime dependency from this checkout's reviewed Guards
+# submodule. A recursive checkout keeps it aligned with the existing gitlink.
+./guards
+
 # The headless LLM chain (codex -> cc -> claude) is the shared llmcall package.
 llmcall @ git+https://github.com/DaizeDong/llmcall.git
