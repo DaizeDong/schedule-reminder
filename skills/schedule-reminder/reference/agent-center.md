@@ -306,12 +306,17 @@ calls, command execution and database changes. It is not a dry run. See
   runner's tree (`process_tree.observe`: every recorded runner/launcher identity plus each
   descendant created inside its parent's lifetime, each held by an open handle). After the kill it
   requires every recorded handle to be signalled and a fresh snapshot to show no live process whose
-  ancestry runs through a recorded member. Only then does it commit a `verified-tree-kill` cleanup
-  receipt bound to those identities and release the reservation (`stopped` event `cleanup:
-  released`). An already-exited runner, a failed or refused snapshot, or any survivor leaves the
-  reservation held (`cleanup_held` event) for reconcile and `recover-cleanup` below. A descendant
-  whose own parent exited before the recording has no ancestry link and is not visible to this
-  check or to `taskkill /T`; llmcall's kill-on-close Job Object covers the children it starts.
+  ancestry runs through a recorded member, and no live process born after the recording whose
+  ancestry is unknown (its parent PID is gone or now belongs to a newer process: the shape a
+  `cmd /c start` launcher or an intermediate killed mid-spawn leaves behind). Only then does it
+  commit a `verified-tree-kill` cleanup receipt bound to those identities and release the
+  reservation (`stopped` event `cleanup: released`). An already-exited runner, a failed or refused
+  snapshot, any survivor, an unrelated orphan born during the stop, or a child receipt in which
+  llmcall reported unconfirmed cleanup (`cleanup_state` `unknown`) leaves the reservation held
+  (`cleanup_held` event) for reconcile and `recover-cleanup` below. Residual limit: a descendant
+  whose own parent exited BEFORE the recording was already an orphan then; it has no ancestry link
+  and is not visible to this check or to `taskkill /T`. llmcall's kill-on-close Job Object does not
+  close that gap, because it allows breakaway.
 - **An interrupted spawn retains its reservation.** A missing parent or unregistered child is
   insufficient cleanup evidence. Stop revokes an unregistered spawn into `reconcile` with unknown
   cleanup. Unreleased or uncertain reservations keep the serial slot even when the item has a

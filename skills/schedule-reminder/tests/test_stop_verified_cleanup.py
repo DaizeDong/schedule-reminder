@@ -19,6 +19,7 @@ class FakeProcesses:
 
     def __init__(self):
         self.current, self.snapshots, self.fail_snapshot_at = {}, 0, None
+        self.clock, self.foreign = 640, set()   # recording happens at 640; foreign = not openable
 
     def spawn(self, pid, ppid, created):
         record = {"pid": pid, "ppid": ppid, "created": created, "alive": True}
@@ -34,8 +35,15 @@ class FakeProcesses:
             raise RuntimeError("synthetic snapshot failure")
         return {pid: r["ppid"] for pid, r in self.current.items()}
 
-    def open(self, pid):
+    def open(self, pid, foreign_ok=False):
+        if pid in self.foreign and pid in self.current:
+            if foreign_ok:
+                return None
+            raise RuntimeError("synthetic access denied")
         return self.current.get(pid)
+
+    def now(self):
+        return self.clock
 
     def created(self, handle):
         return handle["created"]
@@ -150,3 +158,58 @@ def test_store_refuses_a_receipt_that_omits_a_recorded_identity(pool):  # noqa: 
     with pytest.raises(ValueError):
         agent_task.release_verified_cleanup(iid, 1, {"authority": "operator-reviewed"}, op)
     assert agent_task.operation(iid)["released_at"] is None
+
+
+def test_survivor_of_a_short_lived_unrecorded_launcher_holds_the_slot(tree, monkeypatch, pool):  # noqa: F811
+    # After the recording, child 200 runs `cmd /c start X`: cmd (410) starts X (420) and exits.
+    def during(fake):
+        fake.spawn(410, 200, 700)
+        fake.spawn(420, 410, 710)
+        fake.end(410)
+    result = stop_with(monkeypatch, tree, during=during, survivors=(420,))
+    assert result.get("cleanup") == "held"
+    assert not slot_released(tree)
+    assert not agent_task.claim(make_order(pool)["id"])
+
+
+def test_survivor_whose_unrecorded_parent_taskkill_killed_holds_the_slot(tree, monkeypatch, pool):  # noqa: F811
+    # 410 starts after the recording; the kill ends 410 but 420, spawned during the kill, lives.
+    def during(fake):
+        fake.spawn(410, 200, 700)
+        fake.spawn(420, 410, 710)
+
+    def after(fake):
+        fake.end(410)
+    result = stop_with(monkeypatch, tree, during=during, after=after, survivors=(420,))
+    assert result.get("cleanup") == "held"
+    assert not slot_released(tree)
+
+
+def test_late_orphan_whose_parent_pid_was_reused_holds_the_slot(tree, monkeypatch, pool):  # noqa: F811
+    def during(fake):
+        fake.spawn(410, 200, 700)
+        fake.spawn(420, 410, 710)
+        fake.end(410)
+        fake.spawn(410, 1, 800)          # a newer process now owns the dead launcher's PID
+    result = stop_with(monkeypatch, tree, during=during, survivors=(420,))
+    assert result.get("cleanup") == "held"
+
+
+def test_orphans_older_than_the_recording_and_foreign_processes_do_not_hold(tree, monkeypatch, pool):  # noqa: F811
+    tree.spawn(610, 9999, 300)           # an unrelated orphan from before the recording
+    tree.spawn(620, 1, 700)              # a stranger started during the stop by a live old parent
+    tree.spawn(630, 9998, 700)           # another user's orphan this user cannot open
+    tree.foreign.add(630)
+    result = stop_with(monkeypatch, tree)
+    assert result.get("cleanup") == "released"
+    assert agent_task.claim(make_order(pool)["id"])
+
+
+def test_llmcall_reported_unconfirmed_cleanup_is_not_overridden(tree, monkeypatch, pool):  # noqa: F811
+    assert agent_task.child_finished(tree.iid, 1, {"phase": "actor", "cleanup_confirmed": False},
+                                     quiescent=False)
+    assert agent_task.operation(tree.iid)["cleanup_state"] == "unknown"
+    result = stop_with(monkeypatch, tree)
+    assert result.get("cleanup") == "held"
+    op = agent_task.operation(tree.iid)
+    assert op["released_at"] is None and op["cleanup_state"] == "unknown"

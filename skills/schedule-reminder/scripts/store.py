@@ -1789,7 +1789,9 @@ def advance_work(item_id, generation, action, *, pid=None, pstart=None, checkpoi
                 # and later descendant gone from a fresh snapshot. The receipt must name every
                 # recorded runner identity; a parent's absence alone never reaches this branch.
                 if (expected is None or op['outcome'] != 'cancelled' or op['released_at'] is not None
-                        or op['cleanup_state'] not in ('quiescent', 'unknown', 'in_flight')):
+                        or op['cleanup_state'] not in ('quiescent', 'in_flight')):
+                    # 'unknown' is what a child receipt without confirmed cleanup (or a legacy
+                    # operation) leaves; a tree kill cannot override that report.
                     return False
                 if (not isinstance(receipt, dict) or receipt.get('authority') != 'verified-tree-kill'
                         or not receipt.get('members') or not receipt.get('confirmed_at')):
