@@ -20,6 +20,9 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - Persist notification claims under a stable business-event identity. Uncertain sends require reconciliation, and retries preserve the prepared target and payload.
 
 ### Changed
+- The live PRIVATE visibility check no longer depends on which gh account is active: it asks the
+  pinned Guards kit, which tries the owner's stored account, every other stored account and gh's
+  default before refusing. Switching the active gh account no longer fails the proof.
 - A console stop whose `taskkill` is confirmed by a fresh process snapshot (every recorded runner
   descendant and every later descendant gone) now releases the serial work slot itself with a
   `verified-tree-kill` receipt. An already-exited runner, a snapshot failure, any survivor, a live
