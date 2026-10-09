@@ -22,8 +22,9 @@ All notable changes to this project are documented here (Keep a Changelog style)
 ### Changed
 - A console stop whose `taskkill` is confirmed by a fresh process snapshot (every recorded runner
   descendant and every later descendant gone) now releases the serial work slot itself with a
-  `verified-tree-kill` receipt. An already-exited runner, a snapshot failure or any survivor keeps
-  the reservation for reconcile or `recover-cleanup` as before.
+  `verified-tree-kill` receipt. An already-exited runner, a snapshot failure, any survivor, a live
+  process born after the recording whose parent cannot be identified, or llmcall's own report of
+  unconfirmed cleanup keeps the reservation for reconcile or `recover-cleanup` as before.
 - Install the Guards runtime from the reviewed submodule during dependency setup, and check dependency consistency before the offline suite.
 - Declare narrow diagnostic output families with private owner/selection manifests,
   conditional source-copy and bundle holds, rebuildable validation, and historical

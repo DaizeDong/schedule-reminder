@@ -4,19 +4,27 @@ A stop ends the runner with `taskkill /T /F`. The parent's exit alone never prov
 descendants are gone, so a stop used to leave the serial slot reserved until an operator ran
 `recover-cleanup`. This module lets the stop prove the stronger fact itself:
 
-  1. observe(): BEFORE the kill, record the runner's tree. Each recorded member keeps an open
-     SYNCHRONIZE handle, so its later exit is read from that handle and a recycled PID can never
-     impersonate it. A child is attributed to its parent only when it was created inside the
-     parent's lifetime; a bare PPID match is not ancestry.
+  1. observe(): BEFORE the kill, note the time and record the runner's tree. Each recorded member
+     keeps an open SYNCHRONIZE handle, so its later exit is read from that handle and a recycled
+     PID can never impersonate it. A child is attributed to its parent only when it was created
+     inside the parent's lifetime; a bare PPID match is not ancestry.
   2. confirm_gone(): AFTER the kill, every recorded handle must be signalled, and a FRESH snapshot
-     must contain no live process whose ancestry runs through a recorded member (this catches a
-     child spawned after step 1 that survived the kill).
+     must contain (a) no live process whose ancestry runs through a recorded member, and (b) no
+     live process created after step 1 whose ancestry is unknown: its parent PID is absent from
+     the snapshot or now belongs to a newer process. (b) is what catches a survivor whose own,
+     never-recorded parent was started after step 1 and died before the fresh snapshot (a
+     `cmd /c start` launcher, or an intermediate taskkill killed while the child it had just
+     spawned lived). (b) can hold the slot because of an unrelated orphan born in those few
+     seconds; that is the safe direction.
 
 Any failure to observe or confirm raises TreeUncertain, and the caller keeps the reservation.
-Residual limit, stated rather than hidden: a descendant whose own parent had already exited before
-step 1 has no PPID link to the runner and is invisible to both taskkill /T and this check. llmcall
-places its model and command children in a kill-on-close Job Object, which covers that case for
-the work the runner actually starts.
+Residual limit, stated rather than hidden: a descendant whose own parent had already exited
+BEFORE step 1 was an orphan at recording time. It has no PPID link to the runner and is invisible
+to taskkill /T and to this check. llmcall's kill-on-close Job Object does not close that gap
+either: the job allows breakaway (JOB_OBJECT_LIMIT_BREAKAWAY_OK), so a descendant created with
+CREATE_BREAKAWAY_FROM_JOB leaves it. Processes this user cannot open (another user's or a
+protected process) are treated as not ours: the runner's descendants run under the runner's
+token and are always openable for query.
 """
 import ctypes
 import datetime
@@ -26,6 +34,8 @@ import time
 SYNCHRONIZE = 0x00100000
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _ERROR_INVALID_PARAMETER = 87  # OpenProcess on a PID that does not exist
+_ERROR_ACCESS_DENIED = 5
+_MARGIN = 10_000_000  # 1 s in FILETIME units: the observation time is taken early, never late
 _WAIT_OBJECT_0, _WAIT_TIMEOUT = 0, 258
 
 
@@ -56,6 +66,7 @@ class NativeProcesses:
                 ("OpenProcess", w.HANDLE, [w.DWORD, w.BOOL, w.DWORD]),
                 ("GetProcessTimes", w.BOOL, [w.HANDLE] + [ctypes.POINTER(w.FILETIME)] * 4),
                 ("WaitForSingleObject", w.DWORD, [w.HANDLE, w.DWORD]),
+                ("GetSystemTimePreciseAsFileTime", None, [ctypes.POINTER(w.FILETIME)]),
                 ("CloseHandle", w.BOOL, [w.HANDLE])):
             function = getattr(k, name)
             function.restype, function.argtypes = restype, argtypes
@@ -83,14 +94,22 @@ class NativeProcesses:
         finally:
             self._k.CloseHandle(handle)
 
-    def open(self, pid):
-        """-> handle, or None when the PID no longer exists. Any other refusal is uncertainty."""
+    def open(self, pid, foreign_ok=False):
+        """-> handle, or None when the PID no longer exists (or, with foreign_ok, when this user may
+        not open it). Any other refusal is uncertainty."""
         handle = self._k.OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
         if handle:
             return handle
-        if ctypes.get_last_error() == _ERROR_INVALID_PARAMETER:
+        error = ctypes.get_last_error()
+        if error == _ERROR_INVALID_PARAMETER or (foreign_ok and error == _ERROR_ACCESS_DENIED):
             return None
         self._fail("open pid %s" % pid)
+
+    def now(self):
+        """Current time in the creation-time domain (FILETIME), minus a safety margin."""
+        value = self._w.FILETIME()
+        self._k.GetSystemTimePreciseAsFileTime(ctypes.byref(value))
+        return ((value.dwHighDateTime << 32) | value.dwLowDateTime) - _MARGIN
 
     def created(self, handle):
         values = [self._w.FILETIME() for _ in range(4)]
@@ -114,7 +133,7 @@ class TreeObservation:
     """Recorded members: pid -> (creation time, retained handle). Close it in every path."""
 
     def __init__(self, backend, roots):
-        self.backend, self.roots, self.members = backend, roots, {}
+        self.backend, self.roots, self.members, self.observed_at = backend, roots, {}, None
 
     def close(self):
         for _created, handle in self.members.values():
@@ -132,6 +151,9 @@ def observe(roots, backend):
     is uncertainty, not success: the tree it had can no longer be recorded."""
     obs = TreeObservation(backend, [(int(p), str(s)) for p, s in roots])
     try:
+        # Taken before anything is read: every process born after it is checked for unknown
+        # ancestry after the kill.
+        obs.observed_at = backend.now()
         if not obs.roots:
             raise TreeUncertain("no recorded runner identity")
         for pid, pstart in obs.roots:
@@ -167,6 +189,38 @@ def observe(roots, backend):
     except BaseException:
         obs.close()
         raise
+
+
+def _late_orphans(obs, table, attributed):
+    """Live processes created after the recording whose parent cannot be identified: the parent PID
+    is missing from the fresh snapshot, belongs to a newer process, or cannot be read. Such a
+    process may descend from the runner through an intermediate that died unrecorded."""
+    backend, found, created_of = obs.backend, [], {}
+    if obs.observed_at is None:
+        raise TreeUncertain("the recording has no observation time")
+
+    def facts(pid):
+        if pid not in created_of:
+            handle = backend.open(pid, foreign_ok=True)
+            if handle is None:
+                created_of[pid] = None
+            else:
+                try:
+                    created_of[pid] = (backend.created(handle), backend.alive(handle))
+                finally:
+                    backend.close(handle)
+        return created_of[pid]
+
+    for pid, ppid in table.items():
+        if pid in obs.members or pid in attributed or pid == ppid:
+            continue
+        own = facts(pid)
+        if own is None or own[0] < obs.observed_at or not own[1]:
+            continue  # gone, not ours to open, or older than the recording
+        parent = facts(ppid) if ppid in table else None
+        if parent is None or parent[0] > own[0]:
+            found.append(pid)
+    return sorted(found)
 
 
 def confirm_gone(obs, *, timeout=3.0, clock=time.monotonic, sleep=time.sleep):
@@ -224,6 +278,10 @@ def confirm_gone(obs, *, timeout=3.0, clock=time.monotonic, sleep=time.sleep):
             frontier.append(pid)
     if survivors:
         raise TreeUncertain("descendants started by the runner tree survived: %s" % sorted(survivors)[:20])
+    orphans = _late_orphans(obs, table, seen)
+    if orphans:
+        raise TreeUncertain("processes of unknown ancestry started after the recording are alive: %s"
+                            % orphans[:20])
     return {"authority": "verified-tree-kill",
             "roots": [[pid, pstart] for pid, pstart in obs.roots],
             "members": sorted([pid, str(created)] for pid, (created, _h) in obs.members.items()),
