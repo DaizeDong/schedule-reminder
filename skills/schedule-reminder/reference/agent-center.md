@@ -1,12 +1,9 @@
 # Agent Center, unified relay + daily digest (frozen surface)
 
-schedule-reminder is the **single backend** every other skill routes through: state (the reminder
-contract), **outbound Discord** (`relay.py`), and the **daily 当日总结** (`digest.py`). Downstream
-skills call these via subprocess and never re-implement transport or scheduling.
-
-> Design law (same as the base): **the contract is the surface, not the transport.** Skills depend on
-> `relay.py <stream>` / `digest.py`, never on webhooks, bots, or the registry file directly, so the
-> Discord wiring can change forever without touching any skill.
+Agent Center provides the reminder state contract, outbound Discord delivery (`relay.py`) and
+daily aggregation (`digest.py`). Downstream skills call these interfaces through subprocesses;
+transport and scheduling remain owned by the base. Keeping webhook, bot and registry handling
+behind the relay allows routing changes without changing each caller.
 
 ## Topology
 
@@ -25,18 +22,11 @@ reminders · general · ops`, plus `commands · guestbook · archive` which are 
 of reading. The aggregated daily summary goes to **Big Brother DM**, not a channel. The bus is
 **two-way**: `relay.py` is the egress, `ingest.py`/`commands.py`/`dispatch.py` the ingress.
 
-**One reader, one writer.** Both halves are single points on purpose, and both were once forked:
-
-- Reading forked when a second bot did its own guild sweep on its own timer with its own cursors.
-  The two readers kept different channel lists, and a message in one list and not the other was
-  consumed by the reader that could not act on it and never seen by the one that could. It left no
-  error, no inbox entry and no log line. See *Inbound*.
-- Writing forked every time a job needed something the webhook could not do (an attachment, or
-  answering in whichever channel asked). Three separate hand written Discord clients grew that way,
-  each re-solving the credentials, the multipart encoding and the 403 on a default User-Agent.
-
-Adding a capability to the one egress retires a fork out there; adding a channel to the one
-enumeration means nothing has to remember it separately.
+One channel enumeration owns inbound discovery, and one relay owns outbound transport. Separate
+readers previously kept different channel lists and cursors, which could consume a message in a
+reader that had no handler for it. Separate senders duplicated credential handling, multipart
+encoding and User-Agent behavior. Centralizing those responsibilities keeps channel additions
+and transport fixes in one place.
 
 ## relay.py, the single Discord egress
 
@@ -51,9 +41,8 @@ python relay.py health                 # registry sane? (no network, no secrets)
 - **Two transports behind one caller contract.** `files` given, or `channel_id` given → the bot
   (`registry.reader.bot_token`). A named stream uses its webhook when present; a notification-only
   stream with just `channel_id` uses that same canonical bot token.
-  A webhook carries the per-stream identity and needs no permissions, but it is bound to one
-  channel and cannot carry a file, so answering where a command was typed and posting an image are
-  both impossible on it. Callers never have to know which transport they are on.
+  A configured webhook carries per-stream identity and is bound to one channel. This relay routes
+  attachments and explicit-channel responses through the bot; callers keep the same interface.
 - **A bot send has no Big Brother fallback and returns False.** It is addressed at one specific
   channel; silently rerouting "the answer to what you just typed in #here" into a DM is worse than
   a visible failure the caller can report in place.
@@ -65,8 +54,8 @@ python relay.py health                 # registry sane? (no network, no secrets)
   bot token the inbound ingest reads. That config dir is version-controlled in a **private**
   companion repo for backup + portability, secrets live there, never here. See `deployment.md`.
 - **Per-stream identity**: each message sets `username` so a stream shows its own name/avatar.
-- **Fallback**: unknown stream / missing registry → delivered to Big Brother DM (prefixed
-  `[stream]`) so nothing is ever silently lost.
+- **Fallback**: an unknown stream or missing registry routes to Big Brother DM with a `[stream]`
+  prefix. Callers must still inspect the delivery result.
 - **Gotcha (encoded in code)**: Discord/Cloudflare 403s the default urllib User-Agent, `relay.py`
   always sends a real `User-Agent`.
 - **Test seam**: `AGENT_CENTER_RELAY_DRYRUN=1` skips the network.
@@ -136,9 +125,9 @@ python digest.py list
 
 ## Inbound, user replies become actions (two-way)
 
-The mirror of `relay.py`: when the user **writes in any channel the bus can read**, that message is
-polled, routed, and turned into pool mutations or a rendered answer, then confirmed back. No
-separate bot, no new dependency.
+Inbound polling reads eligible owner messages, routes them to command handlers or dispatch,
+and records the resulting actions and confirmations. It uses the configured bot and channel
+enumeration described below.
 
 ```
 python ingest.py poll                  # read Discord; persist each channel's cursor and inbox
@@ -150,27 +139,19 @@ python ingest_tick.py                  # scheduled entrypoint: poll -> commands 
 ### Which channels are read, and the invariant that comes with it
 
 `ingest.channels()` is the ONE answer, and it is deliberately wider than the registry: every
-registered stream whose `inbound` is not false, **plus every other readable text channel in the
-guild**, plus the operator's DM (where the digest lands, so where replies to it get typed). A
-channel created next month works without anyone remembering to register it.
+registered stream whose `inbound` and `listen` are not false, other readable text channels in the
+guild, and the operator's DM. Explicitly excluded channels stay excluded during discovery.
 
-That width is the fix for a real incident. The registry listed the channels the system PUSHES to;
-it never listed the server's own default channel. An instruction typed there was read only by the
-backdrop bot, which understood one command prefix, skipped anything else, and advanced its cursor
-past it anyway. The bus never looked. The message was not mishandled, it was never SEEN, and that
-leaves nothing behind to notice.
-
-So the bus now holds an invariant, and the code is arranged to keep it true:
-
-> **A message the bus reads is either claimed by a handler or written to an inbox. Never neither.**
+A registry of outbound destinations can omit channels where the user gives instructions.
+Guild discovery prevents that omission from becoming an unread command. Every message read
+must be claimed by a handler or written to an inbox:
 
 - `poll_stream` writes the cursor and the inbox in one function, and the inbox records the whole
   batch including messages a handler is about to claim: the durable trace of what was seen is kept
   separately from the decision about what to act on.
 - `commands.route` returns `(claimed, remaining)` and the two must add up to the input.
-- **Opting out is explicit and survives discovery**: `inbound: false` means the bus does not read
-  the channel at all and the guild sweep may not add it back (an archive channel; a reference
-  channel full of example commands). `listen: false` means read it, but run no command handlers.
+- **Opting out is explicit and survives discovery**: either `inbound: false` or `listen: false`
+  excludes the channel from reads, and the guild sweep may not add it back.
 - **Cursors are keyed on the CHANNEL ID**, not the stream name: a discovered channel's name is
   whatever a human typed, and a rename would orphan a name-keyed cursor and replay that channel's
   history. Cursors from the two older name-keyed schemes are adopted once, taking the NEWEST of
@@ -233,9 +214,8 @@ judgment chain, and a claimed message never reaches a model.
 
 ## Execution, when a reply asks for something to HAPPEN
 
-The ops above all change a RECORD. `agent` and `stop` change the WORLD, and exist because a bus
-without them answers "make X stop" with a to-do titled "make X stop". That is not hypothetical: a
-misrouted daily poster survived three objections over four days that way, each one dutifully filed.
+`agent` enqueues execution and `stop` requests termination. These actions have distinct ownership
+and evidence requirements because recording a request as a todo does not execute or stop it.
 
 ```
 python agent_tick.py                    # reconcile exited runs, then launch at most one
@@ -259,7 +239,7 @@ calls, command execution and database changes. It is not a dry run. See
   item state, execution metadata and operation generation. The runner must claim that generation
   before executing; parent registration, checkpoints and completion cannot overwrite a newer
   generation. Requests and results also carry their run and attempt identities.
-- **Judge, then hand off.** `dispatch` decides between record and world, emits
+- **Judge, then hand off.** `dispatch` selects record updates or execution actions and emits
   `{"op":"agent","request":...}` or `{"op":"stop","id":...}`, and the deterministic executor
   enqueues work or requests a stop against the saved authorized work IDs. Console actions bind
   stop intent and final cancellation to the observed generation; a stale request cannot stop a
@@ -348,9 +328,8 @@ calls, command execution and database changes. It is not a dry run. See
   fallback. The working directory is the runner's process cwd (it changes into the workspace
   first), and it passes no `cwd`, `cancel` or `requirements` arguments, which 0.3.0 does not accept;
   cancellation travels through the execution scope instead.
-- **Terminal reports carry evidence**, the changed files, the command, its actual output, and the
-  reviewer's verdict. The word 已处理 is banned from them by test; it is the word that made four days
-  of doing nothing look like four days of handling it.
+- **Terminal reports carry evidence**: changed files, the command, its actual output and the
+  reviewer's verdict. Tests prohibit 已处理 as an unsupported completion statement.
 - **Schedule**: Windows task **AgentCenterWorkTick** (PT2M) runs `agent_tick.py`, separate from the
   inbound tick so neither can starve the other.
 

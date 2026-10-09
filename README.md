@@ -16,9 +16,8 @@ Track todos, events and progress in a crash-safe SQLite store; fire due reminder
 schedule-reminder is a **T0 infrastructure base**: other skills write reminders into it and read task
 progress out of it. Downstream integrations use the versioned CLI/JSON surface (with an
 `api_version`) and the documented read-only Task Console linkage seam, never database internals.
-v0.1 focused on concurrency-safe + crash-safe persistence, a
-guarded state machine, idempotent writes, at-least-once delivery, and MUST-PRESERVE unknown fields,
-not on flashy features.
+v0.1 established concurrency-safe and crash-safe persistence, a guarded state machine,
+idempotent writes, at-least-once delivery and MUST-PRESERVE unknown fields.
 
 A stable contract requires stricter input and state checks, at the cost of refusing
 ambiguous writes. Due reminders retain at-least-once retry behavior. Identified business-event
@@ -30,14 +29,13 @@ inspection do not alone prove delivery.
 
 ---
 
-## What it is (and isn't)
+<a id="what-it-is-and-isnt"></a>
+## Scope
 
-**Is:** a persistent, queryable schedule + memo store with a `pending/doing/done/blocked/cancelled`
-state machine, due-reminder dispatch via the local Discord relay, and a stable
-`reminder.py [--actor NAME] <verb>` API for both humans and other skills.
-
-**Isn't:** a one-shot notifier (that's the relay), a calendar UI, or a cloud service. If nothing
-needs to *persist, be queried, or be reminded*, you don't need this.
+The persistent schedule and memo store provides a `pending/doing/done/blocked/cancelled` state
+machine, due-reminder dispatch via the local Discord relay, and a stable
+`reminder.py [--actor NAME] <verb>` API for people and other skills. Use the relay directly for
+one-shot notifications. Calendar interfaces and cloud hosting are outside this tool's scope.
 
 ## Install
 
@@ -70,6 +68,11 @@ for PRIVATE storage, task readback, worker receipts, and the unmeasured ingest/w
 Set `SCHEDULE_REMINDER_CONFIG` to the selected PRIVATE companion root. To switch configurations, select the other root and update any `AGENT_CENTER_CONFIG` file override together. Settings live in the selected PRIVATE registry. See [CONFIG.md](CONFIG.md) for the schema, independent registry/DATA overrides, initialization, switching and recovery. `tools/init_config.py` preserves existing settings; `tools/verify_config.py --json` checks local configuration only. Database initialization and measured capability health remain separate operations.
 
 ## Quick start
+
+JSON output is unconditional. Place global options such as `--db` and `--actor` before the verb;
+do not pass `--json`. Before creating a real obligation, use `creation-preflight` to compare
+existing items; see [integration](skills/schedule-reminder/reference/integration.md) for reuse
+and retry identities.
 
 ```bash
 cd skills/schedule-reminder/scripts
@@ -142,6 +145,12 @@ Set `SCHEDULE_TEST_TASK_CONSOLE_ROOT` to a canonical Task Console checkout to al
 compiler and work API against the real reminder CLI. Those consumer checks explicitly skip when
 the checkout is not provided; no Scheduler task is run by them.
 
+<a id="synthetic-verification"></a>
+`verify_expired_email_active.py --data-dir <PRIVATE-directory>` generates disposable synthetic
+records in the private companion and refuses a source-contained database. It does not prove live
+worker readiness. Historical counts do not establish current runtime or installed readiness;
+use the execution report for the exact source revision.
+
 ## Limitations
 
 - **SQLite ≥ 3.51.3 recommended.** Earlier versions carry a WAL-reset multi-writer corruption bug;
@@ -162,11 +171,3 @@ English (`README.md`, authoritative) · 中文 (`README_CN.md`)
 ## Roadmap · Contributing · License
 
 See [ROADMAP.md](ROADMAP.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [LICENSE](LICENSE) (MIT).
-
-JSON output is unconditional. Place global options such as --db and --actor before the verb; do not pass --json.
-
-## Synthetic verification
-
-`verify_expired_email_active.py --data-dir <PRIVATE-directory>` generates disposable synthetic records in the private companion. It refuses a source-contained database. The utility does not prove live worker readiness.
-
-Historical counts do not establish current runtime or installed readiness; use the execution report for the exact source revision.
