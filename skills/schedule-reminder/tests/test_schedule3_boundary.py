@@ -32,6 +32,10 @@ def native_storage(tmp_path, monkeypatch, request):
         return subprocess.CompletedProcess(argv, 0, json.dumps({
             'nameWithOwner': argv[3], 'visibility': F['visibility'].get(argv[3], 'UNKNOWN')}), '')
     monkeypatch.setattr(subprocess, 'run', local_and_visibility)
+    # The live visibility answer comes from the Guards kit (every gh account); this fixture
+    # answers it synthetically at that seam, as it answers the plain gh call above.
+    monkeypatch.setattr(private_data, '_github_visibility', lambda name: (calls.append(['gh', 'repo', 'view', name]) or json.dumps(
+        {'nameWithOwner': name, 'visibility': F['visibility'].get(name, 'UNKNOWN')})))
     return {**case, 'calls': calls}
 
 

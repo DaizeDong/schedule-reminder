@@ -68,12 +68,21 @@ def synthetic_boundary():
             return subprocess.CompletedProcess(arguments, 1, '', '')
         raise AssertionError('unadmitted synthetic metadata query')
 
-    return types.SimpleNamespace(prove_private_companion=prove,
+    def visibility(name):
+        # Same answers as the synthetic `gh repo view` below; production asks every gh account.
+        if name in FIX['visibility']:
+            return FIX['visibility'][name]
+        raise SyntheticProofError('unknown synthetic visibility')
+
+    return types.SimpleNamespace(prove_private_companion=prove, query_github_visibility=visibility,
                                  read_private_companion_git=read, GitError=SyntheticProofError)
 
 
+ORIGINAL_RUN = None  # the interpreter's subprocess.run, kept for tests that need a real child
+
+
 def install():
-    global INSTALLED, REAL_BOUNDARY_FACTORY
+    global INSTALLED, REAL_BOUNDARY_FACTORY, ORIGINAL_RUN
     if INSTALLED:
         return
     INSTALLED = True
@@ -91,7 +100,7 @@ def install():
     module.active_chain = lambda: ['synthetic-route']
     sys.modules['llmcall'] = module
     socket.socket.connect = socket.socket.connect_ex = blocked
-    original_run = subprocess.run
+    original_run = ORIGINAL_RUN = subprocess.run
 
     def run(argv, *args, **kwargs):
         command = [str(value) for value in argv] if isinstance(argv, (list, tuple)) else []

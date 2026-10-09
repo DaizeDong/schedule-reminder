@@ -44,7 +44,13 @@ def registry_path():
     return assert_writable_path(os.environ.get('AGENT_CENTER_CONFIG') or config_root()/'registry.json').resolve()
 
 
+_VISIBILITY_ARGV = ('gh', 'repo', 'view')
+_VISIBILITY_FIELDS = ('--json', 'nameWithOwner,visibility')
+
+
 def _query(argv):
+    if len(argv) == 6 and tuple(argv[:3]) == _VISIBILITY_ARGV and tuple(argv[4:]) == _VISIBILITY_FIELDS:
+        return _github_visibility(argv[3])
     env = dict(os.environ, GIT_OPTIONAL_LOCKS="0")
     if argv[0] == "gh":
         env["GH_HOST"] = "github.com"
@@ -57,6 +63,25 @@ def _query(argv):
         raise ValueError('PRIVATE repository proof unavailable')
     return result.stdout.strip()
 
+
+
+def _github_visibility(name):
+    """Live visibility of one publication destination, independent of the ACTIVE gh account.
+
+    A plain `gh repo view` asks only with whichever account `gh auth switch` last selected; with
+    an active account that cannot see the private companion every proof failed closed. The pinned
+    Guards kit asks with the owner's stored account, then
+    every other stored account, then gh's default, and refuses only when none can see it. The
+    answer keeps the `gh repo view` JSON shape so the caller's PRIVATE check is unchanged."""
+    boundary = _shared_boundary()
+    ask = getattr(boundary, 'query_github_visibility', None)
+    if not callable(ask):
+        raise ValueError('Guards dependency lacks the account-independent visibility API')
+    try:
+        visibility = ask(name)
+    except boundary.GitError as error:
+        raise ValueError('PRIVATE repository proof unavailable') from error
+    return json.dumps({'nameWithOwner': name, 'visibility': visibility})
 
 
 def _shared_boundary():
