@@ -20,6 +20,10 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - Persist notification claims under a stable business-event identity. Uncertain sends require reconciliation, and retries preserve the prepared target and payload.
 
 ### Changed
+- `relay.py send --idempotency-key K [--receipt-adapter NAME]` prints one JSON receipt for a caller
+  that must prove delivery: `confirmed` with the Discord message IDs, `not_applied` only when nothing
+  can have been sent (no Big Brother fallback in this mode), otherwise `uncertain`. Plain `send` is
+  unchanged.
 - The live PRIVATE visibility check no longer depends on which gh account is active: it asks the
   pinned Guards kit, which tries the owner's stored account, every other stored account and gh's
   default before refusing. Switching the active gh account no longer fails the proof.

@@ -656,6 +656,49 @@ def _cmd_health() -> int:
     return 0 if ok else 1
 
 
+def _send_with_receipt(args, content) -> int:
+    """`send --idempotency-key`: deliver through deliver() and print exactly one receipt line.
+
+    not_applied is printed only where nothing can have been sent (checked before any request);
+    a failure after the first request may have delivered part of the message, so it is uncertain.
+    No fallback: a stream without a receipt-capable transport is refused instead of being sent to
+    the Big Brother DM, where delivery could not be proven.
+    """
+    key = args.idempotency_key
+    base = {"idempotency_key": key, "adapter": args.receipt_adapter}
+
+    def emit(receipt, rc):
+        print(json.dumps({**receipt, **base}, ensure_ascii=False))
+        return rc
+
+    if not isinstance(key, str) or not key.strip():
+        sys.stderr.write("relay: --idempotency-key must be nonempty\n")
+        return 2
+    if args.channel_id or args.files or not args.stream:
+        return emit({"status": "not_applied",
+                     "evidence": "receipt mode supports --stream delivery only; nothing was sent"}, 2)
+    if not isinstance(content, str) or not content.strip():
+        return emit({"status": "not_applied", "evidence": "blank content; nothing was sent"}, 1)
+    try:
+        reg = load_registry()
+        target = (reg.get("streams") or {}).get(args.stream) or {}
+        capable = bool(target.get("webhook") or (target.get("channel_id") and bot_token(reg)))
+    except Exception as exc:
+        return emit({"status": "not_applied",
+                     "evidence": "registry unreadable (%s); nothing was sent" % type(exc).__name__}, 1)
+    if not capable:
+        return emit({"status": "not_applied",
+                     "evidence": "stream %r has no webhook or bot channel; nothing was sent" % args.stream}, 1)
+    try:
+        delivered = deliver(args.stream, content)
+    except Exception as exc:
+        return emit({"status": "uncertain", "error": type(exc).__name__}, 1)
+    receipt_id = delivered.get("receipt_id") if isinstance(delivered, dict) else None
+    if not isinstance(receipt_id, str) or not receipt_id.strip():
+        return emit({"status": "uncertain"}, 1)
+    return emit({"status": "confirmed", "receipt_id": receipt_id, "kind": delivered.get("kind")}, 0)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="relay.py", description="Agent Center multi-stream Discord relay")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -673,6 +716,12 @@ def main(argv=None) -> int:
     g.add_argument("--json", dest="json_payload", help='{"content":..,"username":..}')
     g.add_argument("--json-b64", dest="json_b64", help="base64 of UTF-8 JSON (PowerShell-safe)")
     p_send.add_argument("--username", default=None)
+    # A caller that must prove delivery (a durable action ledger) passes a key and gets one
+    # JSON receipt line on stdout: confirmed with the Discord message IDs, not_applied with evidence
+    # when nothing can have been sent, otherwise uncertain. Stream delivery only.
+    p_send.add_argument("--idempotency-key", dest="idempotency_key", default=None)
+    p_send.add_argument("--receipt-adapter", dest="receipt_adapter", default="relay",
+                        help="adapter name echoed in the receipt")
     p_dig = sub.add_parser("digest", help="send aggregated daily summary to Big Brother")
     gd = p_dig.add_mutually_exclusive_group(required=True)
     gd.add_argument("--text")
@@ -713,6 +762,8 @@ def main(argv=None) -> int:
             content, username = _b64(args.text_b64), args.username
         else:
             content, username = args.text, args.username
+        if args.idempotency_key is not None:
+            return _send_with_receipt(args, content)
         return 0 if send(content, stream=args.stream, channel_id=args.channel_id,
                          files=args.files, username=username) else 1
     return 2
