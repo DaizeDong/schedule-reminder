@@ -5,9 +5,9 @@ description: Persistent store for todos, events, deadlines and progress with pen
 
 # schedule-reminder, the T0 schedule/memo base
 
-> Governing principle (full text in `PHILOSOPHY.md`): **a base is the contract, not the storage.**
-> Downstream skills use the versioned CLI/JSON surface and documented read-only linkage seam,
-> never database internals. Preserve concurrency, crash recovery and compatibility.
+Downstream skills use the versioned CLI/JSON surface and documented read-only linkage seam.
+Database internals remain private. Design constraints cover concurrency, crash recovery and
+compatibility; see [PHILOSOPHY.md](../../PHILOSOPHY.md).
 
 ## When to use / when to stop
 
@@ -37,9 +37,8 @@ and becomes pool mutations or an idempotent work order. Both halves are single p
 enumeration of which channels are read, one egress for everything sent. See
 `reference/operations.md`.
 
-A reply may also ask for something to **happen** rather than be recorded. That path is a third
-scheduled task and a queue of work orders on this same pool, with a runner that has to hand back a
-check which could have failed. Details in the same shard.
+Execution requests become work orders in the same pool and run through the optional third
+scheduled task. Completion requires execution and review evidence; see the same reference.
 
 The OS task is only a heartbeat; `tick` reconciles the local table, so a slept/off machine catches
 up **all** missed reminders on the next run (idempotent, at-least-once + dedupe).
@@ -63,9 +62,14 @@ actual task readback, imports under the selected interpreter, and recent identit
 receipts. A path, static file, process exit, or synthetic receipt cannot prove external delivery.
 The reminder worker writes normal private evidence after a confirmed relay delivery; health only
 reads it. Selected ingest/work remain unmeasured until their own success evidence is available.
-See `reference/deployment.md` for the task and evidence contract.
+See `reference/deployment.md` for the task and evidence contract. [CONFIG.md](../../CONFIG.md)
+defines registry initialization and the local doctor; configuration READY does not replace
+measured capability health.
 
 ## Command cheat-sheet
+
+CLI output is always JSON. Global `--db` and `--actor` options precede the verb; `--json` is not
+supported. Follow the creation preflight and identity rules below before adding real obligations.
 
 ```bash
 python scripts/reminder.py init
@@ -127,8 +131,3 @@ This `SKILL.md` is the only always-loaded file. Load one shard on demand:
 uses the existing dependency/state guards and requires no executor. Execution and task handoff
 have separate receipts; a Scheduler acknowledgement does not complete the todo. See the contract
 for stdin schemas and [manual completion](../../docs/manual-completion.md).
-
-CLI output is always JSON. Global --db and --actor options precede the verb; --json is not supported.
-
-Configuration lifecycle: [CONFIG.md](../../CONFIG.md) defines registry initialization and the local
-doctor. A configuration READY result does not replace measured capability health.

@@ -25,12 +25,13 @@ v0.1 着重保证并发安全、防崩溃持久化、受保护的状态机、幂
 
 ---
 
-## 它是什么(不是什么)
+<a id="它是什么不是什么"></a>
+## 功能范围
 
-**是**：一个持久、可查询的日程 + 备忘存储，带 `pending/doing/done/blocked/cancelled` 状态机、经本地 Discord
-relay 的到期提醒派发，以及供人和其他 skill 调用的稳定 `reminder.py [--actor NAME] <verb>` API。
-
-**不是**：一次性通知器（那是 relay）、日历界面、云服务。如果没有东西需要「持久化 / 被查询 / 被提醒」，你不需要它。
+持久、可查询的日程和备忘存储提供 `pending/doing/done/blocked/cancelled` 状态机、
+经本地 Discord relay 的到期提醒，以及供用户和其他 skill 调用的
+`reminder.py [--actor NAME] <verb>` API。一次性通知直接使用 relay。
+日历界面和云托管不在本工具的范围内。
 
 ## 安装
 
@@ -58,6 +59,10 @@ pwsh -File skills/schedule-reminder/scripts/install.ps1 -Capabilities store,remi
 将 `SCHEDULE_REMINDER_CONFIG` 指向选定的 PRIVATE 伴生仓。切换配置时，同步调整根目录及已设置的 `AGENT_CENTER_CONFIG` 文件覆盖值。[CONFIG.md](CONFIG.md) 说明 registry 格式、配置与 DATA 的独立覆盖规则、初始化和恢复。`tools/init_config.py` 保留已有配置；`tools/verify_config.py --json` 只检查本地配置。数据库仍由 `reminder.py init` 初始化，运行能力是否就绪要看 `health.readiness.ready`。
 
 ## 快速开始
+
+命令始终输出 JSON，无需 `--json`。`--db` 和 `--actor` 是全局参数，必须放在子命令之前。
+创建实际事项前，先用 `creation-preflight` 比较现有记录；复用和重试身份见
+[集成说明](skills/schedule-reminder/reference/integration.md)。
 
 ```bash
 cd skills/schedule-reminder/scripts
@@ -101,6 +106,7 @@ OS 任务只是心跳。`tick` 对账持久表，所以休眠/关机的机器下
 - 新建前比较现有事项、关联后续要求及重试身份见[集成说明](skills/schedule-reminder/reference/integration.md)和[派发身份](docs/dispatch-identity.md)。
 - 工作台操作见[手动完成](docs/manual-completion.md)和[任务关联审查](skills/schedule-reminder/reference/linkage-review.md)。
 - 带业务事件身份的通知见[通知回执](skills/schedule-reminder/reference/notification-receipts.md)。
+- 源码布局和存储保留规则见[storage.md](docs/storage.md)和[storage.contract.json](storage.contract.json)。
 
 ## 测试范围
 
@@ -117,6 +123,10 @@ python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider
 测试只把该代码复制到合成配置中，不读取实际配置或凭据。通过 `SCHEDULE_TEST_TASK_CONSOLE_ROOT`
 指定 Task Console 源码后，还会验证其编译器和工作接口对 reminder CLI 的调用；未指定时明确跳过这些检查。
 这些测试不运行计划任务，也不证明安装后的就绪状态。
+
+`verify_expired_email_active.py --data-dir <PRIVATE-directory>` 在私有伴生仓生成可丢弃的合成记录，
+拒绝使用公开源码内的数据库。该工具不能证明实际 worker 已就绪。历史测试结果也不代表当前版本
+已通过回归或完成安装，请以对应源码版本的执行报告为准。
 
 ## 局限
 
@@ -136,7 +146,3 @@ python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider
 ## Roadmap · 贡献 · 许可
 
 见 [ROADMAP.md](ROADMAP.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [LICENSE](LICENSE)(MIT)。
-
-JSON 会始终输出，无需 --json。--db 和 --actor 是全局参数，必须放在子命令之前。
-
-历史测试结果不代表当前版本已通过回归或完成安装。请以对应源码版本的执行报告为准。
