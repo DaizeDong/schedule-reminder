@@ -108,3 +108,48 @@ def test_a_changed_environment_is_proved_again(companion, monkeypatch):
     monkeypatch.setenv('GIT_SSH_COMMAND', 'synthetic-transport')
     private_data.prove_private(root/'data.json')
     assert len(companion['queries']) == 2
+
+
+def test_a_bare_looking_directory_on_the_way_up_is_never_served_from_memo(companion):
+    root = companion['root']
+    private_data.prove_private(root/'data.json')
+    bare = root/'data'/'mirror'
+    (bare/'objects').mkdir(parents=True)
+    (bare/'refs').mkdir()
+    (bare/'HEAD').write_text('ref: refs/heads/main\n', encoding='utf-8')
+    assert private_data._governing_root(bare/'x') is None
+    private_data.prove_private(bare/'x'/'record.json')
+    assert len(companion['queries']) == 2
+
+
+def test_ceiling_directories_disable_the_memo(companion, monkeypatch):
+    root = companion['root']
+    monkeypatch.setenv('GIT_CEILING_DIRECTORIES', str(root/'data'))
+    private_data.prove_private(root/'data.json')
+    private_data.prove_private(root/'data.json')
+    assert len(companion['queries']) == 2
+
+
+@pytest.mark.parametrize('which', ['ssh', 'global', 'system', 'excludes'])
+def test_a_changed_ssh_system_or_named_git_config_is_proved_again(companion, monkeypatch, which):
+    root = companion['root']
+    home = root/'profile'
+    (home/'.ssh').mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('USERPROFILE', str(home))
+    named = root/'named-global.gitconfig'
+    system = root/'named-system.gitconfig'
+    excludes = root/'named-excludes'
+    named.write_text('[core]\n\texcludesFile = '+excludes.as_posix()+'\n', encoding='utf-8')
+    system.write_text('', encoding='utf-8')
+    excludes.write_text('', encoding='utf-8')
+    monkeypatch.setenv('GIT_CONFIG_GLOBAL', str(named))
+    monkeypatch.setenv('GIT_CONFIG_SYSTEM', str(system))
+    private_data.prove_private(root/'data.json')
+    private_data.prove_private(root/'data.json')
+    assert len(companion['queries']) == 1
+    target = {'ssh': home/'.ssh'/'config', 'global': named, 'system': system, 'excludes': excludes}[which]
+    with open(target, 'a', encoding='utf-8') as stream:
+        stream.write('\n# synthetic change\n')
+    private_data.prove_private(root/'data.json')
+    assert len(companion['queries']) == 2

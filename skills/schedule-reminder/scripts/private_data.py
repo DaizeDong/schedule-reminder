@@ -188,14 +188,18 @@ def _proof_directory(path):
 # workspace, run directory, locks, records): work-action proved it 22 times (~64 s) against the
 # console's 30 s budget. A successful proof is therefore reused within this process while the
 # companion state it depends on is unchanged: the companion root and Git administration, its own
-# Git configuration (remote URLs), HEAD and the ref it names, the user's global Git
-# configuration, the local visibility receipt, the process environment and the proof
-# implementation. Any change is a miss and proves in full. A refusal is never stored, so it is
-# proved again next time. Entries expire after PROOF_TTL_SECONDS so a long-lived tick cannot keep
-# a stale live-visibility answer for long; configuration reached only through include directives
-# and server-side visibility changes are bounded by that TTL. Ignore status is checked per
-# destination through the proof's own read-only Git query and re-checked whenever a .gitignore
-# that can decide it changes.
+# Git configuration (remote URLs), HEAD and the ref it names, the global and system Git
+# configuration (including the files GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM name and literal
+# core.excludesFile targets in the hashed files), the SSH client configuration files the proof
+# attests, the local visibility receipt, the process environment and the proof implementation.
+# Any change is a miss and proves in full. A refusal is never stored, so it is proved again next
+# time. Entries expire after PROOF_TTL_SECONDS so a long-lived tick cannot keep a stale answer for
+# long. Bounded only by that TTL: configuration reached only through include directives,
+# server-side visibility changes, the visibility receipt ageing past its maximum age, and changes
+# inside the Git installation itself (exec-path). Ignore status is checked per destination through
+# the proof's own read-only Git query and re-checked whenever a .gitignore that can decide it
+# changes. The memo is not used under GIT_CEILING_DIRECTORIES or below a directory Git would take
+# for a bare repository: there Git discovery stops somewhere other than the nearest .git.
 PROOF_TTL_SECONDS = 60.0
 _PROOF_LOCK = threading.RLock()
 _PROOF_MEMO = {}
@@ -212,17 +216,76 @@ def _clock():
     return time.monotonic()
 
 
+def _looks_bare(candidate):
+    """Git discovery also stops at a directory that is itself a repository (HEAD, objects, refs)."""
+    try:
+        return ((candidate/'HEAD').is_file() and (candidate/'objects').is_dir()
+                and (candidate/'refs').is_dir())
+    except OSError:
+        return True
+
+
 def _governing_root(directory):
-    """The directory Git discovery stops at: the nearest ancestor holding a .git entry."""
+    """The nearest ancestor holding a .git entry, or None where Git discovery could stop elsewhere.
+
+    None (no memo) when GIT_CEILING_DIRECTORIES is set, or when a directory on the way up looks
+    like a bare repository, because Git stops there and refuses rather than reaching the .git.
+    """
+    if os.environ.get('GIT_CEILING_DIRECTORIES'):
+        return None
     for candidate in (directory, *directory.parents):
         try:
             os.lstat(candidate/'.git')
         except FileNotFoundError:
+            if _looks_bare(candidate):
+                return None
             continue
         except OSError:
             return None
         return candidate
     return None
+
+
+def _excludes_targets(path, home):
+    """Literal core.excludesFile values in one config file (include chains are TTL-bounded)."""
+    try:
+        text = Path(path).read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return []
+    targets = []
+    for line in text.splitlines():
+        name, separator, value = line.strip().partition('=')
+        if separator and name.strip().casefold() == 'excludesfile':
+            value = value.strip().strip('"')
+            if value.startswith('~/') or value == '~':
+                value = str(home) + value[1:]
+            if value:
+                targets.append(Path(value))
+    return targets
+
+
+def _git_system_files(home):
+    """System Git and SSH configuration files the proof may read; a superset is fine."""
+    import shutil
+    paths = set()
+    for name in ('GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM'):
+        if os.environ.get(name):
+            paths.add(Path(os.environ[name]))
+    profiles = {str(home), os.environ.get('HOME'), os.environ.get('USERPROFILE')}
+    paths.update(Path(profile)/'.ssh'/'config' for profile in profiles if profile)
+    if os.name == 'nt':
+        program_data = os.environ.get('ProgramData')
+        if program_data:
+            paths.add(Path(program_data)/'ssh'/'ssh_config')
+            paths.add(Path(program_data)/'Git'/'config')
+        git = shutil.which('git')
+        if git:
+            for installation in list(Path(git).resolve().parents)[:4]:
+                paths.update({installation/'etc'/'gitconfig', installation/'etc'/'ssh'/'ssh_config',
+                              installation/'mingw64'/'etc'/'gitconfig'})
+    else:
+        paths.update({Path('/etc/gitconfig'), Path('/etc/ssh/ssh_config')})
+    return paths
 
 
 def _file_state(path, digest=True):
@@ -279,8 +342,12 @@ def _companion_state(root):
                   _file_state(common/'info'/'exclude'), _file_state(common/'packed-refs', digest=False)]
         home = Path(os.path.expanduser('~'))
         xdg = Path(os.environ.get('XDG_CONFIG_HOME') or home/'.config')
-        for path in sorted({home/'.gitconfig', Path(os.environ.get('HOME') or home)/'.gitconfig',
-                            xdg/'git'/'config', xdg/'git'/'ignore', home/'.pii-guard'/'visibility.json'}):
+        files = {home/'.gitconfig', Path(os.environ.get('HOME') or home)/'.gitconfig',
+                 xdg/'git'/'config', xdg/'git'/'ignore', home/'.pii-guard'/'visibility.json'}
+        files |= _git_system_files(home)
+        for config in sorted(files | {admin/'config', common/'config', admin/'config.worktree'}, key=str):
+            files.update(_excludes_targets(config, home))
+        for path in sorted(files, key=str):
             parts.append((str(path), _file_state(path)))
     except (OSError, ValueError):
         return None

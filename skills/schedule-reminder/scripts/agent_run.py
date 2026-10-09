@@ -229,9 +229,10 @@ def independent_review(actor, reviewer):
 class OperationCancellation:
     """Exact ownership check for the runner's own decision points; DB failure revokes work.
 
-    One answer costs an ownership query: a PRIVATE storage proof (about 54 git subprocesses and one
-    `gh` visibility query, measured at 4 to 5 s) plus a CLI read. Pollers get a PolledCancellation
-    around it instead, never this object directly."""
+    One answer costs an ownership query: a PRIVATE storage proof plus a CLI read. The proof is a
+    full one (about 54 git subprocesses and one `gh` visibility query, measured at 4 to 5 s) at most
+    once per 60 s for an unchanged companion and a memo hit otherwise. Pollers get a
+    PolledCancellation around it instead, never this object directly."""
     def __init__(self, item_id, generation):
         self.item_id, self.generation = item_id, generation
 

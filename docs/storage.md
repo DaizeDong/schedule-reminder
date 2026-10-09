@@ -21,7 +21,9 @@ relative to the selected private repository root, not to this source checkout.
 Without an explicit config pointer, the pinned Guards resolver selects an initialized
 sibling companion before a home companion. DATA overrides do not select the config
 root. Missing storage remains inert for reads; missing Guards or an unproven inferred
-companion fails explicitly, and every write still requires PRIVATE proof.
+companion fails explicitly, and every write still requires PRIVATE proof. One process
+reuses a successful proof of an unchanged companion for at most 60 s; any change to what the
+proof depends on, or a refusal, proves in full again.
 Current defaults use root-level `state/`, `agent-runs/` and `digest.json`; the sole
 reminder database is `data/db.sqlite3`. The contract also declares known leaves for
 retained `data/state/`, `data/agent-runs/` and `data/digest.json` selections. Explicit

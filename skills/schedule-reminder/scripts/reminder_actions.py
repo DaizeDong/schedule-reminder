@@ -51,8 +51,11 @@ def workspace_once(root, *, prefetch=False):
 
     The PRIVATE proof runs dozens of git queries and one live visibility lookup, and the
     answer cannot differ between items of one read, so a feed must not repeat it per item.
-    ``prefetch`` starts that proof on a thread so it overlaps the database proof instead of
-    following it. Writers (_reserve, start) keep calling _workspace and re-prove at action time.
+    ``prefetch`` starts that proof on a thread. private_data serialises full proofs, so the thread
+    overlaps the database proof only when the workspace lies in another companion's memo entry;
+    when both lie in one companion the second proof is a memo hit. Writers (_reserve, start) keep
+    calling _workspace, which reuses this process's memoised proof while it is valid (60 s, same
+    companion state) and proves in full otherwise.
     """
     import threading
     outcome = {}
