@@ -267,8 +267,13 @@ calls, command execution and database changes. It is not a dry run. See
 - **A round is act, verify, review, decide.** The actor returns a final verification contract with
   a nonempty summary and a command, or an explicit `verify: null` when no executable check exists.
   A failing check cannot complete the work. Completion additionally requires the actual actor and
-  reviewer model identities, different reported model families, an exact `DONE` verdict and
-  unchanged before/after review evidence. A review-only completion is identified in the report.
+  reviewer model identities, different reported model families, a `DONE` verdict and unchanged
+  before/after review evidence. A review-only completion is identified in the report. The verdict
+  is the first non-empty line of the answer and lines after it are explanation
+  (`agent_run.review_verdict`): `DONE` must be the bare token (one trailing full stop allowed) and
+  no later line may itself read as a verdict; `CONTINUE:` must open the answer with a reason.
+  Anything else (`DONE, but ...`, a verdict after a preamble, `DONE` followed by a `CONTINUE:`
+  line) is no verdict and leaves `review_unavailable`.
 - **Unknown evidence does not replay execution.** Missing execution or cleanup evidence leaves
   `reconcile`; an invalid final contract or unavailable independent review leaves
   `review_unavailable`. A confirmed failure before execution can be recorded as `failed`.
@@ -307,6 +312,16 @@ calls, command execution and database changes. It is not a dry run. See
   recycled number as the live holder, and `os.kill(pid, 0)` is not an existence check there at all.
   Failed identity queries remain uncertainty. Stop intent is saved before tree termination;
   cancellation requires a verified absent/reused identity or verified termination.
+- **A stop terminates; it does not wait for the runner to cancel itself.** `agent_tick.stop` (the
+  Task Console's stop and `--stop`) saves the intent and then ends the runner's process tree with
+  `taskkill /T /F` within a few seconds. The runner's cooperative path (the polled token above)
+  never gets to end the running llmcall call, so that call writes no ledger row; the record of
+  the stop is the run's `events.jsonl` `stopped` event (`killed`, `status`) and the cancelled
+  order. A grace period before termination was considered and not added: the runner notices
+  revocation only after up to `AGENT_EXEC_CANCEL_POLL_SECONDS` (30 s) plus one ownership query,
+  which is longer than the console's 30 s budget for the whole stop command, and `stop` holds the
+  run-root lifecycle lock that the runner's own `finish` needs, so the runner could not finish
+  inside the wait anyway.
 - **An interrupted spawn retains its reservation.** A missing parent or unregistered child is
   insufficient cleanup evidence. Stop revokes an unregistered spawn into `reconcile` with unknown
   cleanup. Unreleased or uncertain reservations keep the serial slot even when the item has a

@@ -219,6 +219,33 @@ def identity(result):
         "model_source", "policy_source", "execution_started", "outcome", "effects")}
 
 
+_CONTINUE_VERDICT = re.compile(r"CONTINUE:\s*\S[\s\S]*", re.I)
+_DONE_LINE = re.compile(r"DONE[.!。！]?", re.I)
+_VERDICT_LINE = re.compile(r"(DONE[.!。！]?|CONTINUE\s*:.*)", re.I)
+
+
+def review_verdict(text):
+    """Return "done", "continue" or None for the reviewer's answer.
+
+    review_prompt asks for an answer that STARTS with one word: DONE, or CONTINUE:<what is
+    missing>. The verdict is read from the first non-empty line, and what follows it is the
+    reviewer's explanation (a live reviewer answered "DONE" plus two paragraphs and the order
+    ended review_unavailable). CONTINUE keeps its old reading: the answer opens with "CONTINUE:"
+    and a reason. A DONE line must be the bare token (one trailing full stop or exclamation mark
+    allowed) and no later line may itself read as a verdict; "DONE, but ...", "DONE: ...", a
+    verdict after a preamble, or DONE followed by a CONTINUE line are two answers or none, and
+    give None, which keeps the draft for the owner instead of completing the order."""
+    decision = (text or "").strip()
+    if _CONTINUE_VERDICT.fullmatch(decision):
+        return "continue"
+    lines = decision.splitlines()
+    if not lines or not _DONE_LINE.fullmatch(lines[0].strip()):
+        return None
+    if any(_VERDICT_LINE.fullmatch(line.strip()) for line in lines[1:]):
+        return None
+    return "done"
+
+
 def independent_review(actor, reviewer):
     actor_model, actor_family = getattr(actor, "effective_model", None), getattr(actor, "model_family", None)
     reviewer_model, reviewer_family = getattr(reviewer, "effective_model", None), getattr(reviewer, "model_family", None)
@@ -776,7 +803,8 @@ def _run_approach_owned(item_id, stream, request, workspace, approach, post_repo
             if reviewer.error or getattr(reviewer, "outcome", None) != "success" or not independent_review(result, reviewer):
                 return stop("review_unavailable", "independent reviewer unavailable; draft retained")
             decision = (reviewer.text or "").strip()
-            if re.fullmatch(r"DONE", decision, re.I):
+            verdict = review_verdict(decision)
+            if verdict == "done":
                 # A changed workspace during review invalidates the evidence, not the work.
                 if _capture_evidence(workspace) != diff:
                     return stop("review_unavailable", "workspace changed during review")
@@ -787,7 +815,7 @@ def _run_approach_owned(item_id, stream, request, workspace, approach, post_repo
                          cmd, rc, out, reviewer.effective_model, decision, approach, rnd,
                          agent_task.run_dir(item)))
                 return {"outcome": "done"}
-            if not re.fullmatch(r"CONTINUE:\s*\S[\s\S]*", decision, re.I):
+            if verdict != "continue":
                 return stop("review_unavailable", "review verdict unavailable; draft retained")
             last_failure = "独立复核判定还没完成: " + decision
         sigs.append(agent_task.signature(rc, out, changed, workspace))
