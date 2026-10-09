@@ -20,6 +20,10 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - Persist notification claims under a stable business-event identity. Uncertain sends require reconciliation, and retries preserve the prepared target and payload.
 
 ### Changed
+- A console stop whose `taskkill` is confirmed by a fresh process snapshot (every recorded runner
+  descendant and every later descendant gone) now releases the serial work slot itself with a
+  `verified-tree-kill` receipt. An already-exited runner, a snapshot failure or any survivor keeps
+  the reservation for reconcile or `recover-cleanup` as before.
 - Install the Guards runtime from the reviewed submodule during dependency setup, and check dependency consistency before the offline suite.
 - Declare narrow diagnostic output families with private owner/selection manifests,
   conditional source-copy and bundle holds, rebuildable validation, and historical

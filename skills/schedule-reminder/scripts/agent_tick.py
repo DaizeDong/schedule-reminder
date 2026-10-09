@@ -262,29 +262,82 @@ def _finish_stop(item, note="", post=True, never_started=False, expected_generat
             _post_owner(ext.get(agent_task.EXT_STREAM) or 'infra', reason,
                         run_id=run_id, condition=status)
         return {'id': item['id'], 'killed': False, 'stopped': False, 'status': status, 'error': reason}
+    observation, observe_error = None, None
+    if op and not never_started:
+        observation, observe_error = _observe_runner_tree(op)
     try:
-        killed = False if never_started else agent_task.kill_tree(
-            ext.get(agent_task.EXT_PID), ext.get(agent_task.EXT_PSTART))
-        result = (agent_task.cancel(item["id"], note or "user asked to stop") if expected_generation is None else
-                  agent_task.cancel(item["id"], note or "user asked to stop", expected_generation=expected_generation))
-        if result.get("_err"):
-            raise RuntimeError("cancellation persistence failed: " + str(result["_err"]))
-    except (RuntimeError, OSError) as error:
-        agent_task.append_event(item, "stop_pending", error=str(error))
-        outcome = {"id": item["id"], "killed": False, "stopped": False,
-                   "status": "stop_pending", "error": str(error)}
-        _log("stop pending %s: %s" % (item["id"][:8], error))
-        if post:
-            _post_owner(ext.get(agent_task.EXT_STREAM) or "infra",
-                  "工作单 %s 的停止请求尚未完成：%s" % (item["id"][:8], error), run_id=run_id, condition="stop_pending")
-        return outcome
+        try:
+            killed = False if never_started else agent_task.kill_tree(
+                ext.get(agent_task.EXT_PID), ext.get(agent_task.EXT_PSTART))
+            result = (agent_task.cancel(item["id"], note or "user asked to stop") if expected_generation is None else
+                      agent_task.cancel(item["id"], note or "user asked to stop", expected_generation=expected_generation))
+            if result.get("_err"):
+                raise RuntimeError("cancellation persistence failed: " + str(result["_err"]))
+        except (RuntimeError, OSError) as error:
+            agent_task.append_event(item, "stop_pending", error=str(error))
+            outcome = {"id": item["id"], "killed": False, "stopped": False,
+                       "status": "stop_pending", "error": str(error)}
+            _log("stop pending %s: %s" % (item["id"][:8], error))
+            if post:
+                _post_owner(ext.get(agent_task.EXT_STREAM) or "infra",
+                      "工作单 %s 的停止请求尚未完成：%s" % (item["id"][:8], error), run_id=run_id, condition="stop_pending")
+            return outcome
+        cleanup = _release_after_verified_kill(item, op, observation, observe_error, killed)
+    finally:
+        if observation is not None:
+            observation.close()
     status = "terminated" if killed else "already_exited"
-    agent_task.append_event(item, "stopped", killed=killed, status=status)
-    _log("stopped %s (%s)" % (item["id"][:8], status))
+    agent_task.append_event(item, "stopped", killed=killed, status=status, cleanup=cleanup)
+    _log("stopped %s (%s, cleanup %s)" % (item["id"][:8], status, cleanup))
     if post:
         _post_owner(ext.get(agent_task.EXT_STREAM) or "infra",
               "已停止工作单 %s（%s）。" % (item["id"][:8], status), run_id=run_id, condition="cancelled")
-    return {"id": item["id"], "killed": killed, "stopped": True, "status": status}
+    return {"id": item["id"], "killed": killed, "stopped": True, "status": status, "cleanup": cleanup}
+
+
+def _observe_runner_tree(op):
+    """Record the runner tree before termination. Failure never blocks the stop itself; it only
+    means the reservation cannot be released automatically. -> (observation|None, error|None)"""
+    roots = []
+    for pid, pstart in ((op["launch_pid"], op["launch_pstart"]), (op["pid"], op["pstart"])):
+        if pid is not None and (pid, pstart) not in roots:
+            if pstart is None:
+                return None, "recorded runner identity has no creation time"
+            roots.append((pid, pstart))
+    if not roots:
+        return None, "no recorded runner identity"
+    try:
+        return agent_task.process_tree.observe(roots, agent_task.process_backend()), None
+    except Exception as error:  # observation is advisory to the kill; any failure holds the slot
+        return None, "%s: %s" % (type(error).__name__, error)
+
+
+def _release_after_verified_kill(item, op, observation, observe_error, killed):
+    """Release the serial slot only when the kill was verified AND a fresh snapshot confirms that
+    every recorded member and every later descendant is gone. The parent's exit alone, a failed
+    snapshot or any survivor keeps the reservation for reconcile / recover-cleanup.
+    -> "released" | "held" | "not_applicable"."""
+    if op is None:
+        return "not_applicable"
+    reason = None
+    if not killed:
+        reason = "runner had already exited; its tree was never recorded"
+    elif observation is None:
+        reason = "runner tree was not recorded before termination: %s" % observe_error
+    else:
+        try:
+            receipt = agent_task.process_tree.confirm_gone(observation)
+        except Exception as error:
+            reason = "cleanup unconfirmed: %s: %s" % (type(error).__name__, error)
+        else:
+            current = agent_task.operation(item["id"])
+            if (current and current["generation"] == op["generation"]
+                    and agent_task.release_verified_cleanup(item["id"], op["generation"], receipt, current)):
+                return "released"
+            reason = "verified cleanup could not be committed to this reservation"
+    agent_task.append_event(item, "cleanup_held", reason=reason[:300])
+    _log("stop %s keeps its reservation: %s" % (item["id"][:8], reason))
+    return "held"
 
 
 @agent_task.serialized_lifecycle
