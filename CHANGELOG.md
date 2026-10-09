@@ -34,6 +34,7 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - Document current PRIVATE runtime storage, capability-selected installation and readiness evidence, owner-bound inbound staging, and reviewed work recovery. Source availability and successful health JSON remain separate from measured external readiness.
 
 ### Fixed
+- `work-feed` with `SCHEDULE_ACTION_WORKSPACE` set proves the action workspace once per read, on a thread that overlaps the database proof, instead of once per tracked todo. Each PRIVATE proof runs about 55 git queries and a live `gh repo view`, so a real database with about a hundred eligible todos made the read take minutes and the Task Console reader (20 s budget) reported `work_reader_failed`. Action writes still prove the workspace themselves.
 - Stop a revoked or lost work order's running model call. The order already ran inside
   `llmcall.process.execution_scope(cancel=...)`; llmcall 0.3.1 polls that token while a call runs.
   Pollers now get a `PolledCancellation` that reuses the ownership answer for

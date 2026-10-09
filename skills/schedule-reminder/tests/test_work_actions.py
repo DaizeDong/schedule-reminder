@@ -529,3 +529,26 @@ def test_stop_crash_after_commit_revokes_running_ownership(case, monkeypatch):
     assert not agent_task.cancel(work_id).get('_err')
     assert agent_task.release(work_id, 1)
     assert actions.inspect_item(str(database), item['id'])['current']['state'] == 'stopped'
+
+
+def test_work_feed_proves_the_action_workspace_once_not_per_todo(case, monkeypatch):
+    """The console reader has a 20 s budget; one PRIVATE proof costs ~3 s on a real companion.
+
+    Proving the workspace again for every tracked todo made work-feed run for minutes."""
+    import threading
+    import store
+    actions = module()
+    database, workspace, item = case
+    todos = [item['id']] + [store.add_item('Acme follow-up %d' % n, source='user', db_path=str(database))['id']
+                            for n in range(4)]
+    calls = []
+    proven = Path(workspace).resolve()
+    monkeypatch.setattr(actions, '_workspace', lambda root: calls.append(root) or proven)
+    monkeypatch.setenv('SCHEDULE_ACTION_WORKSPACE', str(workspace))
+    from reminder_work_feed import read_work_feed
+    feed = read_work_feed(db_path=str(database))
+    assert feed['available'], feed
+    offers = {row['id']: [offer['id'] for offer in row['actions']['offers']] for row in feed['items'] if row['id'] in todos}
+    assert set(offers) == set(todos) and all('agent' in ids for ids in offers.values())
+    assert calls == [str(workspace)]
+    assert not any(thread.name == 'workspace-proof' for thread in threading.enumerate())
