@@ -42,7 +42,10 @@ CLAIM_GRACE_SECONDS = 180
 
 
 def _log(msg):
-    print(msg, flush=True)
+    """Diagnostics go to stderr: stdout carries this module's JSON result (`--stop`, a tick run)
+    and the reply of every CLI that calls into it, and a log line in front of that JSON makes
+    the reply unparseable. Under pythonw both streams are None and print() drops the line."""
+    print(msg, file=sys.stderr, flush=True)
 
 
 def _post(stream, text, *, run_id=None, condition='reconcile'):

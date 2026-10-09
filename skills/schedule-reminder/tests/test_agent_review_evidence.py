@@ -117,6 +117,63 @@ def test_near_match_done_token_cannot_complete(monkeypatch, tmp_path):
     assert not any(ok for _, ok, _ in harness.finished)
 
 
+# A live reviewer answered the one-word verdict and then explained it; the old check accepted
+# only the bare token, so finished work ended review_unavailable.
+EXPLAINED_DONE = ["DONE\n\nThe workspace holds the requested file with the expected date.\n\n"
+                  "The verify command reads it back and would fail on any other content.",
+                  "\n  done.\r\nThe request is satisfied and nothing outside it changed.",
+                  "DONE\n- file present\n- check can fail"]
+# Two answers, or none: each keeps the draft instead of completing the order.
+AMBIGUOUS = ["DONE\n\nCONTINUE: the date is written in the wrong format.",
+             "DONE\ncontinue: one more file is missing",
+             "DONE, but the verify command checks the wrong file.",
+             "DONE: except the second file.",
+             "Looks complete.\nDONE",
+             "**DONE**\nAll good.",
+             "DONE\nDONE",
+             "CONTINUE\nthe date is wrong"]
+
+
+@pytest.mark.parametrize("text", EXPLAINED_DONE)
+def test_review_verdict_reads_the_first_line(text):
+    assert agent_run.review_verdict(text) == "done"
+
+
+@pytest.mark.parametrize("text", ["CONTINUE: the date is wrong",
+                                  "CONTINUE:\nthe verify command checks the wrong file.\nDONE otherwise"])
+def test_review_verdict_continue_keeps_its_reading(text):
+    assert agent_run.review_verdict(text) == "continue"
+
+
+@pytest.mark.parametrize("text", AMBIGUOUS + ["", "DONE_NOT_COMPLETE", "Not done yet."])
+def test_review_verdict_refuses_anything_ambiguous(text):
+    assert agent_run.review_verdict(text) is None
+
+
+@pytest.mark.parametrize("text", EXPLAINED_DONE)
+def test_explained_done_completes_the_order(monkeypatch, tmp_path, text):
+    result, harness, calls = _round(monkeypatch, tmp_path,
+        _result("agent"), _result("judge", text=text))
+    assert result["outcome"] == "done" and calls == ["agent", "judge"]
+    assert agent_task.operation(harness.item_id)["outcome"] == "done"
+
+
+@pytest.mark.parametrize("text", AMBIGUOUS)
+def test_ambiguous_verdict_keeps_the_draft(monkeypatch, tmp_path, text):
+    result, harness, _ = _round(monkeypatch, tmp_path,
+        _result("agent"), _result("judge", text=text))
+    assert result["outcome"] == "review_unavailable", result
+    assert not any(ok for _, ok, _ in harness.finished)
+
+
+def test_explained_continue_never_completes(monkeypatch, tmp_path):
+    result, harness, calls = _round(monkeypatch, tmp_path, _result("agent"),
+        _result("judge", text="CONTINUE: the check reads the wrong file.\n\nDetails follow."))
+    assert result["outcome"] not in ("done", "review_unavailable"), result
+    assert calls[:2] == ["agent", "judge"]
+    assert not any(ok for _, ok, _ in harness.finished)
+
+
 def test_untyped_installed_result_is_explicitly_unresolved(monkeypatch, tmp_path):
     actor = llm_call_result(text="partial draft", include_metadata=False)
     result, harness, calls = _round(monkeypatch, tmp_path, actor, _result("judge"))

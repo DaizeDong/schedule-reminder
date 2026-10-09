@@ -72,6 +72,33 @@ def _write(stream, text):
         pass
 
 
+class _Diagnostics:
+    """Keep the reply channels to one JSON object while library code runs.
+
+    The owner verbs run code that also serves the scheduled worker, and that code logs with
+    print(): stopping a running work order printed "stopped <id> (terminated)" before the reply,
+    so stdout was a log line plus JSON and Task Console's json.loads() reported
+    owner_reply_unknown for a stop that had succeeded. Library output is held here and written
+    afterwards to whichever stream is NOT carrying the reply: stderr on success (the caller reads
+    stdout), stdout on failure (the caller reads stderr). Nothing is dropped and neither parsed
+    stream ever carries a stray line."""
+
+    def __init__(self):
+        import io
+        self.buffer = io.StringIO()
+
+    def run(self, function, *args, **kwargs):
+        import contextlib
+        try:
+            with contextlib.redirect_stdout(self.buffer), contextlib.redirect_stderr(self.buffer):
+                result = function(*args, **kwargs)
+        except BaseException:
+            _write(sys.stdout, self.buffer.getvalue())
+            raise
+        _write(sys.stderr, self.buffer.getvalue())
+        return result
+
+
 def _emit(payload):
     out = {"api_version": store.API_VERSION,
            "schema_version": store.RECORD_SCHEMA_VERSION,
@@ -250,16 +277,18 @@ def cmd_work_action(a):
     if a.cmd == 'work-action-result':
         if set(payload) != {'action_id', 'result'}:
             raise reminder_actions.ActionError('invalid_task_result')
-        return _emit(reminder_actions.record_result(payload['action_id'], payload['result'], db_path=database))
+        return _emit(_Diagnostics().run(reminder_actions.record_result, payload['action_id'], payload['result'],
+                                        db_path=database))
     if a.cmd == 'work-action-stop':
-        return _emit(reminder_actions.stop(payload, db_path=database, workspace_root=workspace))
+        return _emit(_Diagnostics().run(reminder_actions.stop, payload, db_path=database, workspace_root=workspace))
     if 'request' in payload:
         if set(payload) != {'request', 'context'} or not isinstance(payload['context'], str) or len(payload['context']) > 40000:
             raise reminder_actions.ActionError('invalid_action_context')
         request, context = payload['request'], payload['context']
     else:
         request, context = payload, None
-    return _emit(reminder_actions.start(request, db_path=database, workspace_root=workspace, context=context))
+    return _emit(_Diagnostics().run(reminder_actions.start, request, db_path=database, workspace_root=workspace,
+                                    context=context))
 
 def build_parser():
     p = argparse.ArgumentParser(prog="reminder.py", description="schedule-reminder CLI contract")

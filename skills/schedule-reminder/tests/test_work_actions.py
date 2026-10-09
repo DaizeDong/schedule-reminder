@@ -166,6 +166,63 @@ def test_cli_submit_and_feed_are_connected(case):
     assert bad.returncode == 1 and json.loads(bad.stderr)['error_code'] == 'request_conflict'
 
 
+def test_cli_stop_of_a_running_action_replies_with_json_only(case):
+    """Task Console parses the whole stdout of work-action-stop with json.loads().
+
+    Stopping a running order logged "stopped <id> (...)" to stdout in front of the JSON, so every
+    stop of a running action showed owner_reply_unknown although it had succeeded. The order here
+    is running in the store with a runner identity that no live process matches (offline tests
+    block taskkill), so the stop takes the same finish-and-log path as a real one."""
+    import os
+    import subprocess
+    import agent_task
+    actions = module()
+    database, workspace, item = case
+    env = dict(os.environ, SCHEDULE_ACTION_WORKSPACE=str(workspace))
+    def cli(verb, payload):
+        return subprocess.run([sys.executable, str(SCRIPTS / 'reminder.py'), '--db', str(database), verb],
+                              input=json.dumps(payload), env=env, text=True, encoding='utf-8',
+                              capture_output=True, timeout=60)
+    started = cli('work-action', request(actions, database, workspace, item))
+    assert started.returncode == 0, started.stderr
+    work_id = json.loads(started.stdout)['action']['work_item_id']
+    assert agent_task.claim(work_id)
+    assert agent_task.begin_spawn(work_id, 1)
+    # Windows PIDs are multiples of four, so 4099 never names a process: the identity reads as exited.
+    assert agent_task.start_runner(work_id, 1, 4099, 456)
+    assert agent_task.owns(work_id, 1)
+    projection = actions.inspect_item(str(database), item['id'], workspace_root=str(workspace))
+    reply = cli('work-action-stop', {'item_id': item['id'], 'action_id': projection['current']['id'],
+                                     'revision': projection['revision'],
+                                     'request_id': 'synthetic-stop-running'})
+    assert reply.returncode == 0, reply.stderr
+    result = json.loads(reply.stdout)  # the console's parse: the whole stream, nothing else
+    assert result['ok'] is True and result['schemaVersion'] == 1 and isinstance(result['action'], dict)
+    assert result['status'] in ('stopped', 'reconcile'), result  # reconcile until the runner releases
+    assert len(reply.stdout.splitlines()) == 1
+    assert 'stopped %s' % work_id[:8] in reply.stderr  # the diagnostic is kept, off the reply stream
+    assert agent_task.get(work_id)['state'] == 'cancelled'
+
+
+def test_cli_reply_streams_carry_library_output_on_the_other_stream(monkeypatch, capsys):
+    """A failing owner verb answers on stderr; library output goes to stdout then, never into
+    the JSON the caller parses. A succeeding verb answers on stdout and the output goes to stderr."""
+    import reminder
+    def noisy(fail):
+        print('library log line')
+        print('library warning', file=sys.stderr)
+        if fail:
+            raise reminder.ActionError('stop_unconfirmed')
+        return {'ok': True}
+    assert reminder._Diagnostics().run(noisy, False) == {'ok': True}
+    out, err = capsys.readouterr()
+    assert out == '' and err == 'library log line\nlibrary warning\n'
+    with pytest.raises(reminder.ActionError):
+        reminder._Diagnostics().run(noisy, True)
+    out, err = capsys.readouterr()
+    assert err == '' and out == 'library log line\nlibrary warning\n'
+
+
 def test_task_receipt_result_is_cas_and_unknown_is_not_replayed(case, monkeypatch):
     actions = module()
     database, workspace, item = case
