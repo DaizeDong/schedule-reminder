@@ -5,7 +5,9 @@ import json
 import ntpath
 import os
 import subprocess
+import hashlib
 import stat
+import threading
 import time
 from types import SimpleNamespace
 
@@ -181,11 +183,185 @@ def _proof_directory(path):
     return assert_writable_path(directory)
 
 
+# A full PRIVATE proof runs ~55 git queries and one live `gh repo view` per publication
+# destination (~3 s). One CLI command proves the same companion many times (database, action
+# workspace, run directory, locks, records): work-action proved it 22 times (~64 s) against the
+# console's 30 s budget. A successful proof is therefore reused within this process while the
+# companion state it depends on is unchanged: the companion root and Git administration, its own
+# Git configuration (remote URLs), HEAD and the ref it names, the user's global Git
+# configuration, the local visibility receipt, the process environment and the proof
+# implementation. Any change is a miss and proves in full. A refusal is never stored, so it is
+# proved again next time. Entries expire after PROOF_TTL_SECONDS so a long-lived tick cannot keep
+# a stale live-visibility answer for long; configuration reached only through include directives
+# and server-side visibility changes are bounded by that TTL. Ignore status is checked per
+# destination through the proof's own read-only Git query and re-checked whenever a .gitignore
+# that can decide it changes.
+PROOF_TTL_SECONDS = 60.0
+_PROOF_LOCK = threading.RLock()
+_PROOF_MEMO = {}
+_UNREADABLE = object()
+
+
+def clear_proof_memo():
+    """Forget every reused PRIVATE proof in this process."""
+    with _PROOF_LOCK:
+        _PROOF_MEMO.clear()
+
+
+def _clock():
+    return time.monotonic()
+
+
+def _governing_root(directory):
+    """The directory Git discovery stops at: the nearest ancestor holding a .git entry."""
+    for candidate in (directory, *directory.parents):
+        try:
+            os.lstat(candidate/'.git')
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        return candidate
+    return None
+
+
+def _file_state(path, digest=True):
+    try:
+        if digest:
+            with open(path, 'rb') as stream:
+                return hashlib.sha256(stream.read()).hexdigest()
+        info = os.stat(path)
+        return (info.st_mtime_ns, info.st_size)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return _UNREADABLE
+
+
+def _admin_dirs(root):
+    marker = root/'.git'
+    if marker.is_dir():
+        admin = marker
+    elif marker.is_file():
+        text = marker.read_text(encoding='utf-8').strip()
+        if not text.startswith('gitdir:'):
+            return None
+        admin = Path(text[7:].strip())
+        admin = (admin if admin.is_absolute() else root/admin).resolve()
+    else:
+        return None
+    common = admin
+    if (admin/'commondir').is_file():
+        common = (admin/(admin/'commondir').read_text(encoding='utf-8').strip()).resolve()
+    return admin, common
+
+
+def _companion_state(root):
+    """Cheap local fingerprint of what a proof depends on; None when it cannot be read."""
+    try:
+        dirs = _admin_dirs(root)
+        if dirs is None:
+            return None
+        admin, common = dirs
+        parts = [str(root), str(admin), str(common), str(SOURCE),
+                 hashlib.sha256(json.dumps(sorted(os.environ.items())).encode('utf-8')).hexdigest(),
+                 _file_state(admin/'HEAD')]
+        try:
+            text = (admin/'HEAD').read_text(encoding='utf-8').strip()
+        except FileNotFoundError:
+            text = ''
+        if text.startswith('ref:'):
+            ref = text[4:].strip()
+            if '..' in ref.split('/'):
+                return None
+            parts += [_file_state(admin/ref), _file_state(common/ref)]
+        parts += [_file_state(admin/'config'), _file_state(common/'config'), _file_state(admin/'config.worktree'),
+                  _file_state(common/'info'/'exclude'), _file_state(common/'packed-refs', digest=False)]
+        home = Path(os.path.expanduser('~'))
+        xdg = Path(os.environ.get('XDG_CONFIG_HOME') or home/'.config')
+        for path in sorted({home/'.gitconfig', Path(os.environ.get('HOME') or home)/'.gitconfig',
+                            xdg/'git'/'config', xdg/'git'/'ignore', home/'.pii-guard'/'visibility.json'}):
+            parts.append((str(path), _file_state(path)))
+    except (OSError, ValueError):
+        return None
+    if any(part is _UNREADABLE or isinstance(part, tuple) and part[-1] is _UNREADABLE for part in parts):
+        return None
+    return hashlib.sha256(repr(parts).encode('utf-8')).hexdigest()
+
+
+def _ignore_state(root, relative):
+    """Fingerprint the .gitignore files that can decide check-ignore for ``relative``."""
+    directory, states = root, [_file_state(root/'.gitignore')]
+    for part in relative.rstrip('/').split('/')[:-1]:
+        if part in ('', '.'):
+            continue
+        directory = directory/part
+        states.append(_file_state(directory/'.gitignore'))
+    if any(state is _UNREADABLE for state in states):
+        return None
+    return hashlib.sha256(repr(states).encode('utf-8')).hexdigest()
+
+
+def _proof_result(path, entry, relative, _transient_lock):
+    return {'path': str(path), 'repository': entry['repositories'][0], 'repositories': list(entry['repositories']),
+            'visibility': 'PRIVATE', 'root': str(entry['root']), 'signature': entry['signature'],
+            'head': entry['head'], 'eligibility': 'transient-lock' if _transient_lock else 'versionable-data'}
+
+
+def _relative(path, eligible, root, directory_owner):
+    if (not path.is_relative_to(root) or root.is_relative_to(SOURCE)
+            or SOURCE.is_relative_to(root)):
+        raise ValueError('PRIVATE repository does not govern destination')
+    relative = eligible.relative_to(root).as_posix()
+    if directory_owner and relative != '.':
+        relative += '/'
+    return relative
+
+
+def _memo_lookup(path, eligible, directory_owner, _transient_lock):
+    """Return a result from a still-valid memo entry, or None to prove in full."""
+    root = _governing_root(_proof_directory(path))
+    if root is None:
+        return None
+    key = os.path.normcase(str(root))
+    entry = _PROOF_MEMO.get(key)
+    if entry is None:
+        return None
+    if (_clock() - entry['proved_at'] > PROOF_TTL_SECONDS or entry['factory'] is not _shared_boundary
+            or entry['query'] is not _query or _companion_state(root) != entry['state']):
+        _PROOF_MEMO.pop(key, None)
+        return None
+    try:
+        relative = _relative(path, eligible, entry['root'], directory_owner)
+    except ValueError:
+        return None
+    ignore = _ignore_state(entry['root'], relative)
+    if ignore is None:
+        return None
+    if entry['relatives'].get(relative) != ignore:
+        boundary = entry['boundary']
+        try:
+            ignored = boundary.read_private_companion_git(
+                entry['proof'], 'check-ignore', '--no-index', '-q', '--', relative).returncode == 0
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError, boundary.GitError):
+            _PROOF_MEMO.pop(key, None)
+            return None
+        if ignored:
+            raise ValueError('DATA requires initialized PRIVATE versioned storage: '
+                             'runtime DATA owner is ignored and cannot be versioned')
+        if _ignore_state(entry['root'], relative) != ignore:
+            return None
+        entry['relatives'][relative] = ignore
+    return _proof_result(path, entry, relative, _transient_lock)
+
+
 def prove_private(destination, *, _transient_lock=False):
     """Require local route proof, live PRIVATE visibility and versionable DATA storage.
 
     Only file_lock may select the transient exception. Its lock may be ignored,
     but the owning DATA path (or a named coordination directory) must not be.
+    A successful proof is reused for an unchanged companion within this process
+    (see PROOF_TTL_SECONDS); a refusal is never reused.
     """
     selectors = {"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CONFIG",
                  "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"}
@@ -206,16 +382,24 @@ def prove_private(destination, *, _transient_lock=False):
         else:
             suffix = '.process.lock' if path.name.endswith('.process.lock') else '.lock'
             eligible = path.with_name(path.name[:-len(suffix)])
-    boundary = _shared_boundary()
+    with _PROOF_LOCK:
+        reused = _memo_lookup(path, eligible, directory_owner, _transient_lock)
+        if reused is not None:
+            return reused
+        return _prove_and_remember(path, eligible, directory_owner, _transient_lock)
+
+
+def _prove_and_remember(path, eligible, directory_owner, _transient_lock):
+    started = _clock()  # an entry's age counts from before the proof, never after it
+    walked = _governing_root(_proof_directory(path))
+    state_before = _companion_state(walked) if walked is not None else None
+    factory, query = _shared_boundary, _query
+    boundary = factory()
     try:
         proof = boundary.prove_private_companion(_proof_directory(path))
         root = Path(proof.root).resolve()
-        if (not path.is_relative_to(root) or root.is_relative_to(SOURCE)
-                or SOURCE.is_relative_to(root)):
-            raise ValueError('PRIVATE repository does not govern destination')
-        relative = eligible.relative_to(root).as_posix()
-        if directory_owner and relative != '.':
-            relative += '/'
+        relative = _relative(path, eligible, root, directory_owner)
+        ignore_before = _ignore_state(root, relative)
         head = boundary.read_private_companion_git(proof, 'rev-parse', '--verify', 'HEAD').stdout.strip()
         if not head:
             raise ValueError('PRIVATE companion requires a committed HEAD')
@@ -239,9 +423,18 @@ def prove_private(destination, *, _transient_lock=False):
         raise
     except (OSError, ValueError, TypeError, subprocess.SubprocessError, boundary.GitError) as error:
         raise ValueError('DATA requires initialized PRIVATE versioned storage: '+str(error)) from error
-    return {'path': str(path), 'repository': repositories[0], 'repositories': repositories,
-            'visibility': 'PRIVATE', 'root': str(root), 'signature': proof.signature, 'head': head,
-            'eligibility': 'transient-lock' if _transient_lock else 'versionable-data'}
+    entry = {'root': root, 'repositories': tuple(repositories), 'signature': proof.signature, 'head': head,
+             'proof': current, 'boundary': boundary, 'factory': factory, 'query': query, 'proved_at': started,
+             'state': state_before, 'relatives': {}}
+    # Remember only what this proof established, and only if nothing it depends on moved while
+    # it ran. The result is returned either way.
+    if (walked is not None and state_before is not None
+            and os.path.normcase(str(walked.resolve())) == os.path.normcase(str(root))
+            and _companion_state(walked) == state_before):
+        if ignore_before is not None and _ignore_state(root, relative) == ignore_before:
+            entry['relatives'][relative] = ignore_before
+        _PROOF_MEMO[os.path.normcase(str(walked))] = entry
+    return _proof_result(path, entry, relative, _transient_lock)
 
 
 def prepare_parent(destination, *, _transient_lock=False):
