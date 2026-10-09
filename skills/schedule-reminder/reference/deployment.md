@@ -27,9 +27,12 @@ directory is the default DATA home; `SCHEDULE_REMINDER_DATA_DIR` may select anot
 location. `AGENT_CENTER_CONFIG` selects the registry file. Explicit `reminder.py --db` overrides
 `SCHEDULE_DB_PATH`; every write still proves the nearest governing Git repository PRIVATE using
 all publication routes and current GitHub visibility. Within one process a successful proof is
-reused for at most 60 s while the companion root, its Git configuration and HEAD, the global Git
-configuration, the visibility receipt and the environment are unchanged; ignore status is still
-checked per destination and a refusal is never reused. Linked worktrees are supported. A nested PUBLIC
+reused for at most 60 s while the companion root, its Git configuration and HEAD, the global and
+system Git configuration, the SSH client configuration, the visibility receipt and the environment
+are unchanged; ignore status is still checked per destination and a refusal is never reused.
+Configuration reached only through include directives, visibility changed on GitHub and the
+receipt ageing past its limit are noticed when the 60 s run out. The reuse is off under
+`GIT_CEILING_DIRECTORIES` and below a directory Git would take for a bare repository. Linked worktrees are supported. A nested PUBLIC
 repository, unknown visibility, Git metadata, unmanaged storage, or public source destination is
 refused before output creation. Permission denial is reported separately from policy refusal.
 

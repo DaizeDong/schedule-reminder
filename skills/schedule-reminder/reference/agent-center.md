@@ -296,8 +296,9 @@ calls, command execution and database changes. It is not a dry run. See
   `llmcall.process.execution_scope(cancel=...)`. llmcall 0.3.1 and later poll that token while a
   model call runs and stop the client tree once it is set; commands (`verify`, git evidence) run
   through `llmcall.process.run` with the same token. Both pollers ask every fraction of a second,
-  and one ownership answer costs a PRIVATE proof (measured at 4 to 5 s: about 54 git subprocesses
-  and one `gh` visibility query) plus a CLI read, so they get a `PolledCancellation`: the answer is
+  and one ownership answer costs a PRIVATE proof plus a CLI read (the proof is a full one, measured
+  at 4 to 5 s with about 54 git subprocesses and one `gh` visibility query, at most once per 60 s
+  for an unchanged companion, and a memo hit otherwise), so they get a `PolledCancellation`: the answer is
   reused for `AGENT_EXEC_CANCEL_POLL_SECONDS` (default 30 s) and latched once set. A revoked or
   lost order therefore stops within about 35 s. The runner's own decision points between phases
   still ask the exact `OperationCancellation`. Under llmcall 0.3.0 the token is ignored while a
