@@ -26,7 +26,10 @@ Set `SCHEDULE_REMINDER_CONFIG` to an initialized PRIVATE versioned companion roo
 directory is the default DATA home; `SCHEDULE_REMINDER_DATA_DIR` may select another PRIVATE
 location. `AGENT_CENTER_CONFIG` selects the registry file. Explicit `reminder.py --db` overrides
 `SCHEDULE_DB_PATH`; every write still proves the nearest governing Git repository PRIVATE using
-all publication routes and current GitHub visibility. Linked worktrees are supported. A nested PUBLIC
+all publication routes and current GitHub visibility. Within one process a successful proof is
+reused for at most 60 s while the companion root, its Git configuration and HEAD, the global Git
+configuration, the visibility receipt and the environment are unchanged; ignore status is still
+checked per destination and a refusal is never reused. Linked worktrees are supported. A nested PUBLIC
 repository, unknown visibility, Git metadata, unmanaged storage, or public source destination is
 refused before output creation. Permission denial is reported separately from policy refusal.
 
