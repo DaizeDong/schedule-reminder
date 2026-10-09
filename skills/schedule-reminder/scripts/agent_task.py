@@ -34,6 +34,7 @@ import re
 import subprocess
 import sys
 import private_data
+import process_tree
 import store
 import threading
 import uuid
@@ -591,6 +592,19 @@ def recover_cleanup(item_id, generation, evidence):
     receipt = {'authority': 'operator-reviewed', **evidence,
                'previous_receipt': json.loads(op['cleanup_receipt'] or 'null')}
     return _advance(item_id, generation, 'recover_cleanup', expected=op, receipt=receipt)
+
+
+def process_backend():
+    """The OS process layer used to verify a stop's tree kill; tests substitute a synthetic one."""
+    return process_tree.NativeProcesses()
+
+
+def release_verified_cleanup(item_id, generation, receipt, expected):
+    """Release a cancelled generation whose whole runner tree was confirmed gone after the kill.
+
+    The receipt comes from process_tree.confirm_gone; store.advance_work binds it to every recorded
+    runner identity and to the caller's exact reservation snapshot."""
+    return _advance(item_id, generation, "verified_cleanup", expected=expected, receipt=receipt)
 
 
 def save_baseline(item_id, generation, baseline, digest, workspace):

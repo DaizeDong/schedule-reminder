@@ -302,6 +302,16 @@ calls, command execution and database changes. It is not a dry run. See
   which is longer than the console's 30 s budget for the whole stop command, and `stop` holds the
   run-root lifecycle lock that the runner's own `finish` needs, so the runner could not finish
   inside the wait anyway.
+- **A verified stop releases the serial slot by itself.** Before `taskkill`, the stop records the
+  runner's tree (`process_tree.observe`: every recorded runner/launcher identity plus each
+  descendant created inside its parent's lifetime, each held by an open handle). After the kill it
+  requires every recorded handle to be signalled and a fresh snapshot to show no live process whose
+  ancestry runs through a recorded member. Only then does it commit a `verified-tree-kill` cleanup
+  receipt bound to those identities and release the reservation (`stopped` event `cleanup:
+  released`). An already-exited runner, a failed or refused snapshot, or any survivor leaves the
+  reservation held (`cleanup_held` event) for reconcile and `recover-cleanup` below. A descendant
+  whose own parent exited before the recording has no ancestry link and is not visible to this
+  check or to `taskkill /T`; llmcall's kill-on-close Job Object covers the children it starts.
 - **An interrupted spawn retains its reservation.** A missing parent or unregistered child is
   insufficient cleanup evidence. Stop revokes an unregistered spawn into `reconcile` with unknown
   cleanup. Unreleased or uncertain reservations keep the serial slot even when the item has a

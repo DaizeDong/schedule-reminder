@@ -96,7 +96,8 @@ decisions. Model, routing, timeouts, fallback and runner policy remain owned by 
 Missing llmcall is unavailable; the worker does not install a provider ladder.
 
 Work additionally requires llmcall process containment and truthful execution/cleanup receipts.
-Missing cleanup confirmation keeps the writer reservation. Completion review requires actor and
+Missing cleanup confirmation keeps the writer reservation; a stop whose tree kill is confirmed by a
+fresh process snapshot releases it itself. Completion review requires actor and
 reviewer model-family identities plus the original workspace baseline and actual change evidence.
 Offline synthetic tests exercise those checks but do not establish support in an installed
 llmcall version. `agent_task.py status` observes reservations; `recover-cleanup` accepts an explicit,

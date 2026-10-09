@@ -1784,6 +1784,23 @@ def advance_work(item_id, generation, action, *, pid=None, pstart=None, checkpoi
                         or not receipt.get('note') or not receipt.get('evidence_sha256')):
                     raise ValueError('reviewed cleanup evidence is required')
                 updates.update(cleanup_state='quiescent', cleanup_receipt=_dump_json(receipt), released_at=now)
+            elif action == 'verified_cleanup':
+                # A stop that recorded the runner tree before taskkill and confirmed every member
+                # and later descendant gone from a fresh snapshot. The receipt must name every
+                # recorded runner identity; a parent's absence alone never reaches this branch.
+                if (expected is None or op['outcome'] != 'cancelled' or op['released_at'] is not None
+                        or op['cleanup_state'] not in ('quiescent', 'unknown', 'in_flight')):
+                    return False
+                if (not isinstance(receipt, dict) or receipt.get('authority') != 'verified-tree-kill'
+                        or not receipt.get('members') or not receipt.get('confirmed_at')):
+                    raise ValueError('verified tree-kill receipt is required')
+                covered = {(int(p), str(s)) for p, s in receipt.get('roots') or ()}
+                recorded = {(int(op[p]), str(op[s])) for p, s in (('pid', 'pstart'), ('launch_pid', 'launch_pstart'))
+                            if op[p] is not None}
+                if not recorded or not recorded <= covered:
+                    return False
+                updates.update(cleanup_state='quiescent', released_at=now, cleanup_receipt=_dump_json(
+                    {**receipt, 'previous_receipt': json.loads(op['cleanup_receipt'] or 'null')}))
             elif action == "child_finish":
                 # Cancellation can fence work while its shared process owner is still cleaning.
                 # This receipt cannot change that terminal outcome or reopen the generation.
