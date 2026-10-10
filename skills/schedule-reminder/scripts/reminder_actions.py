@@ -212,6 +212,19 @@ def _reserve(request, db_path, workspace_root):
         connection.close()
 
 
+def _stopped_result(record):
+    """The console's stop result. What the stop could not establish is said, not dropped."""
+    message, result = '已停止', {}
+    if record.get('broke_away'):
+        result['broke_away'] = list(record['broke_away'])
+        message += '；以下进程按设计脱离了运行作业，仍在运行，未被结束：%s' % record['broke_away'][:20]
+    if record.get('breakaway_check'):
+        result['breakaway_check'] = record['breakaway_check']
+        message += '；未能检查是否有进程脱离运行作业（%s）' % record['breakaway_check'][:200]
+    result['message'] = message
+    return result
+
+
 def _reply(db_path, row, *, wakeup=False, dispatch=False):
     connection = receipts.connect(db_path)
     try:
@@ -341,10 +354,11 @@ def stop(request, *, db_path, workspace_root=None):
             import agent_tick
             stopped = agent_tick.stop(row['work_item_id'], note='用户在待办工作台停止本次执行', post=False,
                                       expected_generation=operation['generation'] if operation else 0)
-            if not any(record['id'] == row['work_item_id'] and record.get('stopped') is True
-                       for record in stopped):
+            mine = [record for record in stopped
+                    if record['id'] == row['work_item_id'] and record.get('stopped') is True]
+            if not mine:
                 raise ActionError('stop_unconfirmed')
         except Exception:
             return _reply(db_path, row)
-        receipts.update(db_path, row['id'], 'stopped', {'message': '已停止'}, expected=('reconcile',))
+        receipts.update(db_path, row['id'], 'stopped', _stopped_result(mine[0]), expected=('reconcile',))
     return _reply(db_path, row)

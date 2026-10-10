@@ -336,6 +336,10 @@ def _observed_call(phase, call, *args, **kwargs):
                "attempts": [{"outcome": getattr(a, "outcome", None), "execution_started": getattr(a, "execution_started", None),
                              "cleanup_confirmed": getattr(a, "cleanup_confirmed", None)}
                             for a in (getattr(result, "attempts", None) or ())]}
+    if getattr(result, "broke_away", None):
+        # Processes the shared owner knows left its job. A stop's job kill cannot vouch for them,
+        # so their presence keeps an unconfirmed cleanup held (store._job_kill_supersedes).
+        receipt["broke_away"] = list(result.broke_away)
     outcomes = [receipt, *receipt["attempts"]]
     # cleanup_failed can survive in an earlier attempt even if the outer result was relabelled.
     uncertain = any(r['cleanup_confirmed'] is False or

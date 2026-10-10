@@ -315,10 +315,19 @@ calls, command execution and database changes. It is not a dry run. See
   (llmcall's `--breakaway`, the shared MCP proxy) leaves it on purpose. The stop reports such a
   process (`runner_breakaway` event, `broke_away` in the reply and the receipt) when its parent is
   still a member at stop time, and does not kill it; one started through a helper that already
-  exited cannot be attributed and is not reported. When the job cannot be created at launch
-  (`runner_job_unavailable` event) or opened at the stop (older runs, a runner that already exited
-  and took the name with it), the stop falls back to the process-tree path below and keeps its
-  fail-closed behaviour.
+  exited cannot be attributed and is not reported. If that breakaway check itself fails, the reply
+  and the receipt carry `breakaway_check: "failed: ..."` (`runner_breakaway_unchecked` event; the
+  console's stop message says it) rather than an empty list. A verified job kill also settles a
+  child receipt in which llmcall reported unconfirmed cleanup (`cleanup_state` `unknown`), because
+  llmcall's processes and nested jobs were all members; it does not when that receipt lists
+  processes that broke away (`broke_away`), when the stop found or could not check for a breakaway,
+  and never on the process-tree fallback. A runner whose resume fails is ended while still
+  suspended; once its exit is confirmed the launch is `not_started`: the slot is released and the
+  order is requeued (blocked after three such launches). A resume that failed after a thread had
+  already resumed, or an end that cannot be confirmed, stays "launch outcome unknown". When the job
+  cannot be created at launch (`runner_job_unavailable` event) or opened at the stop (older runs, a
+  runner that already exited and took the name with it), the stop falls back to the process-tree
+  path below and keeps its fail-closed behaviour.
 - **Fallback: a verified tree kill releases the serial slot by itself.** Before `taskkill`, the stop records the
   runner's tree (`process_tree.observe`: every recorded runner/launcher identity plus each
   descendant created inside its parent's lifetime, each held by an open handle). After the kill it
@@ -328,8 +337,9 @@ calls, command execution and database changes. It is not a dry run. See
   `cmd /c start` launcher or an intermediate killed mid-spawn leaves behind). Only then does it
   commit a `verified-tree-kill` cleanup receipt bound to those identities and release the
   reservation (`stopped` event `cleanup: released`). An already-exited runner, a failed or refused
-  snapshot, any survivor, an unrelated orphan born during the stop, or a child receipt in which
-  llmcall reported unconfirmed cleanup (`cleanup_state` `unknown`) leaves the reservation held
+  snapshot, any survivor, an unrelated orphan born during the stop, or (on this path, unlike the
+  job path) a child receipt in which llmcall reported unconfirmed cleanup (`cleanup_state`
+  `unknown`) leaves the reservation held
   (`cleanup_held` event) for reconcile and `recover-cleanup` below. Residual limit: a descendant
   whose own parent exited BEFORE the recording was already an orphan then; it has no ancestry link
   and is not visible to this check or to `taskkill /T`. llmcall's kill-on-close Job Object does not

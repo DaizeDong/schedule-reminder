@@ -73,6 +73,7 @@ EXT_NOTE = "x_agent_exec_note"            # short terminal reason, for the pool 
 
 EXT_REQUEST_SHA = "x_agent_exec_request_sha256"
 
+EXT_NOT_STARTED = "x_agent_exec_not_started"  # launches whose suspended runner ended unrun
 EXT_GENERATION = "x_agent_exec_generation"
 EXT_RUN_ID = "x_agent_exec_run_id"
 EXT_ATTEMPT_ID = "x_agent_exec_attempt_id"
@@ -554,6 +555,12 @@ def owns(item_id, generation):
 
 def reconcile(item_id, snapshot, note):
     return _advance(item_id, snapshot["generation"], "reconcile", expected=snapshot, note=note)
+
+
+def not_started(item_id, snapshot, note, *, retry):
+    """The suspended runner was ended before it ran: release the slot and requeue (retry) or block."""
+    return _advance(item_id, snapshot["generation"], "not_started", expected=snapshot, note=note,
+                    checkpoint="requeue" if retry else "block")
 
 
 def release(item_id, generation):
