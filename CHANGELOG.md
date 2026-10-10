@@ -27,6 +27,12 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - The live PRIVATE visibility check no longer depends on which gh account is active: it asks the
   pinned Guards kit, which tries the owner's stored account, every other stored account and gh's
   default before refusing. Switching the active gh account no longer fails the proof.
+- Each work runner now starts suspended inside its own named Job Object (breakaway allowed, no
+  kill-on-close) and is resumed only after it is a member. A console stop terminates that job and
+  releases the serial slot once the job reports no active process (`verified-job-kill` receipt), so
+  an unrelated process born during the stop no longer holds the slot. Processes that left the job
+  by breakaway while their parent was still a member are reported, not killed. Without a job (it
+  could not be created or opened) the stop uses the process-tree check below, unchanged.
 - A console stop whose `taskkill` is confirmed by a fresh process snapshot (every recorded runner
   descendant and every later descendant gone) now releases the serial work slot itself with a
   `verified-tree-kill` receipt. An already-exited runner, a snapshot failure, any survivor, a live

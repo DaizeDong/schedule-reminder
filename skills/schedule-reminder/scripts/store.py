@@ -1793,7 +1793,10 @@ def advance_work(item_id, generation, action, *, pid=None, pstart=None, checkpoi
                     # 'unknown' is what a child receipt without confirmed cleanup (or a legacy
                     # operation) leaves; a tree kill cannot override that report.
                     return False
-                if (not isinstance(receipt, dict) or receipt.get('authority') != 'verified-tree-kill'
+                # 'verified-job-kill': the runner's own job was terminated and then reported
+                # ActiveProcesses == 0 (runner_job); its roots were verified members first.
+                if (not isinstance(receipt, dict)
+                        or receipt.get('authority') not in ('verified-tree-kill', 'verified-job-kill')
                         or not receipt.get('members') or not receipt.get('confirmed_at')):
                     raise ValueError('verified tree-kill receipt is required')
                 covered = {(int(p), str(s)) for p, s in receipt.get('roots') or ()}

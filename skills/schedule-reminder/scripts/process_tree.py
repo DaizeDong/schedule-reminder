@@ -1,5 +1,8 @@
 """Verified process-tree cleanup for a stopped work order (Windows, stdlib only).
 
+This is the FALLBACK: a runner launched in its own Job Object is stopped and verified through
+runner_job instead. This path runs only when that job could not be created or opened.
+
 A stop ends the runner with `taskkill /T /F`. The parent's exit alone never proves that its
 descendants are gone, so a stop used to leave the serial slot reserved until an operator ran
 `recover-cleanup`. This module lets the stop prove the stronger fact itself:

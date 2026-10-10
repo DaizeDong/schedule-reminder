@@ -17,6 +17,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 import agent_task  # noqa: E402
 import relay       # noqa: E402
+import runner_job  # noqa: E402
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -178,6 +179,28 @@ def reap(items=None, post=True):
     return reaped
 
 
+def _spawn_runner(argv, item_id, generation, **kw):
+    """Start the runner inside its own job (Windows): created suspended, adopted, then resumed, so
+    nothing it starts can be born outside the job. -> (process, None | why there is no job).
+    A job failure never blocks the launch; the stop then uses the process-tree fallback."""
+    if sys.platform != "win32":
+        return subprocess.Popen(argv, **kw), "not Windows"
+    kw["creationflags"] = kw.get("creationflags", 0) | runner_job.CREATE_SUSPENDED
+    p = subprocess.Popen(argv, **kw)
+    handle = getattr(p, "_handle", None)
+    if handle is None:
+        return p, "no native process handle"
+    try:
+        _alive, start = agent_task.proc_identity(p.pid)
+        problem = ("runner identity unavailable" if start is None else
+                   runner_job.adopt(handle, p.pid, runner_job.name_for(item_id, generation, p.pid, start)))
+        runner_job.resume(p.pid)
+    except BaseException:
+        p.kill()   # still suspended: it has started nothing, so ending it ends the tree
+        raise
+    return p, problem
+
+
 @agent_task.serialized_lifecycle
 def launch(item, *, generation=None, post_reports=True):
     """Spawn the runner detached and record (pid, creation time). Returns True on success."""
@@ -210,10 +233,10 @@ def launch(item, *, generation=None, post_reports=True):
         argv = [exe, "-B", RUNNER, "--id", item["id"], "--generation", str(generation)]
         if not post_reports:
             argv.append("--no-post")
-        p = subprocess.Popen(argv,
-                             stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
-                             cwd=workspace, close_fds=True,
-                             env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"), **kw)
+        p, job_problem = _spawn_runner(argv, item["id"], generation,
+                                       stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
+                                       cwd=workspace, close_fds=True,
+                                       env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"), **kw)
     except Exception as e:
         logf.close()
         # Popen may have crossed the OS spawn boundary before raising. Revoke only an
@@ -239,7 +262,10 @@ def launch(item, *, generation=None, post_reports=True):
     if agent_task.exec_state(current) == agent_task.STATE_STOPPING:
         _finish_stop(current, "stop requested during launch", post=False)
         return False
-    agent_task.append_event(item, "launched", pid=p.pid, workspace=workspace)
+    if job_problem:
+        agent_task.append_event(item, "runner_job_unavailable", reason=job_problem[:300])
+        _log("runner %s runs without its own job: %s" % (item["id"][:8], job_problem))
+    agent_task.append_event(item, "launched", pid=p.pid, workspace=workspace, job=not job_problem)
     _log("launched %s pid=%d in %s" % (item["id"][:8], p.pid, workspace))
     return True
 
@@ -262,13 +288,22 @@ def _finish_stop(item, note="", post=True, never_started=False, expected_generat
             _post_owner(ext.get(agent_task.EXT_STREAM) or 'infra', reason,
                         run_id=run_id, condition=status)
         return {'id': item['id'], 'killed': False, 'stopped': False, 'status': status, 'error': reason}
-    observation, observe_error = None, None
+    observation, observe_error, job = None, None, None
     if op and not never_started:
-        observation, observe_error = _observe_runner_tree(op)
+        job, job_error = _open_runner_job(item, op)
+        if job is None:
+            if job_error:
+                agent_task.append_event(item, "runner_job_unavailable", reason=job_error[:300])
+            observation, observe_error = _observe_runner_tree(op)
     try:
         try:
-            killed = False if never_started else agent_task.kill_tree(
-                ext.get(agent_task.EXT_PID), ext.get(agent_task.EXT_PSTART))
+            if never_started:
+                killed = False
+            elif job is not None:
+                # TerminateJobObject ends every member, including llmcall's nested jobs.
+                killed = job.terminate(snapshot=lambda: agent_task.process_backend().snapshot())
+            else:
+                killed = agent_task.kill_tree(ext.get(agent_task.EXT_PID), ext.get(agent_task.EXT_PSTART))
             result = (agent_task.cancel(item["id"], note or "user asked to stop") if expected_generation is None else
                       agent_task.cancel(item["id"], note or "user asked to stop", expected_generation=expected_generation))
             if result.get("_err"):
@@ -282,17 +317,65 @@ def _finish_stop(item, note="", post=True, never_started=False, expected_generat
                 _post_owner(ext.get(agent_task.EXT_STREAM) or "infra",
                       "工作单 %s 的停止请求尚未完成：%s" % (item["id"][:8], error), run_id=run_id, condition="stop_pending")
             return outcome
-        cleanup = _release_after_verified_kill(item, op, observation, observe_error, killed)
+        if job is not None:
+            cleanup = _release_after_job_kill(item, op, job)
+        else:
+            cleanup = _release_after_verified_kill(item, op, observation, observe_error, killed)
     finally:
         if observation is not None:
             observation.close()
+        if job is not None:
+            job.close()
     status = "terminated" if killed else "already_exited"
-    agent_task.append_event(item, "stopped", killed=killed, status=status, cleanup=cleanup)
+    broke_away = list(job.broke_away) if job is not None else []
+    if broke_away:
+        # Outside the job by request (CREATE_BREAKAWAY_FROM_JOB), e.g. a shared daemon. Not killed.
+        agent_task.append_event(item, "runner_breakaway", pids=broke_away[:50])
+        _log("stop %s: processes that left the runner job are still running: %s"
+             % (item["id"][:8], broke_away[:20]))
+    agent_task.append_event(item, "stopped", killed=killed, status=status, cleanup=cleanup,
+                            method="job" if job is not None else "tree")
     _log("stopped %s (%s, cleanup %s)" % (item["id"][:8], status, cleanup))
     if post:
         _post_owner(ext.get(agent_task.EXT_STREAM) or "infra",
               "已停止工作单 %s（%s）。" % (item["id"][:8], status), run_id=run_id, condition="cancelled")
-    return {"id": item["id"], "killed": killed, "stopped": True, "status": status, "cleanup": cleanup}
+    outcome = {"id": item["id"], "killed": killed, "stopped": True, "status": status, "cleanup": cleanup}
+    if broke_away:
+        outcome["broke_away"] = broke_away
+    return outcome
+
+
+def _open_runner_job(item, op):
+    """The runner's own job, verified to hold the recorded runner. -> (job|None, reason|None).
+    A missing job is the normal state for runs launched before jobs existed and for a runner that
+    already exited (its handle kept the job's name alive); the caller falls back."""
+    if op["launch_pid"] is None or op["launch_pstart"] is None:
+        return None, None
+    roots = [(op["launch_pid"], op["launch_pstart"])]
+    if op["pid"] is not None and (op["pid"], op["pstart"]) not in roots:
+        roots.append((op["pid"], op["pstart"]))
+    try:
+        return runner_job.open_for(item["id"], op["generation"], roots, agent_task.job_backend()), None
+    except Exception as error:
+        return None, "%s: %s" % (type(error).__name__, error)
+
+
+def _release_after_job_kill(item, op, job):
+    """Release the slot when the terminated job reports ActiveProcesses == 0: the kernel's count of
+    live members, which no unrelated process can enter. Anything else holds the reservation."""
+    try:
+        receipt = job.confirm_empty()
+    except Exception as error:
+        reason = "runner job not empty: %s: %s" % (type(error).__name__, error)
+    else:
+        current = agent_task.operation(item["id"])
+        if (current and current["generation"] == op["generation"]
+                and agent_task.release_verified_cleanup(item["id"], op["generation"], receipt, current)):
+            return "released"
+        reason = "verified cleanup could not be committed to this reservation"
+    agent_task.append_event(item, "cleanup_held", reason=reason[:300])
+    _log("stop %s keeps its reservation: %s" % (item["id"][:8], reason))
+    return "held"
 
 
 def _observe_runner_tree(op):

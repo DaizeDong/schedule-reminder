@@ -302,7 +302,24 @@ calls, command execution and database changes. It is not a dry run. See
   which is longer than the console's 30 s budget for the whole stop command, and `stop` holds the
   run-root lifecycle lock that the runner's own `finish` needs, so the runner could not finish
   inside the wait anyway.
-- **A verified stop releases the serial slot by itself.** Before `taskkill`, the stop records the
+- **Each runner lives in its own Job Object, and a stop is verified by it.** The tick creates the
+  runner suspended, puts it into a job named after its recorded identity
+  (`Local\schedule-reminder-runner-<item>-g<generation>-<pid>-<creation time>`), hands the runner
+  one handle to that job (which keeps the name alive while the runner lives) and only then resumes
+  it, so every descendant is born inside the job. A stop opens the job by that name, checks that the
+  recorded runner is a member, terminates the job (`TerminateJobObject` also ends llmcall's nested
+  kill-on-close jobs) and releases the slot once the job reports `ActiveProcesses == 0`, with a
+  `verified-job-kill` receipt (`stopped` event `method: job`). No snapshot walk is involved, so an
+  unrelated process born during the stop can no longer hold the slot. The job allows breakaway and
+  never kills on close: a descendant that starts a shared process with `CREATE_BREAKAWAY_FROM_JOB`
+  (llmcall's `--breakaway`, the shared MCP proxy) leaves it on purpose. The stop reports such a
+  process (`runner_breakaway` event, `broke_away` in the reply and the receipt) when its parent is
+  still a member at stop time, and does not kill it; one started through a helper that already
+  exited cannot be attributed and is not reported. When the job cannot be created at launch
+  (`runner_job_unavailable` event) or opened at the stop (older runs, a runner that already exited
+  and took the name with it), the stop falls back to the process-tree path below and keeps its
+  fail-closed behaviour.
+- **Fallback: a verified tree kill releases the serial slot by itself.** Before `taskkill`, the stop records the
   runner's tree (`process_tree.observe`: every recorded runner/launcher identity plus each
   descendant created inside its parent's lifetime, each held by an open handle). After the kill it
   requires every recorded handle to be signalled and a fresh snapshot to show no live process whose
