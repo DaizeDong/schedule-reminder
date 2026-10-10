@@ -201,4 +201,5 @@ def test_launch_hands_the_runner_those_flags(tmp_path, monkeypatch):
     assert seen["argv"][2] == agent_tick.RUNNER and seen["cwd"] == str(tmp_path)
     assert not Path(seen["argv"][0]).name.lower().startswith("pythonw")
     if sys.platform == "win32":
-        assert seen["creationflags"] == agent_tick.RUNNER_CREATION_FLAGS
+        # Created suspended: it is put into its own job before it can start anything.
+        assert seen["creationflags"] == agent_tick.RUNNER_CREATION_FLAGS | agent_tick.runner_job.CREATE_SUSPENDED

@@ -35,6 +35,7 @@ import subprocess
 import sys
 import private_data
 import process_tree
+import runner_job
 import store
 import threading
 import uuid
@@ -597,6 +598,11 @@ def recover_cleanup(item_id, generation, evidence):
 def process_backend():
     """The OS process layer used to verify a stop's tree kill; tests substitute a synthetic one."""
     return process_tree.NativeProcesses()
+
+
+def job_backend():
+    """The OS job layer used by a stop to terminate and verify the runner's job."""
+    return runner_job.NativeJobs()
 
 
 def release_verified_cleanup(item_id, generation, receipt, expected):
