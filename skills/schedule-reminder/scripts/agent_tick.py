@@ -179,6 +179,14 @@ def reap(items=None, post=True):
     return reaped
 
 
+RUNNER_KILL_WAIT_SECONDS = 5
+NOT_STARTED_ATTEMPTS = 3   # launches of one order whose runner ended unrun before it is blocked
+
+
+class RunnerNotStarted(RuntimeError):
+    """The suspended runner was ended and confirmed exited before it ran: nothing was started."""
+
+
 def _spawn_runner(argv, item_id, generation, **kw):
     """Start the runner inside its own job (Windows): created suspended, adopted, then resumed, so
     nothing it starts can be born outside the job. -> (process, None | why there is no job).
@@ -195,10 +203,26 @@ def _spawn_runner(argv, item_id, generation, **kw):
         problem = ("runner identity unavailable" if start is None else
                    runner_job.adopt(handle, p.pid, runner_job.name_for(item_id, generation, p.pid, start)))
         runner_job.resume(p.pid)
-    except BaseException:
-        p.kill()   # still suspended: it has started nothing, so ending it ends the tree
-        raise
+    except BaseException as error:
+        # Normally still suspended: it has run no instruction and started nothing, so ending it
+        # ends the tree. Once its exit is confirmed the launch is known not to have happened,
+        # unless a thread was already resumed (ResumeIncomplete): that stays "outcome unknown".
+        try:
+            p.kill()
+            p.wait(timeout=RUNNER_KILL_WAIT_SECONDS)
+        except BaseException:
+            raise error
+        if not isinstance(error, Exception) or isinstance(error, runner_job.ResumeIncomplete):
+            raise
+        raise RunnerNotStarted("%s: %s" % (type(error).__name__, error)) from error
     return p, problem
+
+
+def _not_started_count(item):
+    try:
+        return int(((item or {}).get("ext") or {}).get(agent_task.EXT_NOT_STARTED) or 0)
+    except (TypeError, ValueError):
+        return NOT_STARTED_ATTEMPTS
 
 
 @agent_task.serialized_lifecycle
@@ -237,6 +261,18 @@ def launch(item, *, generation=None, post_reports=True):
                                        stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
                                        cwd=workspace, close_fds=True,
                                        env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"), **kw)
+    except RunnerNotStarted as e:
+        logf.close()
+        # The runner was created suspended and is confirmed gone: no instruction of it ran, so the
+        # order is not ambiguous. Put it back in the queue (bounded) instead of blocking it.
+        op = agent_task.operation(item["id"])
+        if op and op["generation"] == generation and not op["started_at"]:
+            if not agent_task.not_started(item["id"], op, ("runner not started: %s" % e)[:300],
+                                          retry=_not_started_count(item) < NOT_STARTED_ATTEMPTS - 1):
+                agent_task.reconcile(item["id"], op, "launch outcome unknown: RunnerNotStarted")
+        agent_task.append_event(item, "launch_not_started", generation=generation, error=str(e)[:300])
+        _log("launch not started: %s" % e)
+        return False
     except Exception as e:
         logf.close()
         # Popen may have crossed the OS spawn boundary before raising. Revoke only an
@@ -328,6 +364,13 @@ def _finish_stop(item, note="", post=True, never_started=False, expected_generat
             job.close()
     status = "terminated" if killed else "already_exited"
     broke_away = list(job.broke_away) if job is not None else []
+    breakaway_check = job.breakaway_check if job is not None else None
+    if breakaway_check not in (None, "checked"):
+        # The kill itself is verified by the job count; only the report of processes outside the
+        # job is missing. Released or held, the reply says that nobody looked.
+        agent_task.append_event(item, "runner_breakaway_unchecked", reason=breakaway_check[:300])
+        _log("stop %s: processes that left the runner job could not be checked: %s"
+             % (item["id"][:8], breakaway_check))
     if broke_away:
         # Outside the job by request (CREATE_BREAKAWAY_FROM_JOB), e.g. a shared daemon. Not killed.
         agent_task.append_event(item, "runner_breakaway", pids=broke_away[:50])
@@ -342,6 +385,8 @@ def _finish_stop(item, note="", post=True, never_started=False, expected_generat
     outcome = {"id": item["id"], "killed": killed, "stopped": True, "status": status, "cleanup": cleanup}
     if broke_away:
         outcome["broke_away"] = broke_away
+    if breakaway_check not in (None, "checked"):
+        outcome["breakaway_check"] = breakaway_check
     return outcome
 
 

@@ -33,6 +33,19 @@ All notable changes to this project are documented here (Keep a Changelog style)
   an unrelated process born during the stop no longer holds the slot. Processes that left the job
   by breakaway while their parent was still a member are reported, not killed. Without a job (it
   could not be created or opened) the stop uses the process-tree check below, unchanged.
+- A verified job kill now also settles a reservation whose child receipt said llmcall could not
+  confirm its own cleanup (`cleanup_state` `unknown`): every process llmcall started, its nested
+  job included, was a member of the runner job and the job counted none left. It does not when the
+  child receipt lists processes that broke away, when the stop found a breakaway, or when the stop
+  could not check for one; the process-tree fallback never overrides `unknown`.
+- A stop whose breakaway check failed says so (`breakaway_check: "failed: ..."` in the reply and
+  the receipt, `runner_breakaway_unchecked` event, the console's stop message) instead of
+  reporting an empty list. With an `in_flight` cleanup the verified job kill still frees the slot.
+- A launch whose runner was ended while still suspended (nothing ran) is recorded as
+  `not_started`: the slot is released and the order goes back to the queue, up to three launches,
+  then it is blocked. Before, it was blocked as "launch outcome unknown". An end that cannot be
+  confirmed, or a resume that failed after a runner thread had already resumed, keeps the old
+  classification.
 - A console stop whose `taskkill` is confirmed by a fresh process snapshot (every recorded runner
   descendant and every later descendant gone) now releases the serial work slot itself with a
   `verified-tree-kill` receipt. An already-exited runner, a snapshot failure, any survivor, a live

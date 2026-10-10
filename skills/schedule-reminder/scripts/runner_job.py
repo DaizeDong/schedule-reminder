@@ -50,6 +50,11 @@ class JobUnavailable(RuntimeError):
     """The runner job does not exist, cannot be opened or does not hold the recorded runner."""
 
 
+class ResumeIncomplete(JobUnavailable):
+    """Resuming failed after at least one runner thread was already resumed: the runner may have
+    run, so its launch is not known to be unstarted."""
+
+
 def name_for(item_id, generation, pid, pstart):
     return "Local\\schedule-reminder-runner-%s-g%s-%s-%s" % (item_id, generation, int(pid), pstart)
 
@@ -170,6 +175,10 @@ class NativeJobs:
                 found = self._k.Thread32Next(snapshot, ctypes.byref(entry))
             if ctypes.get_last_error() != _ERROR_NO_MORE_FILES:
                 self._fail("enumerate threads")
+        except JobUnavailable as error:
+            if resumed:
+                raise ResumeIncomplete("%s after %d thread(s) resumed" % (error, resumed)) from error
+            raise
         finally:
             self._k.CloseHandle(snapshot)
         if not resumed:
@@ -263,6 +272,9 @@ class RunnerJob:
     def __init__(self, jobs, handle, name, roots):
         self.jobs, self.handle, self.name, self.roots = jobs, handle, name, roots
         self.members, self.broke_away = [], []
+        # "checked" | "not_run" | "failed: <why>". A failed check is NOT "no breakaway": it is
+        # recorded and reported so nobody reads an empty list as proof.
+        self.breakaway_check = "not_run"
 
     def close(self):
         if self.handle:
@@ -299,8 +311,12 @@ class RunnerJob:
         if snapshot is not None:
             try:
                 self.broke_away = self._breakaways(snapshot())
-            except Exception:
-                self.broke_away = []   # reporting is advisory; it never blocks the stop
+                self.breakaway_check = "checked"
+            except Exception as error:
+                # The check never blocks the kill, but "could not check" must stay distinguishable
+                # from "found none": the receipt and the stop reply carry this state.
+                self.broke_away = []
+                self.breakaway_check = ("failed: %s: %s" % (type(error).__name__, error))[:300]
         self.jobs.terminate(self.handle)
         return True
 
@@ -316,7 +332,7 @@ class RunnerJob:
         return {"authority": "verified-job-kill", "job": self.name,
                 "roots": [[pid, pstart] for pid, pstart in self.roots],
                 "members": [[pid, ""] for pid in self.members] or [[pid, pstart] for pid, pstart in self.roots],
-                "broke_away": list(self.broke_away),
+                "broke_away": list(self.broke_away), "breakaway_check": self.breakaway_check,
                 "confirmed_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
 
 

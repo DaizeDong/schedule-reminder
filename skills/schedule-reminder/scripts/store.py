@@ -1747,6 +1747,22 @@ def publish_work(item_id, *, actor=None, db_path=None, action_id=None):
         conn.close()
 
 
+def _names_breakaway(child_receipt):
+    """True when a child cleanup receipt (or any attempt in it) lists processes that broke away."""
+    if not isinstance(child_receipt, dict):
+        return False
+    attempts = child_receipt.get('attempts')
+    return bool(child_receipt.get('broke_away')) or any(
+        isinstance(attempt, dict) and attempt.get('broke_away') for attempt in
+        (attempts if isinstance(attempts, list) else ()))
+
+
+def _job_kill_supersedes(receipt, child_receipt):
+    return (receipt.get('authority') == 'verified-job-kill'
+            and receipt.get('breakaway_check') == 'checked' and not receipt.get('broke_away')
+            and not _names_breakaway(child_receipt))
+
+
 def advance_work(item_id, generation, action, *, pid=None, pstart=None, checkpoint=None,
                  outcome=None, note="", fields=None, progress=None, expected=None,
                  baseline=None, baseline_sha256=None, workspace=None, receipt=None,
@@ -1755,7 +1771,8 @@ def advance_work(item_id, generation, action, *, pid=None, pstart=None, checkpoi
 
     start is a one-shot runner handshake. receipt is an idempotent parent acknowledgement and
     cannot replace a different process identity. reconcile requires the caller's exact snapshot.
-    release requires a quiescent child receipt; a dead runner cannot clear unknown cleanup.
+    release requires a quiescent child receipt; a dead runner cannot clear unknown cleanup (only a
+    verified job kill of the whole runner tree can, see verified_cleanup).
     """
     conn = _connect(db_path)
     try:
@@ -1789,9 +1806,7 @@ def advance_work(item_id, generation, action, *, pid=None, pstart=None, checkpoi
                 # and later descendant gone from a fresh snapshot. The receipt must name every
                 # recorded runner identity; a parent's absence alone never reaches this branch.
                 if (expected is None or op['outcome'] != 'cancelled' or op['released_at'] is not None
-                        or op['cleanup_state'] not in ('quiescent', 'in_flight')):
-                    # 'unknown' is what a child receipt without confirmed cleanup (or a legacy
-                    # operation) leaves; a tree kill cannot override that report.
+                        or op['cleanup_state'] not in ('quiescent', 'in_flight', 'unknown')):
                     return False
                 # 'verified-job-kill': the runner's own job was terminated and then reported
                 # ActiveProcesses == 0 (runner_job); its roots were verified members first.
@@ -1799,6 +1814,16 @@ def advance_work(item_id, generation, action, *, pid=None, pstart=None, checkpoi
                         or receipt.get('authority') not in ('verified-tree-kill', 'verified-job-kill')
                         or not receipt.get('members') or not receipt.get('confirmed_at')):
                     raise ValueError('verified tree-kill receipt is required')
+                # 'unknown' is what a child receipt without confirmed cleanup (llmcall could not
+                # prove its own children gone) or a legacy operation leaves. A tree kill is
+                # inference from parent PIDs and cannot override that report. A job kill can: every
+                # process llmcall started, its nested job included, was a member of the runner job,
+                # and the kernel counted zero members left. It cannot speak for processes that
+                # left the job, so it supersedes only when the child receipt names none, its own
+                # breakaway check ran and found none.
+                if op['cleanup_state'] == 'unknown' and not _job_kill_supersedes(
+                        receipt, json.loads(op['cleanup_receipt'] or 'null')):
+                    return False
                 covered = {(int(p), str(s)) for p, s in receipt.get('roots') or ()}
                 recorded = {(int(op[p]), str(op[s])) for p, s in (('pid', 'pstart'), ('launch_pid', 'launch_pstart'))
                             if op[p] is not None}
@@ -1830,6 +1855,28 @@ def advance_work(item_id, generation, action, *, pid=None, pstart=None, checkpoi
                     if op["checkpoint"] != "claimed":
                         return False
                     updates["checkpoint"] = "spawning"
+                elif action == "not_started":
+                    # The launcher ended its still-suspended runner and saw it exit: nothing ran.
+                    # Unlike reconcile this is not ambiguous, so the slot is released and the
+                    # order goes back to the queue (or, past the retry bound, to blocked).
+                    if (expected is None or op["checkpoint"] != "spawning" or op["started_at"]
+                            or op["pid"] is not None or op["launch_pid"] is not None
+                            or op["cleanup_state"] != "quiescent"):
+                        return False
+                    updates.update(outcome="not_started", checkpoint="not_started", finished_at=now,
+                                   released_at=now, cleanup_receipt=_dump_json({"reason": note}))
+                    try:
+                        count = int(ext.get(_EXEC + "not_started") or 0) + 1
+                    except (TypeError, ValueError):
+                        count = 1
+                    ext.update({_EXEC + "not_started": count, _EXEC + "note": note[:300],
+                                _EXEC + "pid": None, _EXEC + "pstart": None})
+                    if checkpoint == "requeue":
+                        item_fields["state"] = "pending"
+                        ext[_EXEC + "state"] = "queued"
+                    else:
+                        item_fields.update(state="blocked", block_reason=note[:300])
+                        ext[_EXEC + "state"] = "failed"
                 elif action == "child_start":
                     if not op["started_at"] or op["cleanup_state"] != "quiescent":
                         return False
