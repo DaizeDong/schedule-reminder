@@ -545,6 +545,21 @@
       "max_bytes": 4194304
     },
     {
+      "artifact_id": "agent-run-containers",
+      "path_pattern": "agent-runs/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]",
+      "purpose": "Immediate UUID run directory created before durable request and event files; ownership covers the container only.",
+      "schema": "scripts/agent_task.py run_dir and task-store UUID work identities.",
+      "producer": "The work queue and agent worker create the directory after PRIVATE storage proof.",
+      "consumer_or_final_deliverable": "Independently declared request, event and attempt artifacts for the matching work item.",
+      "rebuild_or_restore": "Recreate only for the matching retained work identity and configured run root after PRIVATE proof; restore child artifacts separately.",
+      "persistence": "transient",
+      "transient_reason": "An empty structural directory has no versioned payload; each child artifact retains its own persistence requirement.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Preserve while matching work or recovery is unresolved. Container ownership does not classify descendants, reconcile missing owners or stale references, establish inactivity, or authorize deletion."
+      }
+    },
+    {
       "artifact_id": "agent-runs-events-jsonl",
       "path_pattern": "agent-runs/*/events.jsonl",
       "purpose": "Durable work request or operation event history.",
@@ -1095,6 +1110,21 @@
       "max_bytes": 16777216
     },
     {
+      "artifact_id": "verification-container",
+      "path_pattern": "data/verify",
+      "purpose": "Structural directory retained after a Windows verification worker removes its temporary script; ownership covers the container only.",
+      "schema": "scripts/agent_run.py run_verify temporary-script directory.",
+      "producer": "The Windows agent verification worker.",
+      "consumer_or_final_deliverable": "Independently declared verification scripts and their recorded process results.",
+      "rebuild_or_restore": "Recreate in the configured PRIVATE data root when an authorized verification needs it; child scripts have independent ownership.",
+      "persistence": "transient",
+      "transient_reason": "The directory carries no payload and may remain empty between verification processes.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Preserve while a verification process or its cleanup is unresolved. Container ownership neither establishes process inactivity nor authorizes deletion or arbitrary child writes."
+      }
+    },
+    {
       "artifact_id": "verification-scripts",
       "path_pattern": "data/verify/agent_verify_*.ps1",
       "purpose": "Temporary PowerShell wrapper for one agent verification command.",
@@ -1148,6 +1178,21 @@
         "rule": "No new development writes. Hold until useful unique code, required DATA, selected results, registration and rollback evidence are extracted into their owning current families; reconcile incomplete transactions, consumer/process dependencies and SQLite state. Retirement requires verified inactivity and a separately authorized concrete removal plan. This classification asserts neither completed closure nor present removability."
       },
       "max_bytes": 100663296
+    },
+    {
+      "artifact_id": "todo-action-workspace-containers",
+      "path_pattern": "data/todo-actions/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]",
+      "purpose": "Immediate UUID workspace reserved for an owner-issued action before enqueue; ownership covers the container only.",
+      "schema": "scripts/reminder_actions.py start and the task-store work_actions/work-item identity relationship.",
+      "producer": "The owner-issued action handler after validating its configured PRIVATE workspace root.",
+      "consumer_or_final_deliverable": "The matching action and its independently reviewed, selected output artifacts.",
+      "rebuild_or_restore": "Recreate only after reconciling the retained action, work identity and configured workspace reference; restore selected child outputs separately.",
+      "persistence": "transient",
+      "transient_reason": "An empty workspace has no versioned payload; generated outputs require their own owner and persistence declarations.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "Preserve while the action, workspace reference or recovery is unresolved. Container ownership does not classify descendants, reconcile missing owners or stale references, establish inactivity, or authorize deletion."
+      }
     },
     {
       "artifact_id": "action-diagnostic-report",
