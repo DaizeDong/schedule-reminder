@@ -81,7 +81,8 @@ def test_legacy_saved_plan_never_reexecutes_unproved_action_identity(pool, monke
     monkeypatch.setattr(dispatch, 'get_state', lambda _: [])
     monkeypatch.setattr(dispatch, 'get_work', lambda: [])
     monkeypatch.setattr(dispatch, 'call_chain', lambda *a, **k: pytest.fail('legacy plan was replaced'))
-    monkeypatch.setattr(dispatch, '_rem', lambda *a, **k: pytest.fail('unproved legacy identity mutated work'))
+    for mutation in ('ensure_item', 'add_item', 'done', 'snooze'):
+        monkeypatch.setattr(store, mutation, lambda *a, **k: pytest.fail('unproved legacy identity mutated work'))
     before = items()
     assert dispatch.dispatch('infra', origin['title'], request_id='synthetic-legacy', post=False) is (
         legacy == 'canonical-complete')
@@ -127,9 +128,31 @@ def test_follow_up_rejects_unshown_ids(pool):
 
 
 def test_state_read_failure_never_becomes_empty_pool(monkeypatch):
-    monkeypatch.setattr(dispatch, '_rem', lambda *a: {'_err': 'unavailable'})
-    with pytest.raises(RuntimeError):
+    def unavailable(**kwargs):
+        raise store.SkillError('ERR_BUSY', 'synthetic busy store')
+    monkeypatch.setattr(store, 'list_items', unavailable)
+    with pytest.raises(store.SkillError):
         dispatch.get_state(dict(dispatch.STREAMS['infra'], source='agent-center:infra'))
+
+
+def test_retry_with_a_saved_plan_reads_only_its_targets(pool, monkeypatch):
+    """A retry does not rebuild the census: it checks the saved targets against the store."""
+    import inbound
+    active = store.add_item('Acme active')
+    finished = store.add_item('Acme finished')
+    store.done(finished['id'])
+    plan = {'actions': [{'op': 'done', 'id': active['id']}, {'op': 'done', 'id': finished['id']}]}
+    source = inbound.identity('request', 'infra', 'synthetic-retry')
+    with inbound.dispatch_record('infra', source) as (record, save):
+        record.update(plan=plan, authorized_ids=[active['id'], finished['id']], authorized_work_ids=[],
+                      action_identity_version=2,
+                      action_keys=[dispatch._action_identity('infra', source, index, action)
+                                   for index, action in enumerate(plan['actions'])])
+        save()
+    monkeypatch.setattr(dispatch, 'get_state', lambda _: pytest.fail('a retry rebuilt the census'))
+    monkeypatch.setattr(dispatch, 'get_work', lambda: pytest.fail('a retry rebuilt the work census'))
+    assert dispatch.dispatch('infra', 'Acme request', request_id='synthetic-retry', post=False)
+    assert store.get_item(active['id'])['state'] == 'done'
 
 
 def test_reviewed_watchdogs_are_signals_without_hiding_other_source_work(pool):
@@ -145,12 +168,11 @@ def test_ingest_keeps_source_identity_when_batch_changes(pool, monkeypatch):
     import inbound
     monkeypatch.setattr(ingest_tick, '_log', lambda *a: None)
     monkeypatch.setattr(ingest, 'load_registry', lambda: {})
-    monkeypatch.setattr(ingest, 'poll_all_reactions', lambda **k: {})
     message = {'id': 'message-1', 'content': 'Prepare Acme report'}
     def poll(**kwargs):
         inbound.stage('infra', 'channel-1', message['id'], 'text', message, ingest.state_dir())
-        return {'infra': 1}
-    monkeypatch.setattr(ingest, 'poll_all', poll)
+        return {'text': {'infra': 1}, 'reactions': {}}
+    monkeypatch.setattr(ingest, 'poll', poll)
     captured = []
     monkeypatch.setattr(dispatch, 'dispatch', lambda *a, **k: captured.append(k) or True)
     ingest_tick.run(post=False)

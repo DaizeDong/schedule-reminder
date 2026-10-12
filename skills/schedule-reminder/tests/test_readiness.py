@@ -266,9 +266,8 @@ def test_ingest_preserves_ids_through_real_dispatch_and_enqueue(tmp_path, monkey
     ingest.prepare_state()
     Path(ingest._last_file(channel)).write_text('0', encoding='utf-8')
     monkeypatch.setattr(ingest, '_fetch', lambda *a, **kw: [message])
-    monkeypatch.setattr(ingest, 'poll_all', lambda **kw: {
-        FIX['stream']: len(ingest.poll_stream(FIX['stream'], channel, 'synthetic', owner))})
-    monkeypatch.setattr(ingest, 'poll_all_reactions', lambda **kw: {})
+    monkeypatch.setattr(ingest, 'poll', lambda **kw: {'text': {
+        FIX['stream']: len(ingest.poll_stream(FIX['stream'], channel, 'synthetic', owner))}})
     monkeypatch.setattr(ingest, 'load_registry', lambda: FIX['registry'])
     monkeypatch.setattr(dispatch, 'call_chain', lambda *a, **kw: json.dumps(FIX['dispatch_plan']))
     monkeypatch.setattr(dispatch, 'get_state', lambda cfg: [])
@@ -312,4 +311,4 @@ def test_dispatch_uses_result_text_and_installed_policy(monkeypatch):
     monkeypatch.setattr(sys.modules['llmcall'], 'call', lambda prompt, **kwargs:
                         calls.append(kwargs) or SimpleNamespace(**FIX['model_result'], error=None))
     assert dispatch.call_chain(FIX['request']) == FIX['model_result']['text']
-    assert calls == [{'mode': 'judge', 'log': None}]
+    assert calls == [{'mode': 'judge', 'log': None, 'timeout': None}]

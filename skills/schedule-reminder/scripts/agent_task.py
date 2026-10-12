@@ -334,54 +334,6 @@ def read_request(item):
     return request
 
 
-def _query_result(result, operation):
-    """Keep reminder read failures distinct from a successful empty result."""
-    if not isinstance(result, dict):
-        raise RuntimeError("reminder %s returned a malformed response" % operation)
-    if "_err" in result or "error_code" in result:
-        raise RuntimeError("reminder %s failed: %s" %
-                           (operation, result.get("_err") or result.get("error_code") or "unknown error"))
-    return result
-
-
-def _query_item(item):
-    if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"]:
-        raise RuntimeError("reminder query returned a malformed item")
-    return item
-
-
-def query_items(query, *args):
-    """Return a complete ordered census, or raise before exposing any partial page.
-
-    Used by dispatch.py, which still reads the pool through the reminder.py CLI. Work orders
-    are read in process (orders/get below) and do not go through this."""
-    out, cursor = [], None
-    while True:
-        argv = [*args, "--limit", "100"]
-        if cursor is not None:
-            argv += ["--cursor", cursor]
-        result = _query_result(query(*argv), "list")
-        if "items" not in result or "next_cursor" not in result:
-            raise RuntimeError("reminder list omitted its page boundary")
-        page, next_cursor = result["items"], result["next_cursor"]
-        if not isinstance(page, list) or len(page) > 100:
-            raise RuntimeError("reminder list returned malformed items")
-        previous = cursor
-        for item in page:
-            _query_item(item)
-            if previous is not None and item["id"] <= previous:
-                raise RuntimeError("reminder list did not advance in item order")
-            previous = item["id"]
-        if next_cursor is not None:
-            if (not isinstance(next_cursor, str) or len(page) != 100
-                    or next_cursor != previous or (cursor is not None and next_cursor <= cursor)):
-                raise RuntimeError("reminder list returned an incomplete page boundary")
-        out.extend(page)
-        if next_cursor is None:
-            return out
-        cursor = next_cursor
-
-
 def orders(active_only=True):
     """Every work order, oldest first, read in process; a store failure raises."""
     out, cursor = [], None

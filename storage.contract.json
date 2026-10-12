@@ -192,22 +192,35 @@
       }
     },
     {
+      "artifact_id": "state-owner-dm-channel",
+      "path_pattern": "state/owner-dm.channel",
+      "purpose": "Cached '<owner id>:<DM channel id>' so the owner DM is opened once rather than every poll.",
+      "schema": "scripts/ingest.py owner_dm_channel.",
+      "producer": "The selected ingest worker.",
+      "consumer_or_final_deliverable": "Channel enumeration for inbound polling.",
+      "rebuild_or_restore": "Not needed; a missing or different-owner cache is rebuilt by opening the DM again.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "May be deleted at any time; the next poll recreates it."
+      }
+    },
+    {
       "artifact_id": "state-inbox-projections",
       "path_pattern": "state/*.inbox",
-      "purpose": "Text, reaction and migration-review inbox projections; one pattern avoids overlapping owners.",
-      "schema": "scripts/ingest.py state path and migration contracts.",
-      "producer": "The selected ingest worker.",
-      "consumer_or_final_deliverable": "Replay-safe inbound observation and migration recovery.",
-      "rebuild_or_restore": "Restore alongside matching durable inbound records and task-store receipts; resolve installed path selection before enabling polling.",
+      "purpose": "Leftover text, reaction and migration-review inbox projections from earlier versions; no longer produced.",
+      "schema": "Plain text copies of messages also held in the durable inbound records.",
+      "producer": "Earlier versions of scripts/ingest.py.",
+      "consumer_or_final_deliverable": "None.",
+      "rebuild_or_restore": "Not needed.",
       "retention_rule": {
-        "class": "core",
-        "rule": "Keep unresolved work, current cursors and identities needed to prevent replay. Preserve legacy projections until matching durable records and recovery dependencies are reconciled. Retire selected completed history only after required receipts and evidence are preserved; directory age or an advanced cursor proves neither delivery nor inactivity."
+        "class": "rebuildable",
+        "rule": "Inert; may be deleted."
       }
     },
     {
       "artifact_id": "state-reaction-identities",
       "path_pattern": "state/*.reactions.seen",
-      "purpose": "Bounded reaction deduplication identities retained for the configured consumer.",
+      "purpose": "Bounded reaction deduplication identities and last-read reaction counts retained for the configured consumer.",
       "schema": "scripts/ingest.py state path and migration contracts.",
       "producer": "The selected ingest worker.",
       "consumer_or_final_deliverable": "Replay-safe inbound observation and migration recovery.",
@@ -246,14 +259,14 @@
     {
       "artifact_id": "state-inbound-publication-locks",
       "path_pattern": "state/inbound/*.json.lock",
-      "purpose": "Temporary coordination or unpublished bytes for one durable inbound record.",
-      "schema": "scripts/inbound.py atomic writer and private_data.file_lock.",
-      "producer": "The active inbound publication or processing worker.",
-      "consumer_or_final_deliverable": "One active state operation and its recovery.",
-      "rebuild_or_restore": "Recreate only after the previous operation outcome is reconciled.",
+      "purpose": "Leftover per-record publication lock from earlier versions; no longer produced (the processing lock serializes every change).",
+      "schema": "Lock file, no content.",
+      "producer": "Earlier versions of scripts/inbound.py.",
+      "consumer_or_final_deliverable": "None.",
+      "rebuild_or_restore": "Not needed.",
       "retention_rule": {
         "class": "rebuildable",
-        "rule": "Hold while any writer, publication or processing outcome is unresolved; remove only after inactivity and final durable record are verified."
+        "rule": "Inert; may be deleted."
       }
     },
     {
@@ -375,22 +388,35 @@
       }
     },
     {
+      "artifact_id": "data-state-owner-dm-channel",
+      "path_pattern": "data/state/owner-dm.channel",
+      "purpose": "Cached '<owner id>:<DM channel id>' so the owner DM is opened once rather than every poll.",
+      "schema": "scripts/ingest.py owner_dm_channel.",
+      "producer": "The selected ingest worker.",
+      "consumer_or_final_deliverable": "Channel enumeration for inbound polling.",
+      "rebuild_or_restore": "Not needed; a missing or different-owner cache is rebuilt by opening the DM again.",
+      "retention_rule": {
+        "class": "rebuildable",
+        "rule": "May be deleted at any time; the next poll recreates it."
+      }
+    },
+    {
       "artifact_id": "data-state-inbox-projections",
       "path_pattern": "data/state/*.inbox",
-      "purpose": "Text, reaction and migration-review inbox projections; one pattern avoids overlapping owners.",
-      "schema": "scripts/ingest.py state path and migration contracts.",
-      "producer": "The selected ingest worker.",
-      "consumer_or_final_deliverable": "Replay-safe inbound observation and migration recovery.",
-      "rebuild_or_restore": "Restore alongside matching durable inbound records and task-store receipts; resolve installed path selection before enabling polling.",
+      "purpose": "Leftover text, reaction and migration-review inbox projections from earlier versions; no longer produced.",
+      "schema": "Plain text copies of messages also held in the durable inbound records.",
+      "producer": "Earlier versions of scripts/ingest.py.",
+      "consumer_or_final_deliverable": "None.",
+      "rebuild_or_restore": "Not needed.",
       "retention_rule": {
-        "class": "core",
-        "rule": "Keep unresolved work, current cursors and identities needed to prevent replay. Preserve legacy projections until matching durable records and recovery dependencies are reconciled. Retire selected completed history only after required receipts and evidence are preserved; directory age or an advanced cursor proves neither delivery nor inactivity."
+        "class": "rebuildable",
+        "rule": "Inert; may be deleted."
       }
     },
     {
       "artifact_id": "data-state-reaction-identities",
       "path_pattern": "data/state/*.reactions.seen",
-      "purpose": "Bounded reaction deduplication identities retained for the configured consumer.",
+      "purpose": "Bounded reaction deduplication identities and last-read reaction counts retained for the configured consumer.",
       "schema": "scripts/ingest.py state path and migration contracts.",
       "producer": "The selected ingest worker.",
       "consumer_or_final_deliverable": "Replay-safe inbound observation and migration recovery.",
@@ -429,14 +455,14 @@
     {
       "artifact_id": "data-state-inbound-publication-locks",
       "path_pattern": "data/state/inbound/*.json.lock",
-      "purpose": "Temporary coordination or unpublished bytes for one durable inbound record.",
-      "schema": "scripts/inbound.py atomic writer and private_data.file_lock.",
-      "producer": "The active inbound publication or processing worker.",
-      "consumer_or_final_deliverable": "One active state operation and its recovery.",
-      "rebuild_or_restore": "Recreate only after the previous operation outcome is reconciled.",
+      "purpose": "Leftover per-record publication lock from earlier versions; no longer produced (the processing lock serializes every change).",
+      "schema": "Lock file, no content.",
+      "producer": "Earlier versions of scripts/inbound.py.",
+      "consumer_or_final_deliverable": "None.",
+      "rebuild_or_restore": "Not needed.",
       "retention_rule": {
         "class": "rebuildable",
-        "rule": "Hold while any writer, publication or processing outcome is unresolved; remove only after inactivity and final durable record are verified."
+        "rule": "Inert; may be deleted."
       }
     },
     {

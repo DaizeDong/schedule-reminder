@@ -7,16 +7,16 @@ import hashlib
 import json
 import os
 import re
-import subprocess
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
-def call_chain(prompt, log=None):
-    """Compatibility seam returning text; policy belongs to installed llmcall."""
+def call_chain(prompt, log=None, timeout=None):
+    """Compatibility seam returning text; policy belongs to installed llmcall. `timeout` bounds the
+    whole chain (None keeps llmcall's judge default)."""
     import llmcall
-    result = llmcall.call(prompt, mode="judge", log=log)
+    result = llmcall.call(prompt, mode="judge", log=log, timeout=timeout)
     return result.text if result and not getattr(result, "error", None) else None
 
 import agent_task  # noqa: E402
@@ -29,11 +29,11 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-REMINDER = os.path.join(_HERE, "reminder.py")
-import private_data
 import inbound
 import store
-_STATE_DIR = None
+# Pool mutations are attributed to this actor in the item event log, as the reminder.py CLI did
+# with --actor when dispatch still called it as a subprocess.
+ACTOR = "agent-center-dispatch"
 
 # kind: pool = email-monitor task pool | reminder = any active reminder | generic = create/ack only
 STREAMS = {
@@ -49,22 +49,15 @@ STREAMS = {
 _DEFAULT_CFG = {"kind": "generic", "desc": "Agent Center 通知"}
 
 
-def _rem(*args):
-    p = subprocess.run([sys.executable, REMINDER, "--actor", "agent-center-dispatch", *args],
-                       capture_output=True, text=True, encoding="utf-8")
-    if p.returncode != 0:
-        return {"_err": (p.stderr or p.stdout).strip()}
-    try:
-        return json.loads(p.stdout.strip().splitlines()[-1])
-    except Exception:
-        return {"_err": "unparseable: %s" % (p.stdout or "")[:200]}
-
-
 def _active_items(source=None, *, include_context=False):
-    args = ["list", "--active"]
-    if source:
-        args += ["--source", source]
-    items = agent_task.query_items(_rem, *args)
+    """Every active item, read in process; a store failure raises rather than reading as empty."""
+    items, cursor = [], None
+    while True:
+        page = store.list_items(source=source, active_only=True, limit=100, cursor=cursor)
+        items.extend(page["items"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
     if include_context:
         from creation_guard import source_role
         return [{key: it.get(key) for key in ('id', 'title', 'description', 'source', 'due_at', 'state')}
@@ -84,6 +77,24 @@ def get_work():
     """Work orders the 'stop' op may target. Deliberately NOT filtered by stream: the user says
     "stop" in whichever channel they happen to be reading."""
     return agent_task.running()
+
+
+def _retry_scope(plan, record):
+    """Current state of only the ids a saved plan can still touch.
+
+    A retry reuses the saved plan and its authorization snapshot, so a fresh census of every
+    active item would only be intersected with that snapshot again. This reads the targets
+    instead: which authorized items are still active, and which authorized orders still run."""
+    ops = [(str(action.get("op") or "").lower(), action.get("id"))
+           for action in plan["actions"] if isinstance(action, dict)]
+    authorized = set(record.get("authorized_ids") or [])
+    ids = sorted({iid for op, iid in ops if op != "stop" and isinstance(iid, str)} & authorized)
+    items = [{"id": iid} for iid in sorted(store.active_ids(ids))] if ids else []
+    work_ids = set(record.get("authorized_work_ids") or [])
+    stops = {str(iid or "").strip() for op, iid in ops if op == "stop"}
+    wanted = sorted(work_ids if "*" in stops else stops & work_ids)
+    work = agent_task.running([row for row in map(agent_task.get, wanted) if row]) if wanted else []
+    return items, work
 
 
 def build_prompt(stream, cfg, reply, items, work=None):
@@ -311,10 +322,8 @@ def execute(stream, cfg, plan, items, log=None, work=None, msg_id=None,
                     iid = action.get("id")
                     if iid not in allowed:
                         if op in ("done", "dismiss") and iid in (authorized_ids or []):
-                            response = _rem("get", "--id", iid)
-                            current = response.get("item") or {}
-                            reconciled = (not response.get("_err") and current.get("id") == iid
-                                          and current.get("state") == "done")
+                            current = store.get_item(iid) or {}
+                            reconciled = current.get("id") == iid and current.get("state") == "done"
                             outcome = {"op": op, "id": iid,
                                        "status": "succeeded" if reconciled else "failed",
                                        "reason": "" if reconciled else "previously authorized completion is not confirmed"}
@@ -323,15 +332,11 @@ def execute(stream, cfg, plan, items, log=None, work=None, msg_id=None,
                     elif op == "snooze" and not action.get("until"):
                         outcome["reason"] = "snooze requires until"
                     else:
-                        args = (["snooze", "--id", iid, "--until", action["until"]] if op == "snooze"
-                                else ["done", "--id", iid])
-                        response = _rem(*args)
-                        item = response.get("item") or {}
-                        succeeded = bool(item) and not response.get("_err")
-                        if op != "snooze":
-                            succeeded = succeeded and item.get("state") == "done"
+                        item = (store.snooze(iid, action["until"], actor=ACTOR) if op == "snooze"
+                                else store.done(iid, actor=ACTOR)) or {}
+                        succeeded = bool(item) and (op == "snooze" or item.get("state") == "done")
                         outcome = {"op": op, "status": "succeeded" if succeeded else "failed",
-                                   "id": iid, "reason": str(response.get("_err") or "mutation did not return its expected item")}
+                                   "id": iid, "reason": "mutation did not return its expected item"}
                 elif op == 'update':
                     iid, note = action.get('id'), str(action.get('note') or '').strip()
                     if iid not in allowed and iid in (authorized_ids or []) and source_identity is not None and note:
@@ -347,22 +352,22 @@ def execute(stream, cfg, plan, items, log=None, work=None, msg_id=None,
                 elif op == "create":
                     title = str(action.get("title") or "").strip()
                     if title:
-                        args = ["ensure" if source_identity is not None else "add", "--title", title, "--kind", "task"]
-                        if source_identity is not None:
-                            args += ["--idempotency-key", key, "--if-exists", "return"]
+                        fields = {"kind": "task", "due_at": action.get("due_at") or None, "actor": ACTOR}
                         if cfg["kind"] == "pool":
-                            args += ["--source", "email-monitor", "--ext", json.dumps({
+                            fields.update(source="email-monitor", ext={
                                 "x_email_monitor_thread_key": _thread_key(title),
-                                "x_email_monitor_msg_count": 1}, ensure_ascii=False)]
+                                "x_email_monitor_msg_count": 1})
                         else:
-                            args += ["--source", "agent-center:%s" % stream]
-                        if action.get("due_at"):
-                            args += ["--due-at", action["due_at"]]
-                        response = _rem(*args)
+                            fields["source"] = "agent-center:%s" % stream
+                        # A durable source identity makes creation idempotent: a retry returns the
+                        # item the first attempt created instead of adding a second one.
+                        response = (store.ensure_item(title, idempotency_key=key, **fields)
+                                    if source_identity is not None
+                                    else {"item": store.add_item(title, **fields)})
                         item = response.get("item") or {}
-                        outcome = {"op": op, "status": "succeeded" if item.get("id") and not response.get("_err") else "failed",
+                        outcome = {"op": op, "status": "succeeded" if item.get("id") else "failed",
                                    "id": item.get("id"), "decision": response.get('decision', 'created'),
-                                   "reason": str(response.get("_err") or "missing creation receipt")}
+                                   "reason": "missing creation receipt"}
             except Exception as error:
                 outcome = {"op": op, "status": "failed", "reason": type(error).__name__ + ": " + str(error)}
             if save_outcome:
@@ -419,15 +424,22 @@ def _post(stream, text, post, log, channel_id=None):
     return True
 
 
-def _dispatch(stream, reply, log, post, channel_id, msg_id, record=None, save=None, inbound_id=None):
+def _dispatch(stream, reply, log, post, channel_id, msg_id, record=None, save=None, inbound_id=None,
+              timeout=None, final=True):
     cfg = STREAMS.get(stream, _DEFAULT_CFG)
-    items, work = get_state(cfg), get_work()
     plan = record.get("plan") if record is not None else None
     if plan is None:
+        items, work = get_state(cfg), get_work()
         prompt = build_prompt(stream, cfg, reply, items, work)
-        plan = _extract_json(call_chain(prompt, log=log))
+        plan = _extract_json(call_chain(prompt, log=log, timeout=timeout))
         if not isinstance(plan, dict) or not isinstance(plan.get("actions"), list):
-            _post(stream, "自动解析失败，本次没有执行操作。", post, log, channel_id)
+            # Nothing ran. The caller retries a bounded number of times; only the last attempt
+            # tells the channel, so a transient model failure does not post the same notice
+            # on every tick.
+            if log:
+                log("dispatch[%s]: the planner returned no usable plan" % stream)
+            if final:
+                _post(stream, "自动解析失败，本次没有执行操作。", post, log, channel_id)
             return False
         if record is not None:
             record["plan"] = plan
@@ -438,7 +450,8 @@ def _dispatch(stream, reply, log, post, channel_id, msg_id, record=None, save=No
             record['action_keys'] = [_action_identity(stream, inbound_id, index, action)
                                      for index, action in enumerate(plan['actions'])]
             save()
-    if record is not None:
+    else:
+        # A retry: the saved plan and its authorization snapshot decide what may run.
         if not isinstance(plan, dict) or not isinstance(plan.get('actions'), list):
             _post(stream, "已保存的操作计划损坏，需要核对记录后再处理。", post, log, channel_id)
             return False
@@ -447,6 +460,7 @@ def _dispatch(stream, reply, log, post, channel_id, msg_id, record=None, save=No
         if not _saved_plan_identity_matches(record, keys, plan['actions']):
             _post(stream, "已保存的操作身份无法确认，需要核对已执行结果后再处理。", post, log, channel_id)
             return False
+        items, work = _retry_scope(plan, record)
     def save_outcome(key, outcome):
         record["outcomes"][key] = outcome
         save()
@@ -478,10 +492,18 @@ def _dispatch(stream, reply, log, post, channel_id, msg_id, record=None, save=No
     if result["failed"]:
         confirm += "\n失败（failed）：" + "; ".join(result["failed"])
     confirmed = _post(stream, confirm, post, log, channel_id)
-    return confirmed is not False and not result["skipped"] and not result["failed"]
+    # A rejected action is final: its saved outcome is reused on every retry, so retrying could
+    # only repeat the same confirmation. Only a failed action or an undelivered confirmation is
+    # worth another attempt.
+    return confirmed is not False and not result["failed"]
 
 
-def dispatch(stream, reply, log=None, post=True, channel_id=None, msg_id=None, inbound_id=None, request_id=None):
+def dispatch(stream, reply, log=None, post=True, channel_id=None, msg_id=None, inbound_id=None,
+             request_id=None, timeout=None, final=True):
+    """Plan and execute one reply. True when it is finished; False when another attempt may help.
+
+    `timeout` bounds the planner call. `final=False` marks an attempt the caller will retry, so
+    a planning failure is not announced in the channel yet."""
     if request_id is not None and (not isinstance(request_id, str) or not request_id.strip()):
         raise ValueError('request_id must be a nonempty string')
     if inbound_id is None and request_id is not None:
@@ -490,23 +512,21 @@ def dispatch(stream, reply, log=None, post=True, channel_id=None, msg_id=None, i
         inbound_id = (inbound.identity("text", str(channel_id), str(msg_id))
                       if channel_id is not None and msg_id is not None else msg_id)
     if inbound_id is None:
-        return _dispatch(stream, reply, log, post, channel_id, msg_id)
+        return _dispatch(stream, reply, log, post, channel_id, msg_id, timeout=timeout, final=final)
     # Durable delivery identity scopes retries; msg_id remains the original source reference.
     with inbound.dispatch_record(stream, inbound_id) as (record, save):
-        return _dispatch(stream, reply, log, post, channel_id, msg_id, record, save, inbound_id)
+        return _dispatch(stream, reply, log, post, channel_id, msg_id, record, save, inbound_id,
+                         timeout=timeout, final=final)
 
 
 def main():
     ap = argparse.ArgumentParser(prog="dispatch.py")
     ap.add_argument("--stream", required=True)
-    ap.add_argument("--reply", default=None, help="reply text; default reads state/<stream>.inbox")
+    ap.add_argument("--reply", required=True, help="the reply text to plan and execute")
     ap.add_argument('--request-id', help='stable identity of this source occurrence for retries')
     ap.add_argument("--no-post", dest="post", action="store_false", help="dry run: print confirm, do not relay")
     a = ap.parse_args()
     reply = a.reply
-    if reply is None:
-        p = os.path.join(_STATE_DIR or str(private_data.config_root()/"state"), "%s.inbox" % a.stream)
-        reply = open(p, encoding="utf-8").read() if os.path.exists(p) else ""
     if not reply.strip():
         print(json.dumps({"ok": False, "reason": "empty reply"}))
         return 1

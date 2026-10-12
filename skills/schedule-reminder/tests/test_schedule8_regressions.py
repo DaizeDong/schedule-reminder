@@ -180,7 +180,7 @@ class Schedule8Regressions(unittest.TestCase):
     def test_manual_arm_complete_snapshot_is_saved(self):
         world = channel_world()
         self.assertEqual(world.ingest.arm_reactions(world.registry, world.case["token"]), 1)
-        seen = world.ingest._load_seen(world.ingest._key(world.stream, world.case["channel"]))
+        seen, _ = world.ingest._load_seen(world.ingest._key(world.stream, world.case["channel"]))
         self.assertEqual(len(seen), 1)
 
     def test_stop_recovers_cancelled_authorized_work_without_repeating_stop(self):

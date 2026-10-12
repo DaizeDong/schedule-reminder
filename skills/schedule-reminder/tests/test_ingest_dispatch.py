@@ -16,7 +16,9 @@ if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 
 import dispatch  # noqa: E402
+import inbound   # noqa: E402
 import ingest    # noqa: E402
+_REAL_OWNER_DM = ingest.owner_dm_channel  # the autouse fixture stubs it; one case needs the real one
 _FIXTURE = json.loads(open(os.path.join(os.path.dirname(__file__), "capability_cases.json"), encoding="utf-8").read())
 
 
@@ -67,31 +69,35 @@ def test_thread_key_stable():
 
 
 # --------------------------------------------------------------------------- executor anti-hallucination
-def _rem_recorder():
+def _store_recorder(monkeypatch):
+    """Record the pool mutations dispatch makes in process, without a database."""
     calls = []
-
-    def fake_rem(*args):
-        calls.append(args)
-        if args[0] == "done":
-            return {"item": {"state": "done"}}
-        return {"item": dict(_FIXTURE["schedule3_created_item"])}
-    return calls, fake_rem
+    store = dispatch.store
+    monkeypatch.setattr(store, "done", lambda iid, **k: calls.append(("done", iid, k))
+                        or {"id": iid, "state": "done"})
+    monkeypatch.setattr(store, "snooze", lambda iid, until, **k: calls.append(("snooze", iid, k))
+                        or {"id": iid, "state": "pending"})
+    monkeypatch.setattr(store, "add_item", lambda title, **k: calls.append(("add", title, k))
+                        or dict(_FIXTURE["schedule3_created_item"]))
+    monkeypatch.setattr(store, "ensure_item", lambda title, **k: calls.append(("ensure", title, k))
+                        or {"item": dict(_FIXTURE["schedule3_created_item"]), "decision": "created"})
+    return calls
 
 
 def test_execute_only_touches_shown_ids(monkeypatch):
     items = [{"id": "real-1", "title": "genuine item"}]
-    calls, fake = _rem_recorder()
-    monkeypatch.setattr(dispatch, "_rem", fake)
+    calls = _store_recorder(monkeypatch)
     plan = {"actions": [
         {"op": "done", "id": "real-1"},       # valid
-        {"op": "done", "id": "hallucinated-9"},  # NOT in items -> must be skipped, never sent to _rem
+        {"op": "done", "id": "hallucinated-9"},  # NOT in items -> must be skipped, never mutated
         {"op": "snooze", "id": "ghost-8", "until": "2026-08-01T00:00:00Z"},  # invalid id
         {"op": "create", "title": "待办:新任务"},
     ]}
     res = dispatch.execute("mail", dispatch.STREAMS["mail"], plan, items)
-    done_ids = [c[2] for c in calls if c[0] == "done"]
-    assert done_ids == ["real-1"], "executor must never send a hallucinated id to reminder.py"
-    assert not any(c[0] == "snooze" for c in calls), "invalid snooze id must not reach reminder.py"
+    done_ids = [c[1] for c in calls if c[0] == "done"]
+    assert done_ids == ["real-1"], "executor must never mutate a hallucinated id"
+    assert not any(c[0] == "snooze" for c in calls), "an invalid snooze id must not be mutated"
+    assert all(c[2]["actor"] == dispatch.ACTOR for c in calls), "mutations keep their actor"
     assert res["done"] == 1 and res["created"] == 1
     assert any("hallucinated-9"[:8] in s for s in res["skipped"])
     assert any("ghost-8"[:8] in s for s in res["skipped"])
@@ -99,8 +105,7 @@ def test_execute_only_touches_shown_ids(monkeypatch):
 
 def test_execute_snooze_requires_until(monkeypatch):
     items = [{"id": "real-1", "title": "x"}]
-    calls, fake = _rem_recorder()
-    monkeypatch.setattr(dispatch, "_rem", fake)
+    calls = _store_recorder(monkeypatch)
     plan = {"actions": [{"op": "snooze", "id": "real-1"}]}  # no 'until'
     res = dispatch.execute("reminders", dispatch.STREAMS["reminders"], plan, items)
     assert res["snoozed"] == 0
@@ -108,21 +113,41 @@ def test_execute_snooze_requires_until(monkeypatch):
 
 
 def test_execute_create_source_by_kind(monkeypatch):
-    calls, fake = _rem_recorder()
-    monkeypatch.setattr(dispatch, "_rem", fake)
+    calls = _store_recorder(monkeypatch)
     # generic stream -> source agent-center:<stream>, no email-monitor ext
     dispatch.execute("crypto", dispatch.STREAMS["crypto"],
                      {"actions": [{"op": "create", "title": "待办:看链上"}]}, [])
     add = [c for c in calls if c[0] == "add"][0]
-    assert "agent-center:crypto" in add
-    assert "email-monitor" not in add
+    assert add[2]["source"] == "agent-center:crypto"
+    assert "ext" not in add[2]
     # mail (pool) -> source email-monitor + thread_key ext
     calls.clear()
     dispatch.execute("mail", dispatch.STREAMS["mail"],
                      {"actions": [{"op": "create", "title": "待办:回邮件"}]}, [])
     add = [c for c in calls if c[0] == "add"][0]
-    assert "email-monitor" in add
-    assert any("x_email_monitor_thread_key" in str(x) for x in add)
+    assert add[2]["source"] == "email-monitor"
+    assert "x_email_monitor_thread_key" in add[2]["ext"]
+
+
+def test_execute_mutates_the_real_pool_in_process():
+    """Done, snooze and an idempotent create reach the database without a reminder.py process,
+    and the event log still names dispatch as the actor."""
+    store = dispatch.store
+    store.init_db()
+    first = store.add_item("Acme first", source="agent-center:infra")
+    second = store.add_item("Acme second", source="agent-center:infra")
+    plan = {"actions": [{"op": "done", "id": first["id"]},
+                        {"op": "snooze", "id": second["id"], "until": "2031-01-01T00:00:00Z"},
+                        {"op": "create", "title": "待办:Acme follow-up"}]}
+    shown = [first, second]
+    for _ in range(2):
+        result = dispatch.execute("infra", dispatch.STREAMS["infra"], plan, shown, request_id="message-1")
+        assert not result["failed"], result
+    assert store.get_item(first["id"])["state"] == "done"
+    assert store.get_item(second["id"])["wait_until"].startswith("2031-01-01T00:00:00")
+    created = [it for it in store.list_items(limit=100)["items"] if it["title"] == "待办:Acme follow-up"]
+    assert len(created) == 1, "a replayed create returns the first item"
+    assert any(event["actor"] == dispatch.ACTOR for event in store.get_events(first["id"]))
 
 
 # --------------------------------------------------------------------------- dispatch flow (stubbed)
@@ -130,8 +155,7 @@ def test_dispatch_happy_path(monkeypatch):
     monkeypatch.setattr(dispatch, "get_state", lambda cfg: [{"id": "i1", "title": "t1"}])
     monkeypatch.setattr(dispatch, "call_chain",
                         lambda *a, **k: '{"actions":[{"op":"done","id":"i1"}],"confirm":"完成1项"}')
-    _, fake = _rem_recorder()
-    monkeypatch.setattr(dispatch, "_rem", fake)
+    _store_recorder(monkeypatch)
     posted = []
     monkeypatch.setattr(dispatch.relay, "relay", lambda stream, text: posted.append((stream, text)) or True)
     ok = dispatch.dispatch("mail", "i1 那条搞定了")
@@ -147,6 +171,29 @@ def test_dispatch_unparseable_plan_passthrough(monkeypatch):
     ok = dispatch.dispatch("support", "some reply")
     assert ok is False
     assert posted and "自动解析失败" in posted[0][1]
+
+
+def test_unparseable_plan_is_announced_only_on_the_final_attempt(monkeypatch):
+    monkeypatch.setattr(dispatch, "get_state", lambda cfg: [])
+    budgets = []
+    monkeypatch.setattr(dispatch, "call_chain", lambda *a, **k: budgets.append(k.get("timeout")) or None)
+    posted = []
+    monkeypatch.setattr(dispatch.relay, "relay", lambda stream, text: posted.append(text) or True)
+    assert dispatch.dispatch("support", "some reply", timeout=42, final=False) is False
+    assert posted == [], "an attempt that will be retried stays quiet"
+    assert budgets == [42], "the caller's time budget bounds the planner call"
+
+
+def test_rejected_action_completes_with_its_confirmation(monkeypatch):
+    """A rejected action is final: its saved outcome would be reused by every retry."""
+    monkeypatch.setattr(dispatch, "get_state", lambda cfg: [{"id": "i1", "title": "t1"}])
+    monkeypatch.setattr(dispatch, "call_chain",
+                        lambda *a, **k: '{"actions":[{"op":"done","id":"not-shown"}]}')
+    calls = _store_recorder(monkeypatch)
+    posted = []
+    monkeypatch.setattr(dispatch.relay, "relay", lambda stream, text: posted.append(text) or True)
+    assert dispatch.dispatch("mail", "done with that one") is True
+    assert calls == [] and "rejected" in posted[0]
 
 
 def test_dispatch_no_post_is_dry(monkeypatch):
@@ -223,10 +270,46 @@ def test_poll_reactions_dedups_across_ticks(tmp_path, monkeypatch):
     monkeypatch.setattr(ingest, "_reactors", lambda *a, **k: [{"id": "OWNER", "bot": False}])
     new1 = ingest.poll_reactions_stream("mail", "ch", "tok", "OWNER")
     assert len(new1) == 1
-    assert os.path.exists(ingest._reactions_inbox_file("mail"))
-    assert "交周报" in open(ingest._reactions_inbox_file("mail"), encoding="utf-8").read()
+    staged = inbound.pending(ingest.state_dir())
+    assert len(staged) == 1 and "交周报" in staged[0]["payload"]["content"]
     new2 = ingest.poll_reactions_stream("mail", "ch", "tok", "OWNER")  # same reaction, next tick
     assert new2 == []  # already seen -> not re-processed
+
+
+def test_unchanged_reaction_count_is_not_read_or_rewritten(tmp_path, monkeypatch):
+    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
+    msgs = [{"id": "m1", "content": "x", "timestamp": "t",
+             "reactions": [{"emoji": {"name": "✅", "id": None}, "count": 1, "me": False}]}]
+    reads = []
+    monkeypatch.setattr(ingest, "_reactors", lambda *a, **k: reads.append(1) or [{"id": "OWNER", "bot": False}])
+    assert len(ingest.poll_reactions_stream("mail", "ch", "tok", "OWNER", messages=msgs)) == 1
+    seen = tmp_path / "mail.reactions.seen"
+    stamp = seen.stat().st_mtime_ns
+    writes = []
+    original = ingest._save_seen
+    monkeypatch.setattr(ingest, "_save_seen", lambda *a, **k: writes.append(1) or original(*a, **k))
+    assert ingest.poll_reactions_stream("mail", "ch", "tok", "OWNER", messages=msgs) == []
+    assert reads == [1], "an unchanged count does not read its reactors again"
+    assert writes == [] and seen.stat().st_mtime_ns == stamp, "an unchanged seen set is not rewritten"
+    msgs[0]["reactions"][0]["count"] = 2
+    ingest.poll_reactions_stream("mail", "ch", "tok", "OWNER", messages=msgs)
+    assert reads == [1, 1], "a changed count is read again"
+
+
+def test_failed_reactor_read_is_retried_next_tick(tmp_path, monkeypatch):
+    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
+    msgs = [{"id": "m1", "content": "x", "timestamp": "t",
+             "reactions": [{"emoji": {"name": "✅", "id": None}, "count": 1, "me": False}]}]
+    monkeypatch.setattr(ingest, "_reactors", lambda *a, **k: None)
+    assert ingest.poll_reactions_stream("mail", "ch", "tok", "OWNER", messages=msgs) == []
+    monkeypatch.setattr(ingest, "_reactors", lambda *a, **k: [{"id": "OWNER", "bot": False}])
+    assert len(ingest.poll_reactions_stream("mail", "ch", "tok", "OWNER", messages=msgs)) == 1
+
+
+def test_legacy_seen_list_still_loads(tmp_path, monkeypatch):
+    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
+    (tmp_path / "mail.reactions.seen").write_text('["m1:x:OWNER"]', encoding="utf-8")
+    assert ingest._load_seen("mail") == ({"m1:x:OWNER"}, {})
 
 
 # ------------------------------------------------------- one enumeration (registry + discovery)
@@ -278,6 +361,33 @@ def test_channels_disambiguates_duplicate_names(monkeypatch):
     assert len({n for n, _ in got}) == 2, "two channels a human named the same must stay distinct"
 
 
+def test_owner_dm_is_opened_once_and_cached_per_owner(tmp_path, monkeypatch):
+    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
+    opened = []
+
+    class Response:
+        def __init__(self, body):
+            self.body = body
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def read(self):
+            return self.body
+
+    def urlopen(request, timeout=None):
+        opened.append(json.loads(request.data)["recipient_id"])
+        return Response(json.dumps({"id": "5550001"}).encode())
+
+    monkeypatch.setattr(ingest.urllib.request, "urlopen", urlopen)
+    reg = {"big_brother": {"user_id": "1001"}}
+    assert _REAL_OWNER_DM(reg, "TOK") == "5550001"
+    assert _REAL_OWNER_DM(reg, "TOK") == "5550001"
+    assert opened == ["1001"], "the DM channel id is cached, not reopened every tick"
+    assert _REAL_OWNER_DM({"big_brother": {"user_id": "1002"}}, "TOK") == "5550001"
+    assert opened == ["1001", "1002"], "a different owner never reuses another owner's DM"
+
+
 def test_channels_includes_the_owner_dm(monkeypatch):
     """The digest lands in the DM, so replies get typed there. It was readable before the two
     readers merged and must not be lost in the merge."""
@@ -300,65 +410,6 @@ def test_key_falls_back_to_id_for_unsafe_names():
     assert ingest._key("#a/b", "5") == "5"
 
 
-# ------------------------------------------------------- cursor adoption (the replay hazard)
-def test_adopt_cursor_takes_the_NEWEST_of_the_old_schemes(tmp_path, monkeypatch):
-    """Two readers kept two cursors for the same channel. Merging them must take the newest.
-
-    Taking the older one replays every message in between back through the judgment chain, which
-    can enqueue real work from stale replies. Snowflakes are compared as numbers on purpose: these
-    two differ in length, so a string compare would pick the wrong one."""
-    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
-    older, newer = "999999999999999999", "1000000000000000000"   # newer is numerically larger
-    assert newer < older, "the string compare is wrong here, which is exactly the trap"
-    (tmp_path / "mail.last").write_text(newer)
-    (tmp_path / "gradient.77.last").write_text(older)
-    adopted, behind = ingest._adopt_cursor("77", "mail")
-    assert adopted == newer
-    assert behind == older, "the position stepped over must be reported, not forgotten"
-    assert (tmp_path / "77.last").read_text() == newer
-
-
-def test_adopt_cursor_never_overwrites_a_live_cursor(tmp_path, monkeypatch):
-    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
-    (tmp_path / "77.last").write_text("500")
-    (tmp_path / "mail.last").write_text("900")
-    assert ingest._adopt_cursor("77", "mail") == (None, None)
-    assert (tmp_path / "77.last").read_text() == "500", "the channel-keyed cursor is authoritative"
-
-
-def test_adopt_cursor_ignores_corrupt_values(tmp_path, monkeypatch):
-    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
-    (tmp_path / "mail.last").write_text("not-a-snowflake")
-    (tmp_path / "gradient.77.last").write_text("123")
-    assert ingest._adopt_cursor("77", "mail") == ("123", None)
-
-
-def test_migration_gap_is_recorded_not_executed(tmp_path, monkeypatch):
-    """The one-time cursor merge steps over messages. They must not be dispatched (that could
-    repeat an action already taken) and must not vanish either. They get written down."""
-    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
-    (tmp_path / "mail.last").write_text("300")          # ingest was here
-    (tmp_path / "gradient.77.last").write_text("500")   # the other reader was further ahead
-    spanned = [{"id": "500", "author": {"bot": False, "id": "OWNER"}, "content": "第二条",
-                "timestamp": "t2"},
-               {"id": "400", "author": {"bot": False, "id": "OWNER"}, "content": "被跨过的一条",
-                "timestamp": "t1"}]
-
-    def fake_fetch(ch, tok, after=None, limit=50):
-        if after == "300":
-            return spanned                              # the gap
-        if limit == 1:
-            return [spanned[0]]
-        return []                                       # nothing new after the merge
-
-    monkeypatch.setattr(ingest, "_fetch", fake_fetch)
-    got = ingest.poll_stream("mail", "77", "TOK", "OWNER")
-    assert got == [], "spanned messages are NOT returned for dispatch"
-    rec = (tmp_path / "mail.migrated.inbox").read_text(encoding="utf-8")
-    assert "被跨过的一条" in rec and "第二条" in rec, "but they are written down for a human"
-    assert (tmp_path / "77.last").read_text() == "500"
-
-
 def test_first_sight_of_a_channel_arms_and_processes_nothing(tmp_path, monkeypatch):
     """A newly discovered channel must not have its history replayed on the first tick."""
     monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
@@ -369,10 +420,10 @@ def test_first_sight_of_a_channel_arms_and_processes_nothing(tmp_path, monkeypat
     got = ingest.poll_stream("#新频道", "88", "TOK", "OWNER")
     assert got == [], "first sight arms the cursor, it does not back-process"
     assert (tmp_path / "88.last").read_text() == "300"
-    assert not (tmp_path / "88.inbox").exists()
+    assert inbound.pending(ingest.state_dir()) == []
 
 
-def test_poll_stream_writes_inbox_under_the_channel_key(tmp_path, monkeypatch):
+def test_poll_stream_stages_new_messages_before_moving_the_cursor(tmp_path, monkeypatch):
     monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
     (tmp_path / "88.last").write_text("100")
     monkeypatch.setattr(ingest, "_fetch", lambda ch, tok, after=None, limit=50: [
@@ -380,8 +431,51 @@ def test_poll_stream_writes_inbox_under_the_channel_key(tmp_path, monkeypatch):
          "timestamp": "2026-08-10T19:14:00Z"}])
     got = ingest.poll_stream("#常规", "88", "TOK", "OWNER")
     assert len(got) == 1
-    assert "开个新频道吧" in (tmp_path / "88.inbox").read_text(encoding="utf-8")
+    staged = inbound.pending(ingest.state_dir())
+    assert [row["payload"]["content"] for row in staged] == ["开个新频道吧"]
     assert (tmp_path / "88.last").read_text() == "101"
+
+
+def _message(identity, content="synthetic"):
+    return {"id": str(identity), "author": {"bot": False, "id": "OWNER"}, "content": content,
+            "timestamp": "t", "reactions": []}
+
+
+def test_one_sweep_reads_each_channel_once_for_text_and_reactions(tmp_path, monkeypatch):
+    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
+    for channel in ("1", "2"):
+        (tmp_path / ("%s.last" % channel)).write_text("100")
+    pages = {"1": [_message(102, "second"), _message(101, "first"), _message(100)],
+             "2": [_message(100)]}
+    fetches, enumerations = [], []
+    def fetch(ch, tok, after=None, limit=50):
+        fetches.append((ch, after))
+        return pages[ch]
+    monkeypatch.setattr(ingest, "_fetch", fetch)
+    monkeypatch.setattr(ingest, "channels",
+                        lambda reg, token, log=None: enumerations.append(1) or [("mail", "1"), ("infra", "2")])
+    reg = {"big_brother": {"user_id": "OWNER"}}
+    result = ingest.poll(reg, "TOK")
+    assert enumerations == [1], "channels are enumerated once per sweep"
+    assert fetches == [("1", None), ("2", None)], "each channel is read once"
+    assert result == {"text": {"mail": 2}, "reactions": {}}
+    assert [row["payload"]["content"] for row in inbound.pending(ingest.state_dir())] == ["first", "second"]
+    assert (tmp_path / "1.last").read_text() == "102"
+
+
+def test_a_full_page_newer_than_the_cursor_reads_from_the_cursor(tmp_path, monkeypatch):
+    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
+    (tmp_path / "1.last").write_text("100")
+    page = [_message(200 - index) for index in range(50)]           # 200..151, all newer
+    gap = [_message(150 - index) for index in range(50)]            # 150..101, after the cursor
+    calls = []
+    def fetch(ch, tok, after=None, limit=50):
+        calls.append(after)
+        return gap
+    monkeypatch.setattr(ingest, "_fetch", fetch)
+    got = ingest.poll_stream("mail", "1", "TOK", "OWNER", page=page)
+    assert calls == ["100"], "a page that may skip messages is not trusted as the backlog"
+    assert got[0]["id"] == "101" and (tmp_path / "1.last").read_text() == "150"
 
 
 def test_arm_reactions_baselines_existing(tmp_path, monkeypatch):

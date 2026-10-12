@@ -29,7 +29,7 @@ def defaults(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(case["home"]))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: case["home"]))
     monkeypatch.setattr(private_data, "SOURCE", case["source"])
-    for owner, attribute in ((ingest, "_STATE_DIR"), (dispatch, "_STATE_DIR"), (ingest_tick, "_LOG")):
+    for owner, attribute in ((ingest, "_STATE_DIR"), (ingest_tick, "_LOG")):
         monkeypatch.setattr(owner, attribute, None)
     return case
 
@@ -135,13 +135,11 @@ def test_default_namespaces_and_writers_use_the_selected_roots(defaults, monkeyp
     assert not (data / "digest.json").exists()
 
 
-def test_cli_reads_the_ingest_inbox_default_without_model_or_send(defaults, monkeypatch):
-    inbox = Path(ingest._inbox_file(defaults["stream"]))
-    with private_data.open_for_write(inbox, encoding="utf-8") as stream:
-        stream.write(defaults["record"])
+def test_cli_dispatches_the_given_reply_without_model_or_send(defaults, monkeypatch):
     calls = []
     monkeypatch.setattr(dispatch, "dispatch", lambda *args, **kwargs: calls.append((args, kwargs)) or True)
-    monkeypatch.setattr(sys, "argv", ["dispatch.py", "--stream", defaults["stream"], "--no-post"])
+    monkeypatch.setattr(sys, "argv", ["dispatch.py", "--stream", defaults["stream"],
+                                      "--reply", defaults["record"], "--no-post"])
     assert dispatch.main() == 0
     assert calls[0][0] == (defaults["stream"], defaults["record"])
     assert calls[0][1]["post"] is False

@@ -327,7 +327,8 @@ def test_source4_false_confirmation_retries_without_duplicate_actions(monkeypatc
     monkeypatch.setattr(dispatch, "get_state", lambda _: [])
     monkeypatch.setattr(dispatch, "get_work", lambda: [])
     monkeypatch.setattr(dispatch, "call_chain", lambda *args, **kwargs: plans.append(1) or json.dumps(F["plan"]))
-    monkeypatch.setattr(dispatch, "_rem", lambda *args: mutations.append(args) or {"item": F["created"]})
+    monkeypatch.setattr(dispatch.store, "ensure_item", lambda *args, **kwargs: mutations.append(args)
+                        or {"item": F["created"], "decision": "created"})
     monkeypatch.setattr(dispatch, "_has_webhook", lambda _: route == "relay")
     def send(*args, **kwargs):
         posts.append((args, kwargs))

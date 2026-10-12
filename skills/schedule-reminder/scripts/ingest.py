@@ -15,7 +15,7 @@ ONE ANSWER TO "WHICH CHANNELS DO WE READ" (see channels())
     fail to be handled, it failed to be SEEN, which leaves no trace anywhere.
 
     So: one enumeration, one cursor per channel, and the invariant in poll_stream, which is that a
-    message the bus read is either claimed by a handler or written to an inbox. Never neither.
+    message the bus read is staged as a durable inbound record before the cursor moves past it.
 
 REGISTRY (secret; env AGENT_CENTER_CONFIG, else the registry file in the Agent Center config dir)
     streams.<name>.channel_id   -- required to poll a REGISTERED stream (absent -> not pollable)
@@ -29,15 +29,19 @@ STATE (the Agent Center state dir)
     <channel_id>.last  -- last processed message id, keyed on the CHANNEL not the stream name.
                           A discovered channel's name is whatever a human typed (emoji, spaces, a
                           slash) and a rename would orphan a name-keyed cursor, which re-reads that
-                          channel's history and re-answers old messages. Cursors written under the
-                          older name-keyed scheme are adopted on first sight, see _adopt_cursor.
-    <key>.inbox        -- newest batch projection for human inspection; <key> is the stream
-                          name for registered streams, the channel id for discovered ones.
+                          channel's history and re-answers old messages.
+    owner-dm.channel   -- "<owner id>:<DM channel id>", so the DM is opened once, not every tick.
+    inbound/*.json     -- the durable record of every staged message and reaction (inbound.py);
+                          inspect those, there is no separate inbox file.
+
+ONE READ PER CHANNEL PER TICK
+    poll() enumerates the channels once and fetches each channel's newest 50 messages once. The
+    text pass takes the messages newer than the cursor from that page (and pages from the cursor
+    only when all 50 are newer), and the reaction pass reads the same page.
 
 CLI
-    ingest.py poll              # poll all streams; JSON {stream: n_new}; writes inboxes
+    ingest.py poll              # one sweep (text and reactions); JSON {"text":..., "reactions":...}
     ingest.py arm               # set every stream's last id to current latest (no back-processing)
-    ingest.py inbox --stream S  # print the pending inbox for a stream
     ingest.py list              # streams + channel_id + inbound flag (NO secrets)
 
 SECRETS: never logs/prints the bot token or webhook URLs. Stdlib only.
@@ -64,17 +68,8 @@ for _s in (sys.stdout, sys.stderr):
 
 _UA = "AgentCenter-Ingest/1.0 (+https://discord.com)"
 _API = "https://discord.com/api/v10"
-# Populated by poll_all(): {stream: (channel_id, [msg_id, ...])} for the messages picked up this
-# tick, so the caller can ack them with a reaction. Side-channel, not part of poll_all's return.
-LAST_POLL_IDS = {}
-# {stream: channel_id} for everything enumerated this tick, so a caller can answer IN the channel a
-# message came from. Without it a discovered channel's confirmation has no webhook to go to and
-# lands in a DM, which reads as the bot ignoring you.
-CHANNEL_OF = {}
-# {stream: (channel_id, [message, ...])} for this tick. The tick needs the MESSAGES, not just their
-# ids, because a command handler matches one message at a time: matching against the whole batch
-# would let an ordinary sentence that happens to contain a trigger word run a command.
-LAST_POLL_MSGS = {}
+_PAGE = 50
+_REACTOR_PAGE = 100
 _STATE_DIR = None
 
 
@@ -128,7 +123,7 @@ def _is_user(m, owner=None):
     With `owner` given, it must ALSO be that specific person. A reply can now enqueue real execution
     on this machine, so "any human in the channel" is the wrong audience; the reaction path has
     always narrowed to the owner and the text path used not to. Callers that hold a registry pass
-    the owner and MUST NOT fall back to None when it is unset (see poll_all): an unresolvable owner
+    the owner and MUST NOT fall back to None when it is unset (see poll): an unresolvable owner
     has to close this gate, not open it."""
     a = m.get("author") or {}
     if a.get("bot", False) or m.get("webhook_id"):
@@ -143,19 +138,15 @@ def _last_file(channel_id):
     return os.path.join(state_dir(), "%s.last" % channel_id)
 
 
-def _inbox_file(stream):
-    return os.path.join(state_dir(), "%s.inbox" % stream)
-
-
 _SAFE_KEY = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def _key(stream, channel_id):
     """Filename-safe state key: the stream name when it is one, else the channel id.
 
-    Registered streams keep their historical file names (mail.inbox stays mail.inbox, and
-    `dispatch.py --stream mail` keeps working). A discovered channel is named by whatever the human
-    typed, which is not a filename, so it falls back to its id."""
+    Registered streams keep their historical file names (mail.reactions.seen). A discovered
+    channel is named by whatever the human typed, which is not a filename, so it falls back to
+    its id."""
     return stream if stream and _SAFE_KEY.match(stream) else str(channel_id)
 
 
@@ -199,25 +190,44 @@ def discovered_channels(reg, token, log=None):
     return out
 
 
+def _dm_cache_file():
+    return os.path.join(state_dir(), "owner-dm.channel")
+
+
 def owner_dm_channel(reg, token):
     """The DM channel with the operator, opened if it does not exist yet, or None.
 
     A bot's own DM is a natural place to type at it, and the backdrop bot accepted commands there
     before the readers were merged. Returns None rather than raising: a DM being unreachable must
-    cost the DM, not the guild sweep."""
-    uid = (reg.get("big_brother") or {}).get("user_id")
+    cost the DM, not the guild sweep. A DM channel's id never changes, so it is opened once and
+    cached per owner; only a missing or different-owner cache opens it again."""
+    uid = str((reg.get("big_brother") or {}).get("user_id") or "")
     if not uid:
         return None
     try:
+        with open(_dm_cache_file(), encoding="utf-8") as f:
+            cached_uid, _, cached = f.read().strip().partition(":")
+        if cached_uid == uid and cached.isdigit():
+            return cached
+    except OSError:
+        pass
+    try:
         req = urllib.request.Request(
             "%s/users/@me/channels" % _API, method="POST",
-            data=json.dumps({"recipient_id": str(uid)}).encode("utf-8"),
+            data=json.dumps({"recipient_id": uid}).encode("utf-8"),
             headers={"Authorization": "Bot %s" % token, "User-Agent": _UA,
                      "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=20) as r:
-            return str(json.loads(r.read().decode("utf-8"))["id"])
+            channel = str(json.loads(r.read().decode("utf-8"))["id"])
     except Exception:
         return None
+    try:
+        prepare_state()
+        with private_data.open_for_write(_dm_cache_file(), "w", encoding="utf-8") as f:
+            f.write("%s:%s" % (uid, channel))
+    except (OSError, ValueError):
+        pass  # an unwritable cache costs one request per tick, never the DM itself
+    return channel
 
 
 def channels(reg, token=None, discover=True, log=None):
@@ -243,77 +253,6 @@ def channels(reg, token=None, discover=True, log=None):
         if dm and dm not in seen and dm not in _opted_out(reg):
             out.append(("dm", dm))
     return out
-
-
-def _adopt_cursor(channel_id, stream):
-    """Seed a channel-keyed cursor from the older name-keyed ones, ONCE, before the first poll.
-
-    Returns (adopted, behind): the position taken, and the OTHER scheme's position when the two
-    disagreed (else None).
-
-    Two schemes preceded this: ingest wrote <stream>.last, and the backdrop bot wrote
-    gradient.<channel_id>.last for the same channel. They ran on different timers, so their
-    positions differ, and neither choice is free:
-
-      take the older -> every message in between is replayed through the judgment chain, which can
-                        enqueue real work a second time from a reply already acted on;
-      take the newer -> those same messages are never processed at all.
-
-    Repeating an action is the worse failure, so this takes the NEWEST and the caller records the
-    gap instead of executing it (see poll_stream). Snowflakes are compared numerically: they differ
-    in length, so a string compare would order them wrongly."""
-    target = _last_file(channel_id)
-    if os.path.exists(target):
-        return None, None
-    found = []
-    for cand in (os.path.join(state_dir(), "%s.last" % stream) if stream else None,
-                 os.path.join(state_dir(), "gradient.%s.last" % channel_id)):
-        if not cand or not os.path.exists(cand):
-            continue
-        try:
-            with open(cand) as f:
-                v = f.read().strip()
-            int(v)                           # parse BEFORE comparing: an `is None` short circuit
-        except (OSError, ValueError):        # would otherwise let a corrupt value through
-            continue
-        found.append(v)
-    if not found:
-        return None, None
-    best = max(found, key=int)
-    behind = min(found, key=int) if len(found) > 1 and min(found, key=int) != best else None
-    prepare_state()
-    with private_data.open_for_write(target, "w") as f:
-        f.write(best)
-    return best, behind
-
-
-def _record_migration_gap(stream, channel_id, token, behind, adopted, log=None):
-    """Write down what the cursor merge stepped over, once, for a human to read.
-
-    These messages sat between two disagreeing cursors during the one-time migration. They are NOT
-    dispatched: whatever they asked for was most likely already acted on by the reader that was
-    ahead, and re-running the judgment chain on them could repeat a real action. But they are also
-    not allowed to disappear in silence, because 'a message the bus saw is written down somewhere'
-    is the invariant this whole reorganisation is built on, and a migration is exactly when a
-    system is most tempted to make an exception to its own rule."""
-    try:
-        msgs = _fetch(channel_id, token, after=behind)
-        missed = [m for m in reversed(msgs) if int(m["id"]) <= int(adopted) and _is_user(m)]
-    except Exception as e:
-        if log:
-            log("ingest: could not read the migration gap for %s (%s)" % (stream, type(e).__name__))
-        return
-    if not missed:
-        return
-    path = os.path.join(state_dir(), "%s.migrated.inbox" % _key(stream, channel_id))
-    private_data.prepare_parent(path)
-    with private_data.open_for_write(path, "w", encoding="utf-8") as f:
-        f.write("(游标迁移:以下 %d 条消息位于两个旧游标之间,已记录但未自动执行,请人工过目)\n---\n"
-                % len(missed))
-        f.write(format_messages(missed))
-    if log:
-        log("ingest: %s -> %d message(s) spanned by the cursor merge, recorded in %s"
-            % (stream, len(missed), os.path.basename(path)))
 
 
 def _reaction_baseline_file(channel_id):
@@ -349,18 +288,19 @@ def _admit_channel(channel_id, token, owner):
     return baseline
 
 
-def poll_stream(stream, channel_id, token, owner=None, log=None):
-    """Return list of new user-reply message dicts (oldest first); advance the cursor; write inbox.
+def poll_stream(stream, channel_id, token, owner=None, log=None, page=None):
+    """Return list of new user-reply message dicts (oldest first); stage them; advance the cursor.
 
-    THE INVARIANT: whatever this advances the cursor past is either returned to the caller (which
-    then dispatches it) or was never the owner's to begin with. There is no third outcome where a
-    message is consumed and dropped. A reader that skips what it does not recognise, and advances
-    anyway, makes the message disappear with no error and no record; that is the bug this bus was
-    reorganised around, and it is why the cursor write and the inbox write live in one function."""
+    THE INVARIANT: whatever this advances the cursor past is either staged as durable inbound work
+    or was never the owner's to begin with. There is no third outcome where a message is consumed
+    and dropped. A reader that skips what it does not recognise, and advances anyway, makes the
+    message disappear with no error and no record; that is the bug this bus was reorganised
+    around, and it is why staging and the cursor write live in one function.
+
+    `page` is the channel's newest messages (newest first) already read this tick; the new ones are
+    taken from it unless every message on a full page is newer than the cursor, in which case the
+    read continues from the cursor as it does without a page."""
     prepare_state()
-    adopted, behind = _adopt_cursor(channel_id, stream)
-    if behind:
-        _record_migration_gap(stream, channel_id, token, behind, adopted, log=log)
     lf = _last_file(channel_id)
     after = None
     if os.path.exists(lf):
@@ -380,23 +320,25 @@ def poll_stream(stream, channel_id, token, owner=None, log=None):
             f.flush()
             os.fsync(f.fileno())
         return []
-    msgs = _fetch(channel_id, token, after=after)
+    msgs = None
+    if page is not None:
+        msgs = [m for m in page if int(m["id"]) > int(after)]
+        if len(msgs) >= _PAGE and len(msgs) == len(page):
+            msgs = None                   # possibly more between the cursor and this page
+    if msgs is None:
+        msgs = _fetch(channel_id, token, after=after)
     if not msgs:
         return []
-    if log and len(msgs) >= 50:
+    if log and len(msgs) >= _PAGE:
         # One page, no pagination loop, and the cursor advances to the newest of this page. A full
         # page means the read may be partial; say so instead of letting it look complete.
         log("ingest: %s -> read a full page of %d message(s); this poll may not have covered the "
             "whole backlog" % (stream, len(msgs)))
     users = [m for m in reversed(msgs) if _is_user(m, owner)]  # oldest first
+    # Every message read is staged, including ones a command handler will claim a moment later;
+    # the tick decides separately what to forward to the judgment chain.
     for message in users:
         inbound.stage(stream, channel_id, message.get("id"), "text", message, state_dir())
-    if users:
-        # The inbox records EVERY message read, including ones a command handler will claim a
-        # moment later. It is the durable trace that the bus saw them; the tick decides separately
-        # what to forward to the judgment chain.
-        with private_data.open_for_write(_inbox_file(_key(stream, channel_id)), "w", encoding="utf-8") as f:
-            f.write(format_messages(users))
     with private_data.open_for_write(lf, "w") as f:
         f.write(msgs[0]["id"])
         f.flush()
@@ -405,8 +347,7 @@ def poll_stream(stream, channel_id, token, owner=None, log=None):
 
 
 def format_messages(msgs):
-    """The inbox rendering of a batch. Shared so what dispatch judges and what the inbox records
-    cannot drift apart into two different texts."""
+    """The text rendering of a batch that dispatch judges."""
     out = []
     for m in msgs:
         out.append("[%s]\n" % m.get("timestamp", ""))
@@ -418,59 +359,23 @@ def format_messages(msgs):
     return "".join(out)
 
 
-def poll_all(reg=None, token=None, log=None):
-    reg = reg if reg is not None else load_registry()
-    token = token or bot_token(reg)
-    if not token:
-        raise RuntimeError("no bot token: set registry.reader.bot_token_ref (or reader.bot_token) in the Agent Center registry")
-    # Fail CLOSED on an unresolvable owner. A reply can enqueue execution on this machine, so an
-    # unset owner must stop the poll rather than quietly widen it to everyone who can post in the
-    # channel. This mirrors the missing-token guard directly above.
-    owner = owner_id(reg)
-    if not owner:
-        raise RuntimeError("no owner: set registry.big_brother.user_id; inbound replies are "
-                           "owner-only because they can start real work")
-    result = {}
-    # Side-channel for the ack-reaction feature: {stream: (channel_id, [msg_id, ...])}. Kept OUT of
-    # the return value so poll_all's {stream: count} contract stays intact for existing callers.
-    global LAST_POLL_IDS, LAST_POLL_MSGS, CHANNEL_OF
-    LAST_POLL_IDS = {}
-    LAST_POLL_MSGS = {}
-    CHANNEL_OF = {}
-    for stream, ch in channels(reg, token, log=log):
-        CHANNEL_OF[stream] = ch
-        try:
-            users = poll_stream(stream, ch, token, owner, log=log)
-            if users:
-                result[stream] = len(users)
-                LAST_POLL_IDS[stream] = (ch, [m["id"] for m in users if m.get("id")])
-                LAST_POLL_MSGS[stream] = (ch, users)
-                if log:
-                    log("ingest: %s -> %d new reply(ies)" % (stream, len(users)))
-        except Exception as e:
-            if log:
-                log("ingest: %s poll error: %s" % (stream, type(e).__name__))
-    return result
-
-
 # ---------------------------------------------------------------- reactions (emoji replies)
 # The user often answers a pushed alert by REACTING with an emoji instead of typing. A reaction
 # lands on the webhook/bot alert itself (which poll_stream deliberately skips) and creates NO new
 # message (so the `after` cursor never sees it). Reactions therefore get their own path: scan
 # recent messages, read each message's `reactions`, confirm the OWNER reacted (not the bot),
-# dedup against a per-stream seen-set, and synthesize an inbox line dispatch can judge like any
-# other reply. Reading reactions over REST does NOT need the Message Content Intent.
+# dedup against a per-stream seen-set, and stage a durable reaction record dispatch can judge like
+# any other reply. Reading reactions over REST does NOT need the Message Content Intent.
 #
 # Extra STATE (the Agent Center state dir)
-#     <stream>.reactions.seen   -- JSON list of processed "msgid:emoji:userid" keys (bounded)
-#     <stream>.reactions.inbox  -- newest batch projection for human inspection
+#     <stream>.reactions.seen   -- {"keys": processed "msgid:emoji:userid" keys, "counts":
+#                                  {"msgid:emoji": reaction count at the last complete reactor
+#                                  read}}, both bounded to the recent window. A reaction whose
+#                                  count has not changed is not read again. (An older file holding
+#                                  a bare key list still loads; its counts start empty.)
 
 def owner_id(reg):
     return str((reg.get("big_brother") or {}).get("user_id") or "").strip() or None
-
-
-_EMOJI_HINTS = ("✅✔️☑️👍=完成/已处理/确认/是; ❌🚫👎=取消/忽略/否; 👀=已看到; "
-                "⏰🔔😴=稍后再提醒(snooze); ❓=需要更多信息")
 
 
 def _emoji_ref(emoji):
@@ -482,14 +387,15 @@ def _emoji_ref(emoji):
     return (name, urllib.parse.quote(name))
 
 
-def _reactors(channel_id, msg_id, api_ref, token, limit=100, strict=False):
+def _reactors(channel_id, msg_id, api_ref, token, limit=_REACTOR_PAGE, strict=False):
+    """The reactor page, or None when it could not be read (strict raises instead)."""
     try:
         users = _get("%s/channels/%s/messages/%s/reactions/%s?limit=%d"
                      % (_API, channel_id, msg_id, api_ref, limit), token)
     except Exception:
         if strict:
             raise
-        return []
+        return None
     if len(users) >= limit:
         if strict:
             raise RuntimeError("channel admission requires a complete reactor snapshot")
@@ -501,26 +407,26 @@ def _reactors(channel_id, msg_id, api_ref, token, limit=100, strict=False):
     return users
 
 
-def _reactions_inbox_file(stream):
-    return os.path.join(state_dir(), "%s.reactions.inbox" % stream)
-
-
 def _seen_file(stream):
     return os.path.join(state_dir(), "%s.reactions.seen" % stream)
 
 
 def _load_seen(stream):
+    """(keys, counts); an unreadable file reads as empty, a bare list as keys without counts."""
     try:
         with open(_seen_file(stream), encoding="utf-8") as f:
-            return set(json.load(f))
+            value = json.load(f)
+        if isinstance(value, dict):
+            return set(value.get("keys") or []), dict(value.get("counts") or {})
+        return set(value), {}
     except Exception:
-        return set()
+        return set(), {}
 
 
-def _save_seen(stream, seen):
+def _save_seen(stream, seen, counts=None):
     prepare_state()
     with private_data.open_for_write(_seen_file(stream), "w", encoding="utf-8") as f:
-        json.dump(sorted(seen), f)
+        json.dump({"keys": sorted(seen), "counts": dict(sorted((counts or {}).items()))}, f)
 
 
 def _snippet(text, n=280):
@@ -528,9 +434,13 @@ def _snippet(text, n=280):
     return (t[:n] + "…") if len(t) > n else t
 
 
-def reaction_events(channel_id, token, owner, msgs, strict=False):
+def reaction_events(channel_id, token, owner, msgs, strict=False, counts=None):
     """(events, all_owner_keys) for owner reactions on `msgs`. Pure of persisted state.
-    Each event: {key, message_id, emoji, content, timestamp}. key = 'msgid:emoji:userid'."""
+    Each event: {key, message_id, emoji, content, timestamp}. key = 'msgid:emoji:userid'.
+
+    With `counts` ({"msgid:emoji": count} from the last tick), a reaction whose count is unchanged
+    is skipped without reading its reactors (its keys are already in the seen set), and `counts`
+    is updated in place with every count whose reactors were read completely."""
     if not owner:
         raise RuntimeError("reaction polling requires an explicit owner")
     owner = str(owner)
@@ -543,8 +453,15 @@ def reaction_events(channel_id, token, owner, msgs, strict=False):
                 continue  # only the bot itself reacted -> nothing from the user
             disp, api_ref = _emoji_ref(emoji)
             ekey = emoji.get("id") or emoji.get("name") or "?"
+            slot = "%s:%s" % (mid, ekey)
+            if counts is not None and counts.get(slot) == rx.get("count"):
+                continue
             users = (_reactors(channel_id, mid, api_ref, token, strict=True) if strict
                      else _reactors(channel_id, mid, api_ref, token))
+            if users is None:
+                continue  # unread this tick; its count is not recorded, so the next tick retries
+            if counts is not None and len(users) < _REACTOR_PAGE:
+                counts[slot] = rx.get("count")   # a full page may be partial: read it again
             for u in users:
                 uid = str(u.get("id") or "")
                 if u.get("bot") or (owner and uid != owner):
@@ -556,35 +473,34 @@ def reaction_events(channel_id, token, owner, msgs, strict=False):
     return events, keys
 
 
-def poll_reactions_stream(stream, channel_id, token, owner, limit=50):
-    """New owner reactions on recent messages -> write synthesized inbox; return new events."""
+def poll_reactions_stream(stream, channel_id, token, owner, limit=_PAGE, messages=None):
+    """New owner reactions on recent messages -> staged durable records; return new events.
+
+    `messages` is the page this tick already read for the channel (newest first)."""
     if not owner:
         raise RuntimeError("reaction polling requires an explicit owner")
     prepare_state()
     stream_name = stream
     stream = _key(stream, channel_id)
-    msgs = _fetch(channel_id, token, limit=limit)  # recent, newest first
+    msgs = messages if messages is not None else _fetch(channel_id, token, limit=limit)
     if not msgs:
         return []
-    seen = _load_seen(stream)
+    stored, stored_counts = _load_seen(stream)
+    seen = set(stored)
     baseline = _reaction_baseline(channel_id, owner)
     if baseline is not None:
         seen.update(baseline["reaction_keys"])
-    all_events, all_keys = reaction_events(channel_id, token, owner, msgs)
+    counts = dict(stored_counts)
+    all_events, all_keys = reaction_events(channel_id, token, owner, msgs, counts=counts)
     window = {m["id"] for m in msgs}
     new = [e for e in all_events if e["key"] not in seen]
-    # Stage durable work before writing the projection and bounded seen-set.
+    # Stage durable work before writing the bounded seen-set.
     for event in new:
         inbound.stage(stream_name, channel_id, event["key"], "reaction", event, state_dir())
-    if new:
-        with private_data.open_for_write(_reactions_inbox_file(stream), "w", encoding="utf-8") as f:
-            f.write("(以下是用户用 emoji 反应回复的, 不是打字。emoji 含义参考: %s)\n---\n" % _EMOJI_HINTS)
-            for e in new:
-                f.write("[reaction %s] 用户在这条推送上点了「%s」\n" % (e["timestamp"], e["emoji"]))
-                if e["content"]:
-                    f.write("被反应的推送内容: %s\n" % e["content"])
-                f.write("---\n")
-    _save_seen(stream, {k for k in (seen | all_keys) if k.split(":", 1)[0] in window})
+    keys = {k for k in (seen | all_keys) if k.split(":", 1)[0] in window}
+    counts = {slot: n for slot, n in counts.items() if slot.split(":", 1)[0] in window}
+    if keys != stored or counts != stored_counts:
+        _save_seen(stream, keys, counts)
     return new
 
 
@@ -647,30 +563,58 @@ def ack_done(channel_id, msg_id, token):
     return ok
 
 
-def poll_all_reactions(reg=None, token=None, log=None):
+def poll(reg=None, token=None, log=None, deadline=None):
+    """One sweep of every channel: {"text": {stream: n}, "reactions": {stream: n}}.
+
+    Channels are enumerated once and each channel's newest page is read once; the text pass and
+    the reaction pass both work from it. The reaction pass runs only for a channel whose text
+    cursor exists, because admitting a channel (poll_stream) is what records the reaction
+    baseline that keeps old reactions from being replayed. `deadline` (time.monotonic()) stops
+    the sweep from starting another channel once it has passed; the rest wait for the next tick."""
     reg = reg if reg is not None else load_registry()
     token = token or bot_token(reg)
     if not token:
         raise RuntimeError("no bot token: set registry.reader.bot_token_ref (or reader.bot_token) in the Agent Center registry")
+    # Fail CLOSED on an unresolvable owner. A reply can enqueue execution on this machine, so an
+    # unset owner must stop the poll rather than quietly widen it to everyone who can post in the
+    # channel. This mirrors the missing-token guard directly above.
     owner = owner_id(reg)
     if not owner:
-        raise RuntimeError("reaction polling requires an explicit owner")
-    result = {}
-    global CHANNEL_OF
+        raise RuntimeError("no owner: set registry.big_brother.user_id; inbound replies are "
+                           "owner-only because they can start real work")
+    text, reactions = {}, {}
     for stream, ch in channels(reg, token, log=log):
-        CHANNEL_OF.setdefault(stream, ch)
+        if deadline is not None and time.monotonic() > deadline:
+            if log:
+                log("ingest: poll budget spent; the remaining channels wait for the next tick")
+            break
         try:
-            if not os.path.exists(_last_file(ch)):
-                poll_stream(stream, ch, token, owner, log=log)
-            new = poll_reactions_stream(stream, ch, token, owner)
+            page = _fetch(ch, token, limit=_PAGE)  # newest first
+        except Exception as e:
+            if log:
+                log("ingest: %s poll error: %s" % (stream, type(e).__name__))
+            continue
+        try:
+            users = poll_stream(stream, ch, token, owner, log=log, page=page)
+            if users:
+                text[stream] = len(users)
+                if log:
+                    log("ingest: %s -> %d new reply(ies)" % (stream, len(users)))
+        except Exception as e:
+            if log:
+                log("ingest: %s poll error: %s" % (stream, type(e).__name__))
+        if not os.path.exists(_last_file(ch)):
+            continue
+        try:
+            new = poll_reactions_stream(stream, ch, token, owner, messages=page)
             if new:
-                result[stream] = len(new)
+                reactions[stream] = len(new)
                 if log:
                     log("ingest: %s -> %d new reaction(s)" % (stream, len(new)))
         except Exception as e:
             if log:
                 log("ingest: %s reaction poll error: %s" % (stream, type(e).__name__))
-    return result
+    return {"text": text, "reactions": reactions}
 
 
 def arm_reactions(reg, token):
@@ -691,11 +635,8 @@ def main():
     ap = argparse.ArgumentParser(prog="ingest.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("poll")
-    sub.add_parser("reactions")
     sub.add_parser("arm")
     sub.add_parser("list")
-    pi = sub.add_parser("inbox")
-    pi.add_argument("--stream", required=True)
     a = ap.parse_args()
     reg = load_registry()
 
@@ -711,10 +652,6 @@ def main():
         except Exception as e:
             out["discovered"] = "unavailable (%s)" % type(e).__name__
         print(json.dumps(out, ensure_ascii=False, indent=2))
-        return 0
-    if a.cmd == "inbox":
-        p = _inbox_file(a.stream)
-        print(open(p, encoding="utf-8").read() if os.path.exists(p) else "")
         return 0
     if a.cmd == "arm":
         tok = bot_token(reg)
@@ -738,11 +675,7 @@ def main():
         print(json.dumps({"armed": n, "armed_reactions": rn}))
         return 0
     if a.cmd == "poll":
-        res = poll_all(reg, log=lambda m: print(m, file=sys.stderr))
-        print(json.dumps(res, ensure_ascii=False))
-        return 0
-    if a.cmd == "reactions":
-        res = poll_all_reactions(reg, log=lambda m: print(m, file=sys.stderr))
+        res = poll(reg, log=lambda m: print(m, file=sys.stderr))
         print(json.dumps(res, ensure_ascii=False))
         return 0
     return 2

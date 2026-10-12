@@ -54,7 +54,8 @@ def test_agent_op_enqueues_work_not_a_todo(monkeypatch):
                         lambda stream, request, workspace=None, **k:
                         made.append((stream, request, workspace)) or {"id": "wo-1"})
     calls = []
-    monkeypatch.setattr(dispatch, "_rem", lambda *a: calls.append(a) or {})
+    for mutation in ("add_item", "ensure_item"):
+        monkeypatch.setattr(dispatch.store, mutation, lambda *a, **k: calls.append(("add",) + a) or {})
     plan = {"actions": [{"op": "agent", "request": "把每天早上发图那个任务停掉",
                          "workspace": None, "why": "用户要求"}]}
     res = dispatch.execute("crypto", dispatch.STREAMS["crypto"], plan, [])
@@ -422,7 +423,7 @@ def test_poll_refuses_to_run_without_a_known_owner(monkeypatch):
     reg = {"streams": {"crypto": {"channel_id": "1"}}, "reader": {"bot_token": "t"}}
     monkeypatch.setattr(ingest, "_fetch", lambda *a, **k: pytest.fail("polled without an owner"))
     with pytest.raises(RuntimeError) as e:
-        ingest.poll_all(reg)
+        ingest.poll(reg)
     assert "owner" in str(e.value)
 
 

@@ -142,10 +142,11 @@ and records the resulting actions and confirmations. It uses the configured bot 
 enumeration described below.
 
 ```
-python ingest.py poll                  # read Discord; persist each channel's cursor and inbox
+python ingest.py poll                  # read Discord; stage new replies and reactions, move cursors
 python ingest.py list                  # registered streams AND what guild discovery adds
-python dispatch.py --stream <name>     # judge one stream's inbox -> execute -> confirm
+python dispatch.py --stream <name> --reply <text>   # judge one reply -> execute -> confirm
 python ingest_tick.py                  # scheduled entrypoint: poll -> commands -> dispatch
+python ingest_tick.py --retry-command <id>  # rearm one failed record after checking its effects
 ```
 
 ### Which channels are read, and the invariant that comes with it
@@ -156,19 +157,23 @@ guild, and the operator's DM. Explicitly excluded channels stay excluded during 
 
 A registry of outbound destinations can omit channels where the user gives instructions.
 Guild discovery prevents that omission from becoming an unread command. Every message read
-must be claimed by a handler or written to an inbox:
+is staged as a durable inbound record before its cursor moves:
 
-- `poll_stream` writes the cursor and the inbox in one function, and the inbox records the whole
-  batch including messages a handler is about to claim: the durable trace of what was seen is kept
-  separately from the decision about what to act on.
+- `poll_stream` stages every owner message, including ones a handler is about to claim, and then
+  writes the cursor, in one function: the durable trace of what was seen (`inbound/*.json`) is kept
+  separately from the decision about what to act on. There is no separate inbox file.
+- **One read per channel per tick.** `ingest.poll()` enumerates the channels once (the operator's
+  DM channel id is cached in `owner-dm.channel`, so it is opened once, not every tick) and reads
+  each channel's newest 50 messages once. The text pass takes the messages newer than the cursor
+  from that page, and reads from the cursor instead only when all 50 are newer; the reaction pass
+  reads the same page. A reaction whose count has not changed since the last tick is not read
+  again, and the seen file is rewritten only when it changes.
 - `commands.route` returns `(claimed, remaining)` and the two must add up to the input.
 - **Opting out is explicit and survives discovery**: either `inbound: false` or `listen: false`
   excludes the channel from reads, and the guild sweep may not add it back.
 - **Cursors are keyed on the CHANNEL ID**, not the stream name: a discovered channel's name is
   whatever a human typed, and a rename would orphan a name-keyed cursor and replay that channel's
-  history. Cursors from the two older name-keyed schemes are adopted once, taking the NEWEST of
-  them; whatever the merge stepped over is written to `<key>.migrated.inbox` for a human rather
-  than dispatched, because repeating an action already taken is worse than reporting a gap.
+  history.
 
 ### Commands, the deterministic half
 
@@ -180,7 +185,7 @@ judgment chain, and a claimed message never reaches a model.
 "gradient": {
   "trigger": "^\\s*(?:gradient|bg|背景)\\b",   // python regex, matched per message
   "exec": ["python", "~/path/to/tool.py", "handle"],
-  "timeout": 300
+  "timeout": 300      // seconds; the tick clamps it to what is left of its time budget
 }
 ```
 
@@ -198,9 +203,25 @@ judgment chain, and a claimed message never reaches a model.
 - **Judge, then execute (two-phase, anti-hallucination).** `dispatch.py` gathers the stream's
   actionable state (active pool items as `id | title`), asks the installed `llmcall` judge
   for a compact JSON *action plan*
-  `{actions:[{op:done|snooze|create,...}], confirm}`, then a **deterministic** executor runs it via
-  `reminder.py`. The executor only touches ids that were shown to the model, a hallucinated id is
-  silently skipped, never acted on.
+  `{actions:[{op:done|snooze|create,...}], confirm}`, then a **deterministic** executor runs it
+  through the store in process (the same functions `reminder.py` wraps, with actor
+  `agent-center-dispatch` and the action identity as the creation idempotency key). The executor
+  only touches ids that were shown to the model; a hallucinated id is rejected, never acted on.
+- **Retries reuse the plan.** The plan and its authorization snapshot are saved before anything
+  runs. A retry does not ask the model again or rebuild the state listing: it reads only the saved
+  targets (which authorized items are still active, which authorized orders still run) and re-runs
+  only actions whose outcome failed.
+- **Finished, retried or given up.** A reply is finished once its plan ran without a failed action
+  and the confirmation was delivered; a rejected action is final and is listed in the
+  confirmation. A failed action, an undelivered confirmation or a planner that returned no usable
+  plan leaves the record pending for the next tick, at most `inbound.MAX_FAILURES` (3) attempts.
+  Then the record becomes `failed` and waits for `ingest_tick.py --retry-command <id>`. Only the
+  last planning attempt posts "自动解析失败" in the channel.
+- **One time budget per tick.** The tick stops starting channel reads and pending records after
+  60 s (the rest wait for the next tick), bounds the planner call by the remaining budget (at most
+  120 s) and clamps command handlers the same way, so a tick ends inside the task's 4-minute
+  limit instead of being killed mid-call. The dispatch and command layers are imported only when
+  something is pending.
 - **Per-stream handler** (`STREAMS` in `dispatch.py`): `mail` → reconcile the **email-monitor** task
   pool (done/snooze/create with `source=email-monitor`); `reminders` → done/snooze any active
   reminder; every other stream → generic create-a-followup + confirm (`source=agent-center:<stream>`).
@@ -213,16 +234,16 @@ judgment chain, and a claimed message never reaches a model.
   themselves. Bot token: the resolver above (`AGENT_CENTER_BOT_TOKEN`, `reader.bot_token_ref` or
   `reader.bot_token`).
   Same urllib `User-Agent` gotcha as relay (Discord 403s the default).
-- **Cursors & inboxes** live in `<state-dir>/<channel-id>.last` and `<state-dir>/<key>.inbox` under
-  the Agent Center config dir, where `<key>` is the stream name for registered streams and the
-  channel id for discovered ones. First contact with a channel **arms** the cursor (records latest
+- **Cursors** live in `<state-dir>/<channel-id>.last` under the Agent Center config dir, and the
+  reaction seen sets in `<state-dir>/<key>.reactions.seen`, where `<key>` is the stream name for
+  registered streams and the channel id for discovered ones. First contact with a channel **arms** the cursor (records latest
   id, processes nothing): back-processing a newly discovered channel would replay its whole visible
   history through the judgment chain and could enqueue real work from months-old messages.
 - **Schedule**: Windows task **AgentCenterIngestTick** (PT10M) runs `ingest_tick.py`; it supersedes
   the retired ad-hoc `AgentCenterMailTick` (mail-only loop).
 - **Owner only, fail closed.** A text reply counts only when its author is
   `registry.big_brother.user_id`, the same person the reaction path has always required. If no owner
-  is configured `poll_all` RAISES instead of falling back to "anyone in the channel": these replies
+  is configured `poll` RAISES instead of falling back to "anyone in the channel": these replies
   can start real execution, so an unresolvable owner has to close the gate rather than open it.
 
 ## Execution, when a reply asks for something to HAPPEN

@@ -517,49 +517,22 @@ def schedule10_review_cases():
 
 def schedule11_query_cases():
     """Generate complete queue reads and failures that must never authorize an action."""
-    from copy import deepcopy
     def item(identity, execution="queued"):
         return {"id": identity, "title": "Synthetic work " + identity,
                 "state": "doing" if execution in ("running", "stop_pending") else "pending",
                 "ext": {"x_agent_exec_state": execution, "x_agent_exec_stream": "infra"}}
     first = [item("synthetic-%03d" % index) for index in range(100)]
-    page = {"items": first, "next_cursor": first[-1]["id"]}
-    empty = {"items": [], "next_cursor": None}
-    bad_pages = {
-        "busy": {"_err": "ERR_BUSY"},
-        "error_envelope": {"error_code": "ERR_BUSY"},
-        "non_object": [],
-        "missing_items": {"next_cursor": None},
-        "missing_boundary": {"items": []},
-        "non_list_items": {"items": {}, "next_cursor": None},
-        "non_object_item": {"items": [None], "next_cursor": None},
-        "missing_identity": {"items": [{}], "next_cursor": None},
-        "non_text_identity": {"items": [{"id": []}], "next_cursor": None},
-        "empty_cursor": {"items": [], "next_cursor": ""},
-        "non_text_cursor": {"items": [], "next_cursor": 1},
-        "short_nonterminal_page": {"items": [item("synthetic-100")], "next_cursor": "synthetic-100"},
-    }
-    failures = []
-    for name, bad in bad_pages.items():
-        for later in (False, True):
-            failures.append({"name": name + ("_later" if later else "_first"),
-                             "pages": [deepcopy(page), deepcopy(bad)] if later else [deepcopy(bad)]})
-    failures.append({"name": "repeated_page", "pages": [deepcopy(page), deepcopy(page)]})
     positives = [
-        {"name": "empty", "pages": [empty], "expected": []},
-        {"name": "multipage_running", "pages": [deepcopy(page), {"items": [item("synthetic-100", "running")], "next_cursor": None}],
-         "expected": first + [item("synthetic-100", "running")]},
-        {"name": "multipage_stopping", "pages": [deepcopy(page), {"items": [item("synthetic-100", "stop_pending")], "next_cursor": None}],
-         "expected": first + [item("synthetic-100", "stop_pending")]},
+        {"name": "empty", "expected": []},
+        {"name": "multipage_running", "expected": first + [item("synthetic-100", "running")]},
+        {"name": "multipage_stopping", "expected": first + [item("synthetic-100", "stop_pending")]},
     ]
     found = item("wo-1")
-    dispatch_failures = [{**deepcopy(case), "name": "pool_" + case["name"], "route": "pool"}
-                         for case in failures
-                         if case["name"] in ("busy_first", "busy_later", "missing_boundary_first", "repeated_page")]
-    return {"page_failures": failures, "positives": positives,
-            "dispatch_failures": dispatch_failures, "found": {"item": found}, "identity": "wo-1",
+    return {"positives": positives, "found": {"item": found}, "identity": "wo-1",
             "reply": "Perform the synthetic maintenance task.",
-            "plan": {"actions": []}, "stream": "infra"}
+            "plan": {"actions": []}, "stream": "infra",
+            "retry_plans": {"active_ids": {"actions": [{"op": "done", "id": "wo-1"}]},
+                            "get": {"actions": [{"op": "stop", "id": "wo-1"}]}}}
 
 
 def schedule11_regression_source():
@@ -577,16 +550,6 @@ from make_fixtures import schedule11_query_cases
 CASE = schedule11_query_cases()
 
 
-def pages(monkeypatch, owner, attribute, responses):
-    pending = iter(deepcopy(responses))
-    calls = []
-    def query(*args):
-        calls.append(args)
-        return next(pending)
-    monkeypatch.setattr(owner, attribute, query)
-    return calls
-
-
 def busy(*_args, **_kwargs):
     raise store.SkillError("ERR_BUSY", "synthetic busy store")
 
@@ -594,15 +557,6 @@ def busy(*_args, **_kwargs):
 def add(item):
     store.add_item(item["title"], source=agent_task.WORK_SOURCE, state=item["state"],
                    ext=item["ext"], _id=item["id"])
-
-
-@pytest.mark.parametrize("case", CASE["page_failures"], ids=lambda case: case["name"])
-def test_failed_page_never_returns_a_partial_census(monkeypatch, case):
-    calls = pages(monkeypatch, dispatch, "_rem", case["pages"])
-    with pytest.raises(RuntimeError):
-        dispatch._active_items()
-    assert len(calls) <= len(case["pages"])
-    assert all(call[0] == "list" for call in calls)
 
 
 def test_tick_store_failure_stops_before_claim_or_launch(monkeypatch):
@@ -617,13 +571,17 @@ def test_tick_store_failure_stops_before_claim_or_launch(monkeypatch):
     assert effects == []
 
 
-def _dispatch_without_effects(monkeypatch, stream, replay):
+def _dispatch_without_effects(monkeypatch, stream, plan=None):
     effects = []
     monkeypatch.setattr(dispatch, "call_chain", lambda *_args, **_kwargs: effects.append("model"))
     monkeypatch.setattr(dispatch, "execute", lambda *_args, **_kwargs: effects.append("execute"))
     monkeypatch.setattr(dispatch, "_post", lambda *_args, **_kwargs: effects.append("confirm"))
-    record = {"plan": deepcopy(CASE["plan"]) if replay else None, "outcomes": {},
-              "authorized_ids": [], "authorized_work_ids": []}
+    record = {"plan": deepcopy(plan), "outcomes": {},
+              "authorized_ids": [CASE["identity"]], "authorized_work_ids": [CASE["identity"]]}
+    if plan is not None:
+        record.update(action_identity_version=2, action_keys=[
+            dispatch._action_identity(stream, None, index, action)
+            for index, action in enumerate(plan["actions"])])
     before = deepcopy(record)
     with pytest.raises((RuntimeError, store.SkillError)):
         dispatch._dispatch(stream, CASE["reply"], None, False, None, None, record,
@@ -632,19 +590,18 @@ def _dispatch_without_effects(monkeypatch, stream, replay):
     assert record == before
 
 
-@pytest.mark.parametrize("case", CASE["dispatch_failures"], ids=lambda case: case["name"])
-@pytest.mark.parametrize("replay", (False, True))
-def test_dispatch_query_failure_stops_before_any_planner_or_action(monkeypatch, case, replay):
-    pages(monkeypatch, dispatch, "_rem", case["pages"])
-    _dispatch_without_effects(monkeypatch, "reminders", replay)
-
-
-@pytest.mark.parametrize("replay", (False, True))
-def test_dispatch_work_read_failure_stops_before_any_planner_or_action(monkeypatch, replay):
+@pytest.mark.parametrize("stream", ("reminders", CASE["stream"]))
+def test_dispatch_census_failure_stops_before_any_planner_or_action(monkeypatch, stream):
     store.init_db()
-    pages(monkeypatch, dispatch, "_rem", [{"items": [], "next_cursor": None}] * 3)
-    monkeypatch.setattr(agent_task.store, "list_items", busy)
-    _dispatch_without_effects(monkeypatch, CASE["stream"], replay)
+    monkeypatch.setattr(store, "list_items", busy)
+    _dispatch_without_effects(monkeypatch, stream)
+
+
+@pytest.mark.parametrize("read", sorted(CASE["retry_plans"]))
+def test_retry_target_read_failure_stops_before_any_action(monkeypatch, read):
+    store.init_db()
+    monkeypatch.setattr(store if read == "active_ids" else agent_task, read, busy)
+    _dispatch_without_effects(monkeypatch, CASE["stream"], CASE["retry_plans"][read])
 
 
 def test_confirmed_absence_is_distinct_and_performs_no_mutation():
@@ -656,11 +613,12 @@ def test_confirmed_absence_is_distinct_and_performs_no_mutation():
 
 
 @pytest.mark.parametrize("case", CASE["positives"], ids=lambda case: case["name"])
-def test_complete_empty_and_multipage_reads_remain_available(monkeypatch, case):
-    calls = pages(monkeypatch, dispatch, "_rem", case["pages"])
+def test_complete_empty_and_multipage_reads_remain_available(case):
+    store.init_db()
+    for item in case["expected"]:
+        add(item)
     result = dispatch._active_items()
     assert result == [{"id": item["id"], "title": item["title"]} for item in case["expected"]]
-    assert len(calls) == len(case["pages"])
 
 
 @pytest.mark.parametrize("case", CASE["positives"], ids=lambda case: case["name"])
@@ -808,7 +766,7 @@ def defaults(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(case["home"]))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: case["home"]))
     monkeypatch.setattr(private_data, "SOURCE", case["source"])
-    for owner, attribute in ((ingest, "_STATE_DIR"), (dispatch, "_STATE_DIR"), (ingest_tick, "_LOG")):
+    for owner, attribute in ((ingest, "_STATE_DIR"), (ingest_tick, "_LOG")):
         monkeypatch.setattr(owner, attribute, None)
     return case
 
@@ -914,13 +872,11 @@ def test_default_namespaces_and_writers_use_the_selected_roots(defaults, monkeyp
     assert not (data / "digest.json").exists()
 
 
-def test_cli_reads_the_ingest_inbox_default_without_model_or_send(defaults, monkeypatch):
-    inbox = Path(ingest._inbox_file(defaults["stream"]))
-    with private_data.open_for_write(inbox, encoding="utf-8") as stream:
-        stream.write(defaults["record"])
+def test_cli_dispatches_the_given_reply_without_model_or_send(defaults, monkeypatch):
     calls = []
     monkeypatch.setattr(dispatch, "dispatch", lambda *args, **kwargs: calls.append((args, kwargs)) or True)
-    monkeypatch.setattr(sys, "argv", ["dispatch.py", "--stream", defaults["stream"], "--no-post"])
+    monkeypatch.setattr(sys, "argv", ["dispatch.py", "--stream", defaults["stream"],
+                                      "--reply", defaults["record"], "--no-post"])
     assert dispatch.main() == 0
     assert calls[0][0] == (defaults["stream"], defaults["record"])
     assert calls[0][1]["post"] is False

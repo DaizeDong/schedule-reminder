@@ -148,7 +148,8 @@ class ChannelWorld:
         self.inbound = SimpleNamespace(stage=self.stage, pending=lambda root: list(self.pending.values()),
                                        _read=self.read_record, _write=self.write_record,
                                        processing=lambda record, root: contextlib.nullcontext(record),
-                                       attempted=self.attempted)
+                                       attempted=self.attempted, MAX_FAILURES=3)
+        clock = SimpleNamespace(monotonic=lambda: 0.0, sleep=forbidden)
         private = SimpleNamespace(check_destination=lambda *args: None,
                                   prepare_parent=lambda *args: None,
                                   open_for_write=self.open,
@@ -164,12 +165,13 @@ class ChannelWorld:
                              _fetch=self.fetch, _reactors=self.reactors,
                              _emoji_ref=lambda value: (value["name"], value["name"]),
                              channels=lambda *args, **kwargs: [(self.stream, self.case["channel"])],
-                             load_registry=lambda: self.registry,
+                             load_registry=lambda: self.registry, time=clock,
                              ack_seen=lambda *args: None, ack_done=lambda *args: None)
+        handlers = (SimpleNamespace(route=lambda messages, *args, **kwargs: ([], messages, [])),
+                    SimpleNamespace(dispatch=self.dispatch))
         self.tick = module("skills/schedule-reminder/scripts/ingest_tick.py",
                            ingest=self.ingest, inbound=self.inbound, _log=lambda *args: None,
-                           dispatch=SimpleNamespace(dispatch=self.dispatch),
-                           commands=SimpleNamespace(route=lambda messages, *args, **kwargs: ([], messages, [])))
+                           time=clock, _handlers=lambda: handlers)
 
     @staticmethod
     def key(path):
@@ -206,6 +208,7 @@ class ChannelWorld:
 
     def attempted(self, record, done, error, root, **kwargs):
         record.update(status="completed" if done else "pending", attempts=record["attempts"] + 1)
+        return record["status"]
 
     def dispatch(self, *args, **kwargs):
         self.models.append((args, kwargs))
@@ -218,9 +221,14 @@ class ChannelWorld:
 def dispatcher(items, work=()):
     case = fixtures()
     calls, stopped = [], []
-    def rem(*args):
-        calls.append(args)
-        return {"item": {"id": args[2], "state": "done"}}
+    def mutation(op):
+        def apply(identity, *args, **kwargs):
+            calls.append((op, "--id", identity))
+            return {"id": identity, "state": "done"}
+        return apply
+    shown = {row["id"] for row in items}
+    store = SimpleNamespace(done=mutation("done"), snooze=mutation("snooze"), get_item=mutation("get"),
+                            active_ids=lambda identities: {i for i in identities if i in shown})
     def stop(identity, **kwargs):
         stopped.append(identity)
         expected = next(row for row in work if row['id'] == identity)['ext']['x_agent_exec_generation']
@@ -229,9 +237,11 @@ def dispatcher(items, work=()):
         return [{"id": item, "stopped": True} for item in selected]
     identity = lambda *values: hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
     dispatch = module("skills/schedule-reminder/scripts/dispatch.py",
-                      inbound=SimpleNamespace(identity=identity), _rem=rem,
+                      inbound=SimpleNamespace(identity=identity), store=store,
                       agent_tick=SimpleNamespace(stop=stop),
-                      agent_task=SimpleNamespace(enqueue=forbidden, EXT_GENERATION='x_agent_exec_generation'),
+                      agent_task=SimpleNamespace(enqueue=forbidden, EXT_GENERATION='x_agent_exec_generation',
+                                                 get=lambda i: next((row for row in work if row["id"] == i), None),
+                                                 running=list),
                       get_state=lambda cfg: copy.deepcopy(items), get_work=lambda: copy.deepcopy(work),
                       call_chain=forbidden, _post=lambda *args: True)
     return dispatch, calls, stopped, case
@@ -312,9 +322,9 @@ class Schedule7RegressionTests(unittest.TestCase):
                                                 "until": case["until"]}]},
                           "outcomes": {}, "authorized_ids": [case["authorized_id"]]}
                 bind_plan_identity(dispatch, record, case['stream'])
-                self.assertFalse(dispatch._dispatch(case["stream"], case["title"], None, False,
-                                                     case["channel"], case["message_id"],
-                                                     record, lambda: None, "synthetic-inbound"))
+                self.assertTrue(dispatch._dispatch(case["stream"], case["title"], None, False,
+                                                    case["channel"], case["message_id"],
+                                                    record, lambda: None, "synthetic-inbound"))
                 self.assertEqual(calls, [])
                 self.assertEqual(next(iter(record["outcomes"].values()))["status"], "rejected")
 
@@ -354,10 +364,10 @@ class Schedule7RegressionTests(unittest.TestCase):
         dispatch, calls, _, _ = dispatcher(items)
         record = {"plan": {"actions": [{"op": "done", "id": case["unshown_id"]}]}, "outcomes": {}}
         bind_plan_identity(dispatch, record, case['stream'])
-        self.assertFalse(dispatch._dispatch(case["stream"], case["title"], None, False,
-                                             case["channel"], case["message_id"], record,
-                                             lambda: None, "synthetic-inbound"))
+        dispatch._dispatch(case["stream"], case["title"], None, False,
+                           case["channel"], case["message_id"], record, lambda: None, "synthetic-inbound")
         self.assertEqual(calls, [])
+        self.assertEqual([row["status"] for row in record["outcomes"].values()], ["rejected"])
 
     def test_persisted_stop_cannot_expand_to_new_work(self):
         for selected in ("*", fixtures()["later_work_id"]):
@@ -372,10 +382,11 @@ class Schedule7RegressionTests(unittest.TestCase):
                           "authorized_ids": [], "authorized_work_ids": [case["work_id"]],
                           'authorized_work_generations': {case['work_id']: 1}}
                 bind_plan_identity(dispatch, record, case['stream'])
-                succeeded = dispatch._dispatch(case["stream"], case["title"], None, False,
-                                               case["channel"], case["message_id"], record,
-                                               lambda: None, "synthetic-inbound")
-                self.assertEqual(succeeded, selected == "*")
+                dispatch._dispatch(case["stream"], case["title"], None, False,
+                                   case["channel"], case["message_id"], record,
+                                   lambda: None, "synthetic-inbound")
+                self.assertEqual([row["status"] for row in record["outcomes"].values()],
+                                 ["succeeded" if selected == "*" else "rejected"])
                 self.assertEqual(stops, [case["work_id"]] if selected == "*" else [])
 
     def test_first_channel_tick_baselines_text_and_reactions(self):
@@ -427,12 +438,12 @@ class Schedule7RegressionTests(unittest.TestCase):
         record = next(iter(world.pending.values()))
         self.assertEqual(record["payload"]["emoji"], world.case["new_reaction"]["emoji"]["name"])
 
-    def test_reaction_only_discovery_arms_before_processing(self):
+    def test_first_sweep_arms_before_processing_reactions(self):
         world = ChannelWorld()
-        self.assertEqual(world.ingest.poll_all_reactions(), {})
+        self.assertEqual(world.ingest.poll(), {"text": {}, "reactions": {}})
         self.assertEqual(world.pending, {})
         world.add_reaction()
-        self.assertEqual(world.ingest.poll_all_reactions(), {world.stream: 1})
+        self.assertEqual(world.ingest.poll(), {"text": {}, "reactions": {world.stream: 1}})
         self.assertEqual(len(world.pending), 1)
 
     def test_missing_saved_work_authorization_cannot_stop_any_work(self):
@@ -442,9 +453,10 @@ class Schedule7RegressionTests(unittest.TestCase):
         record = {"plan": {"actions": [{"op": "stop", "id": "*"}]},
                   "outcomes": {}, "authorized_ids": []}
         bind_plan_identity(dispatch, record, case['stream'])
-        self.assertFalse(dispatch._dispatch(case["stream"], case["title"], None, False,
-                         case["channel"], case["message_id"], record, lambda: None, "synthetic-inbound"))
+        dispatch._dispatch(case["stream"], case["title"], None, False,
+                           case["channel"], case["message_id"], record, lambda: None, "synthetic-inbound")
         self.assertEqual(stops, [])
+        self.assertEqual([row["status"] for row in record["outcomes"].values()], ["rejected"])
 
     def test_new_plan_persists_both_authorization_snapshots(self):
         case = fixtures()
@@ -503,7 +515,7 @@ class Schedule7RegressionTests(unittest.TestCase):
         args = (case["channel"], case["message_id"], case["old_message"]["reactions"][0]["emoji"]["name"], case["token"])
         with self.assertRaises(OSError):
             ingest._reactors(*args, strict=True)
-        self.assertEqual(ingest._reactors(*args), [])
+        self.assertIsNone(ingest._reactors(*args))
         ingest._reactors.__globals__["_get"] = lambda *args: [{"id": case["owner"]}] * 2
         with self.assertRaises(RuntimeError):
             ingest._reactors(*args, limit=2, strict=True)

@@ -35,7 +35,7 @@ Initialize or additively upgrade the chosen database with `reminder.py init`; re
 entrypoints do not run migrations. `PRAGMA user_version` follows `store.SCHEMA_USER_VERSION`.
 Back up an existing database before an explicit upgrade. List reads may return empty for absent
 storage; work-feed and health report unavailable, while creation preflight requires initialized
-storage. DATABASE, cursors, inboxes, work records, action and notification receipts, digest records
+storage. DATABASE, cursors, inbound records, work records, action and notification receipts, digest records
 and readiness evidence belong in the PRIVATE companion and remain under version control.
 Create database backups with SQLite's backup API or a cold checkpointed snapshot inside PRIVATE
 storage; do not copy a live WAL database as an ordinary single file.

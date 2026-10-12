@@ -24,7 +24,8 @@ REGISTRY (registry.commands, in the Agent Center config dir)
     "gradient": {
         "trigger": "^\\s*(?:gradient|bg|背景)\\b",   # python regex, matched per message
         "exec": ["python", "~/path/to/gradient_bot.py", "handle"],
-        "timeout": 300,                               # optional, seconds
+        "timeout": 300,                               # optional, seconds; the tick clamps it
+                                                      # to what is left of its own time budget
         "desc": "post a backdrop"                     # optional, for `list`
     }
     A channel opts out of handlers with streams.<name>.listen = false, which is how the reference
@@ -151,8 +152,11 @@ def run(cmd, payload, log=None):
     return True, (p.stdout or "").strip()[:200]
 
 
-def route(msgs, stream, channel_id, reg, log=None, post=True, before_run=None):
+def route(msgs, stream, channel_id, reg, log=None, post=True, before_run=None, timeout_cap=None):
     """Split a batch: (claimed, remaining, results).
+
+    `timeout_cap` (seconds) clamps every handler's timeout, so a handler cannot outlive the
+    scheduled task that runs it.
 
     `claimed` were answered (or attempted) by a handler and MUST NOT go on to the judgment chain.
     `remaining` are ordinary messages the chain should judge. A handler that fails still claims its
@@ -171,6 +175,8 @@ def route(msgs, stream, channel_id, reg, log=None, post=True, before_run=None):
         if not c:
             remaining.append(m)
             continue
+        if timeout_cap is not None:
+            c = dict(c, timeout=max(1, min(c["timeout"], int(timeout_cap))))
         if before_run is not None:
             before_run(c["name"])
         ok, detail = run(c, {"text": text, "channel_id": str(channel_id), "stream": stream,

@@ -933,6 +933,31 @@ def get_item(item_id, *, db_path=None):
         conn.close()
 
 
+def _active_clause():
+    """The one SQL definition of an actionable item, shared by every active view.
+
+    Use COALESCE so a source-less reminder is not accidentally removed by SQL's three-valued NULL
+    logic. Expiry is inclusive: at due_at the reply window is over."""
+    return ("state IN (%s) AND NOT (COALESCE(source, '') = ? AND title LIKE ? "
+            "AND due_at IS NOT NULL AND due_at <= ?)" % ",".join("?" * len(ACTIVE_STATES)),
+            (*ACTIVE_STATES, "email-monitor", "需回复:%", resolve_now()))
+
+
+def active_ids(ids, *, db_path=None):
+    """The subset of `ids` that an active list would still show, read in one query."""
+    ids = list(ids)
+    if not ids or not os.path.isfile(db_path or default_db_path()):
+        return set()
+    clause, values = _active_clause()
+    conn = _connect(db_path, readonly=True)
+    try:
+        rows = conn.execute("SELECT id FROM items WHERE id IN (%s) AND %s"
+                            % (",".join("?" * len(ids)), clause), (*ids, *values)).fetchall()
+        return {row[0] for row in rows}
+    finally:
+        conn.close()
+
+
 def list_items(*, state=None, source=None, kind=None, due_before=None, active_only=False,
                limit=100, cursor=None, db_path=None):
     """List items with simple filters + keyset pagination by id (UUIDv7 is time-ordered).
@@ -954,15 +979,9 @@ def list_items(*, state=None, source=None, kind=None, due_before=None, active_on
         if kind:
             where.append("kind = ?"); params.append(kind)
         if active_only:
-            where.append("state IN (%s)" % ",".join("?" * len(ACTIVE_STATES)))
-            params.extend(ACTIVE_STATES)
-            # Use COALESCE so a source-less reminder is not accidentally removed by SQL's
-            # three-valued NULL logic.  Expiry is inclusive: at due_at the reply window is over.
-            where.append(
-                "NOT (COALESCE(source, '') = ? AND title LIKE ? "
-                "AND due_at IS NOT NULL AND due_at <= ?)"
-            )
-            params.extend(("email-monitor", "需回复:%", resolve_now()))
+            clause, values = _active_clause()
+            where.append(clause)
+            params.extend(values)
         if due_before:
             where.append("due_at IS NOT NULL AND due_at <= ?")
             params.append(to_rfc3339(parse_dt(due_before)))

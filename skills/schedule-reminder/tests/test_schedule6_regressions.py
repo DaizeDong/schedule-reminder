@@ -12,6 +12,7 @@ import pytest
 import agent_task
 import agent_tick
 import commands
+import dispatch
 import inbound
 import ingest
 import ingest_tick
@@ -33,8 +34,7 @@ def command_inbox(tmp_path, monkeypatch, outcome=False):
     root = tmp_path / "state"
     monkeypatch.setattr(ingest, "state_dir", lambda: str(root))
     monkeypatch.setattr(ingest, "pending_work", lambda: inbound.pending(root))
-    monkeypatch.setattr(ingest, "poll_all", lambda **kwargs: {})
-    monkeypatch.setattr(ingest, "poll_all_reactions", lambda **kwargs: {})
+    monkeypatch.setattr(ingest, "poll", lambda **kwargs: {})
     monkeypatch.setattr(ingest, "load_registry", lambda: copy.deepcopy(F["registry"]))
     monkeypatch.setattr(ingest, "bot_token", lambda _: "synthetic-token")
     monkeypatch.setattr(ingest_tick, "_log", lambda *args: None)
@@ -42,7 +42,7 @@ def command_inbox(tmp_path, monkeypatch, outcome=False):
     monkeypatch.setattr(commands, "run", lambda *args, **kwargs: calls.append(args) or (outcome, F["error"]))
     monkeypatch.setattr(ingest, "ack_seen", lambda *args: None)
     monkeypatch.setattr(ingest, "ack_done", lambda *args: acks.append(args))
-    monkeypatch.setattr(ingest_tick.dispatch, "dispatch", lambda *args, **kwargs: models.append(args) or True)
+    monkeypatch.setattr(dispatch, "dispatch", lambda *args, **kwargs: models.append(args) or True)
     record = inbound.stage(F["stream"], F["channel"], F["message"]["id"], "text", F["message"], root)
     return SimpleNamespace(root=root, record=record, calls=calls, acks=acks, models=models)
 

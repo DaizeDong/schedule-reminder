@@ -39,6 +39,31 @@ All notable changes to this project are documented here (Keep a Changelog style)
   job stays pending instead of falling back to a process-tree kill.
 - Work-action start resolves the action workspace once, before its write transaction, and reads the
   task binding on that transaction's own connection.
+- An inbound reply whose plan contains a rejected action (an id the planner was not shown, a
+  snooze without a time) now completes with its confirmation instead of staying pending. The
+  rejection was saved and reused on every retry, so each 5-minute tick re-ran the state census,
+  re-posted the same confirmation and re-added the reaction, forever. A failed action, an
+  undelivered confirmation or a planner with no usable plan is retried at most three times; the
+  record then becomes `failed` and `ingest_tick.py --retry-command <id>` rearms it. Only the last
+  planning attempt posts "自动解析失败", instead of every tick.
+- The inbound tick has one time budget sized to the task's 4-minute kill: it starts no channel read
+  and no pending record after 60 s (the rest wait for the next tick), passes the remaining budget
+  (at most 120 s) to the planner call and clamps command handlers to it. Before, a 180 s model
+  call, a 300 s handler and 20 s per Discord request could each outlast the kill, and a kill during
+  the model call threw the plan away and paid for it again on the next tick.
+- Dispatch reads and mutates the pool in process (`store.list_items`, `done`, `snooze`,
+  `ensure_item`, `get_item`, same actor and idempotency key) instead of starting `reminder.py`
+  children: 6 to 7 per reply for the state listing (3.7 to 7.5 s measured) plus one per action. A
+  retry with a saved plan no longer lists every active item or running order; it checks only the
+  saved targets in one query.
+- One ingest sweep reads each channel once: channels are enumerated once (not once per pass), the
+  owner DM channel id is cached instead of re-opened every tick, and the newest 50 messages feed
+  both the text pass and the reaction pass (about 22 Discord requests per tick down to about 11).
+  A reaction whose count is unchanged is not re-read, and the reaction seen file is written only
+  when it changes. `ingest.poll()` replaces `poll_all` and `poll_all_reactions`.
+- An inbound record has one lock, its processing lock; staging, status updates and the manual
+  rearm no longer take a second per-record lock. An idle tick does not import the dispatch and
+  command layers.
 
 ### Removed
 - The process-tree stop fallback (`process_tree.py`, `taskkill /T` and the `verified-tree-kill`
@@ -48,6 +73,13 @@ All notable changes to this project are documented here (Keep a Changelog style)
   (`agent_task.rem`), the third evidence capture in artifacts mode, and unused imports and
   parameters (`relay` in the tick and runner, `REVIEW_CHAIN`, `_DISCORD_MAX`, and `_llm`'s
   chain, workspace and requirements).
+- Inbound leftovers: the one-time cursor migration (`_adopt_cursor`, `_record_migration_gap`,
+  `<key>.migrated.inbox`), the `LAST_POLL_IDS`/`LAST_POLL_MSGS`/`CHANNEL_OF` globals nothing read,
+  the `<key>.inbox` and `<key>.reactions.inbox` projections (the durable inbound records hold the
+  same messages) together with `ingest.py inbox` and `dispatch.py`'s inbox default (`--reply` is
+  now required), the reaction pass's second `poll_stream` call, the dispatch `reminder.py`
+  subprocess bridge (`_rem`) and the paginated CLI census validation it needed
+  (`agent_task.query_items`). Legacy cursor and inbox files in DATA are left in place.
 
 ### Fixed
 - A Discord or mail dispatched order without a Git workspace no longer fails about a second after

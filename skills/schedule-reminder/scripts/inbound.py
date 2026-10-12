@@ -1,4 +1,12 @@
-"""Durable PRIVATE inbound work and action receipts; never stored in public source."""
+"""Durable PRIVATE inbound work and action receipts; never stored in public source.
+
+One lock per inbound record, `<record>.json.process.lock`, serializes every change to it: staging,
+processing and the manual rearm. The tick holds it for the whole processing span, so the status
+writers below (`attempted`, `command_started`) are only ever called under it and take no lock of
+their own.
+
+A record that fails a retryable attempt stays `pending` until MAX_FAILURES consecutive failures,
+then becomes `failed` and waits for an explicit `retry_command`, like a failed command does."""
 from contextlib import contextmanager
 import hashlib
 import json
@@ -7,6 +15,8 @@ import re
 from pathlib import Path
 import tempfile
 import private_data
+
+MAX_FAILURES = 3
 
 
 def identity(*parts):
@@ -43,12 +53,23 @@ def _write(path, value):
             os.remove(temporary)
 
 
+def _path(record_id, state_root=None):
+    return root(state_root)/"inbound"/(record_id+".json")
+
+
+def _lock(path):
+    return private_data.file_lock(str(path)+".process.lock")
+
+
 def stage(stream, channel_id, message_id, kind, payload, state_root=None):
     if not message_id or not channel_id:
         raise ValueError("durable inbound work requires channel and message identity")
     key = identity(kind, str(channel_id), str(message_id))
-    path = root(state_root)/"inbound"/(key+".json")
-    with private_data.file_lock(str(path)+".lock"):
+    path = _path(key, state_root)
+    current = _read(path)   # records are replaced atomically, so this read needs no lock
+    if current is not None:
+        return current
+    with _lock(path):
         current = _read(path)
         if current is None:
             current = {"schema_version": 1, "id": key, "stream": stream,
@@ -72,48 +93,54 @@ def pending(state_root=None):
 
 @contextmanager
 def processing(record, state_root=None):
-    path = root(state_root)/"inbound"/(record["id"]+".json")
-    with private_data.file_lock(str(path)+".process.lock"):
+    path = _path(record["id"], state_root)
+    with _lock(path):
         yield _read(path)
 
 
 def attempted(record, completed, error=None, state_root=None, *, retryable=True):
-    path = root(state_root)/"inbound"/(record["id"]+".json")
-    with private_data.file_lock(str(path)+".lock"):
-        current = _read(path)
-        if current is None:
-            raise ValueError("durable inbound record disappeared")
-        status = "completed" if completed else "pending" if retryable else "command_failed"
-        attempts = current["attempts"] + (current["status"] != "command_failed")
-        current.update(status=status, attempts=attempts, last_error=error)
-        _write(path, current)
+    """Record one processing attempt. Call only inside `processing` for the same record.
+
+    Returns the new status: completed, pending (another attempt will follow), failed (retryable
+    attempts exhausted) or command_failed."""
+    path = _path(record["id"], state_root)
+    current = _read(path)
+    if current is None:
+        raise ValueError("durable inbound record disappeared")
+    failures = 0 if completed or not retryable else current.get("failures", 0) + 1
+    status = ("completed" if completed else "command_failed" if not retryable
+              else "failed" if failures >= MAX_FAILURES else "pending")
+    attempts = current["attempts"] + (current["status"] != "command_failed")
+    current.update(status=status, attempts=attempts, failures=failures, last_error=error)
+    _write(path, current)
+    return status
+
 
 def command_started(record, name, state_root=None):
-    """Persist uncertain command execution before calling a potentially non-idempotent handler."""
-    path = root(state_root)/"inbound"/(record["id"]+".json")
-    with private_data.file_lock(str(path)+".lock"):
-        current = _read(path)
-        if current is None or current["status"] != "pending":
-            raise ValueError("command is not pending")
-        current.update(status="command_failed", command=name, attempts=current["attempts"]+1,
-                       last_error="command outcome unconfirmed; explicit retry required")
-        _write(path, current)
+    """Persist uncertain command execution before calling a potentially non-idempotent handler.
+    Call only inside `processing` for the same record."""
+    path = _path(record["id"], state_root)
+    current = _read(path)
+    if current is None or current["status"] != "pending":
+        raise ValueError("command is not pending")
+    current.update(status="command_failed", command=name, attempts=current["attempts"]+1,
+                   last_error="command outcome unconfirmed; explicit retry required")
+    _write(path, current)
 
 
 def retry_command(record_id, state_root=None):
-    """Explicitly rearm a failed/uncertain handler after its effects have been reviewed."""
+    """Explicitly rearm a failed or uncertain record after its effects have been reviewed."""
     if not isinstance(record_id, str) or re.fullmatch(r"[0-9a-f]{64}", record_id) is None:
         raise ValueError("retry requires the full durable inbound id")
-    path = root(state_root)/"inbound"/(record_id+".json")
-    with private_data.file_lock(str(path)+".process.lock"):
-        with private_data.file_lock(str(path)+".lock"):
-            current = _read(path)
-            if current is None or current["status"] != "command_failed":
-                raise ValueError("only a failed or unconfirmed command can be retried")
-            current.update(status="pending", last_error=None,
-                           manual_retries=current.get("manual_retries", 0)+1)
-            _write(path, current)
-            return current
+    path = _path(record_id, state_root)
+    with _lock(path):
+        current = _read(path)
+        if current is None or current["status"] not in ("command_failed", "failed"):
+            raise ValueError("only a failed or unconfirmed record can be retried")
+        current.update(status="pending", last_error=None, failures=0,
+                       manual_retries=current.get("manual_retries", 0)+1)
+        _write(path, current)
+        return current
 
 
 @contextmanager

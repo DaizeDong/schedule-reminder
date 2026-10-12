@@ -47,7 +47,7 @@ def test_available_llmcall_preserves_cli_success_and_default_policy(monkeypatch,
     assert dispatch.main() == 0
     assert json.loads(capsys.readouterr().out) == {'ok': True}
     assert len(calls) == 1 and calls[0]['mode'] == 'judge'
-    assert set(calls[0]) == {'mode', 'log'}
+    assert set(calls[0]) == {'mode', 'log', 'timeout'} and calls[0]['timeout'] is None
 
 
 def test_unrelated_missing_module_is_not_reported_as_llmcall_missing(monkeypatch):

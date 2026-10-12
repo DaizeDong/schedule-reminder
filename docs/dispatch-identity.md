@@ -3,10 +3,10 @@
 Inbound messages are dispatched individually with their channel and message IDs. The owner saves
 the first parsed plan before executing it. A retry uses that plan and the same action keys, even
 if another model response would have changed the wording or order. A completed dispatch reuses
-its stored outcomes. Identified creates use `ensure --if-exists return`, which preserves
-the original keyed record and reviews cross-source candidates before creating another item.
-The existing `add --if-exists return` contract also remains available. Concurrent creates
-share the same storage transaction and unique key.
+its stored outcomes. Identified creates call `store.ensure_item` in process (what
+`reminder.py ensure` wraps), which preserves the original keyed record and reviews cross-source
+candidates before creating another item. Concurrent creates share the same storage transaction
+and unique key.
 
 Before the first action, new saved plans persist `action_identity_version: 2` and canonical
 `action_keys`. Sorting JSON fields while writing or reading a plan cannot change those keys.
@@ -32,8 +32,9 @@ report's ID. A separately requested report for another date should have a new re
 
 Saved plans retain their authorized item and work IDs, and retries use the existing inbound
 outcome ledger. A follow-up receipt binds its item and note, so changing either under the same
-receipt identity is rejected. Current query pagination remains authoritative for the planner's
-complete active-item context.
+receipt identity is rejected. The first attempt lists every active item for the planner; a retry
+with a saved plan reads only the saved targets, checking which authorized items are still active
+and which authorized work orders still run.
 
 If an outcome write is lost after a follow-up or linked work order was committed, retry may read
 the matching owner receipt for a previously authorized item even after that item becomes terminal.

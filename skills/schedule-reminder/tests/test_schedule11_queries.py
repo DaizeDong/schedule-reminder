@@ -12,16 +12,6 @@ from make_fixtures import schedule11_query_cases
 CASE = schedule11_query_cases()
 
 
-def pages(monkeypatch, owner, attribute, responses):
-    pending = iter(deepcopy(responses))
-    calls = []
-    def query(*args):
-        calls.append(args)
-        return next(pending)
-    monkeypatch.setattr(owner, attribute, query)
-    return calls
-
-
 def busy(*_args, **_kwargs):
     raise store.SkillError("ERR_BUSY", "synthetic busy store")
 
@@ -29,15 +19,6 @@ def busy(*_args, **_kwargs):
 def add(item):
     store.add_item(item["title"], source=agent_task.WORK_SOURCE, state=item["state"],
                    ext=item["ext"], _id=item["id"])
-
-
-@pytest.mark.parametrize("case", CASE["page_failures"], ids=lambda case: case["name"])
-def test_failed_page_never_returns_a_partial_census(monkeypatch, case):
-    calls = pages(monkeypatch, dispatch, "_rem", case["pages"])
-    with pytest.raises(RuntimeError):
-        dispatch._active_items()
-    assert len(calls) <= len(case["pages"])
-    assert all(call[0] == "list" for call in calls)
 
 
 def test_tick_store_failure_stops_before_claim_or_launch(monkeypatch):
@@ -52,13 +33,17 @@ def test_tick_store_failure_stops_before_claim_or_launch(monkeypatch):
     assert effects == []
 
 
-def _dispatch_without_effects(monkeypatch, stream, replay):
+def _dispatch_without_effects(monkeypatch, stream, plan=None):
     effects = []
     monkeypatch.setattr(dispatch, "call_chain", lambda *_args, **_kwargs: effects.append("model"))
     monkeypatch.setattr(dispatch, "execute", lambda *_args, **_kwargs: effects.append("execute"))
     monkeypatch.setattr(dispatch, "_post", lambda *_args, **_kwargs: effects.append("confirm"))
-    record = {"plan": deepcopy(CASE["plan"]) if replay else None, "outcomes": {},
-              "authorized_ids": [], "authorized_work_ids": []}
+    record = {"plan": deepcopy(plan), "outcomes": {},
+              "authorized_ids": [CASE["identity"]], "authorized_work_ids": [CASE["identity"]]}
+    if plan is not None:
+        record.update(action_identity_version=2, action_keys=[
+            dispatch._action_identity(stream, None, index, action)
+            for index, action in enumerate(plan["actions"])])
     before = deepcopy(record)
     with pytest.raises((RuntimeError, store.SkillError)):
         dispatch._dispatch(stream, CASE["reply"], None, False, None, None, record,
@@ -67,19 +52,18 @@ def _dispatch_without_effects(monkeypatch, stream, replay):
     assert record == before
 
 
-@pytest.mark.parametrize("case", CASE["dispatch_failures"], ids=lambda case: case["name"])
-@pytest.mark.parametrize("replay", (False, True))
-def test_dispatch_query_failure_stops_before_any_planner_or_action(monkeypatch, case, replay):
-    pages(monkeypatch, dispatch, "_rem", case["pages"])
-    _dispatch_without_effects(monkeypatch, "reminders", replay)
-
-
-@pytest.mark.parametrize("replay", (False, True))
-def test_dispatch_work_read_failure_stops_before_any_planner_or_action(monkeypatch, replay):
+@pytest.mark.parametrize("stream", ("reminders", CASE["stream"]))
+def test_dispatch_census_failure_stops_before_any_planner_or_action(monkeypatch, stream):
     store.init_db()
-    pages(monkeypatch, dispatch, "_rem", [{"items": [], "next_cursor": None}] * 3)
-    monkeypatch.setattr(agent_task.store, "list_items", busy)
-    _dispatch_without_effects(monkeypatch, CASE["stream"], replay)
+    monkeypatch.setattr(store, "list_items", busy)
+    _dispatch_without_effects(monkeypatch, stream)
+
+
+@pytest.mark.parametrize("read", sorted(CASE["retry_plans"]))
+def test_retry_target_read_failure_stops_before_any_action(monkeypatch, read):
+    store.init_db()
+    monkeypatch.setattr(store if read == "active_ids" else agent_task, read, busy)
+    _dispatch_without_effects(monkeypatch, CASE["stream"], CASE["retry_plans"][read])
 
 
 def test_confirmed_absence_is_distinct_and_performs_no_mutation():
@@ -91,11 +75,12 @@ def test_confirmed_absence_is_distinct_and_performs_no_mutation():
 
 
 @pytest.mark.parametrize("case", CASE["positives"], ids=lambda case: case["name"])
-def test_complete_empty_and_multipage_reads_remain_available(monkeypatch, case):
-    calls = pages(monkeypatch, dispatch, "_rem", case["pages"])
+def test_complete_empty_and_multipage_reads_remain_available(case):
+    store.init_db()
+    for item in case["expected"]:
+        add(item)
     result = dispatch._active_items()
     assert result == [{"id": item["id"], "title": item["title"]} for item in case["expected"]]
-    assert len(calls) == len(case["pages"])
 
 
 @pytest.mark.parametrize("case", CASE["positives"], ids=lambda case: case["name"])

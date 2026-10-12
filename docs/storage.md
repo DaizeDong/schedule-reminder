@@ -33,13 +33,14 @@ does not create a directory or change the installed consumer's selected path. Se
 [deployment](../skills/schedule-reminder/reference/deployment.md) for initialization
 and SQLite-aware backup requirements.
 
-State ownership covers cursor files, inbox projections, reaction identities/baselines
-and durable inbound/dispatch JSON records. One inbox pattern covers text, reaction
-and migration projections without overlapping owners. Preserve replay identities
+State ownership covers cursor files, the cached owner DM channel id, reaction
+identities/baselines and durable inbound/dispatch JSON records. Inbox projection files
+(`*.inbox`) are no longer written; existing ones are inert leftovers, because the durable
+inbound records hold the same messages. Preserve replay identities
 and uncertain actions with their matching task-store receipts. Diagnostics, atomic
 staging and locks have separate conditional retention; an old timestamp or a newer
 cursor proves neither writer inactivity nor successful delivery.
-Ingest staging follows the root inbox state directory; durable dispatch retry records
+Ingest staging follows the root state directory; durable dispatch retry records
 retain their distinct default under `data/state/dispatch/`.
 
 Run ownership names request/event files and the known approach/round leaves in both
