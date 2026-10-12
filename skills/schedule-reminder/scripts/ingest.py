@@ -22,7 +22,8 @@ REGISTRY (secret; env AGENT_CENTER_CONFIG, else the registry file in the Agent C
     streams.<name>.inbound      -- optional; false = the bus does not read this channel at all, and
                                    guild discovery may not add it back (an archive the owner keeps
                                    for themselves, or a reference channel full of example commands)
-    reader.bot_token            -- the Discord bot token (canonical; same one relay/bigbrother use)
+    reader.bot_token_ref        -- cv:// reference to the Discord bot token, resolved through credvault
+    reader.bot_token            -- or the token inline (no vault); never both (bot_credential.py)
 
 STATE (the Agent Center state dir)
     <channel_id>.last  -- last processed message id, keyed on the CHANNEL not the stream name.
@@ -49,6 +50,7 @@ import re
 import sys
 import private_data
 import inbound
+import bot_credential
 import time
 import urllib.error
 import urllib.parse
@@ -102,7 +104,9 @@ def load_registry():
 
 
 def bot_token(reg):
-    return (reg.get("reader") or {}).get("bot_token")
+    """The bot token (reader.bot_token_ref via the credential vault, or inline reader.bot_token).
+    Raises bot_credential.BotTokenUnavailable when a source is set but cannot produce a value."""
+    return bot_credential.resolve(reg)
 
 
 def _get(url, token):
@@ -418,7 +422,7 @@ def poll_all(reg=None, token=None, log=None):
     reg = reg if reg is not None else load_registry()
     token = token or bot_token(reg)
     if not token:
-        raise RuntimeError("no bot token: set registry.reader.bot_token in the Agent Center registry")
+        raise RuntimeError("no bot token: set registry.reader.bot_token_ref (or reader.bot_token) in the Agent Center registry")
     # Fail CLOSED on an unresolvable owner. A reply can enqueue execution on this machine, so an
     # unset owner must stop the poll rather than quietly widen it to everyone who can post in the
     # channel. This mirrors the missing-token guard directly above.
@@ -647,7 +651,7 @@ def poll_all_reactions(reg=None, token=None, log=None):
     reg = reg if reg is not None else load_registry()
     token = token or bot_token(reg)
     if not token:
-        raise RuntimeError("no bot token: set registry.reader.bot_token in the Agent Center registry")
+        raise RuntimeError("no bot token: set registry.reader.bot_token_ref (or reader.bot_token) in the Agent Center registry")
     owner = owner_id(reg)
     if not owner:
         raise RuntimeError("reaction polling requires an explicit owner")

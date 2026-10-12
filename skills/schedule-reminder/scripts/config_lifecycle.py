@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 from urllib.parse import urlparse
 
+import bot_credential
 import private_data
 
 
@@ -41,8 +42,8 @@ def validate(registry, capabilities="store,remind"):
     if not isinstance(reader, dict):
         errors.append("reader must be an object")
         reader = {}
-    token = reader.get("bot_token")
-    token_ready = isinstance(token, str) and bool(token.strip())
+    errors.extend(bot_credential.config_errors(registry))
+    token_ready = bot_credential.configured(registry)
     streams = registry.get("streams")
     if not isinstance(streams, dict) or not streams:
         errors.append("streams must contain at least one configured destination")
@@ -57,7 +58,8 @@ def validate(registry, capabilities="store,remind"):
         channel = entry.get("channel_id")
         channel_ready = isinstance(channel, str) and channel.isdecimal()
         if not webhook_ready and not (channel_ready and token_ready):
-            errors.append("stream destination requires an HTTPS webhook or channel_id and reader.bot_token")
+            errors.append("stream destination requires an HTTPS webhook or channel_id and "
+                          "reader.bot_token_ref (or reader.bot_token)")
         for flag in ("listen", "inbound"):
             if flag in entry and type(entry[flag]) is not bool:
                 errors.append("stream " + flag + " must be boolean")
@@ -66,7 +68,7 @@ def validate(registry, capabilities="store,remind"):
         if not isinstance(guild, str) or not guild.isdecimal():
             errors.append("guild_id is required for ingest/work")
         if not token_ready:
-            errors.append("reader.bot_token is required for ingest/work")
+            errors.append("reader.bot_token_ref (or reader.bot_token) is required for ingest/work")
         owner = registry.get("big_brother", {})
         owner_id = owner.get("user_id") if isinstance(owner, dict) else None
         if not isinstance(owner_id, str) or not owner_id.isdecimal():

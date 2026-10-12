@@ -29,7 +29,8 @@ TWO TRANSPORTS, ONE EGRESS
     Agent Center readable at a glance, and it needs no bot permissions. But a webhook is BOUND to
     the channel it was created for and cannot carry a file, so two jobs are impossible on it:
     answering in whichever channel a command was typed in, and posting an image. Those go over the
-    bot token instead (registry.reader.bot_token, the same one ingest reads with).
+    bot token instead (registry.reader.bot_token_ref or reader.bot_token, the same one ingest reads
+    with; see bot_credential.py).
 
     Transport is selected without exposing transport details to the caller:
         files given, or channel_id given   -> bot
@@ -66,6 +67,7 @@ import math
 from pathlib import Path
 import json
 import os
+import bot_credential
 import private_data
 import sys
 import urllib.request
@@ -385,9 +387,10 @@ def _post_webhook(url: str, payload: dict) -> bool:
 
 
 def bot_token(reg: dict) -> str | None:
-    """The bot token, canonical source. Same key ingest.py reads, deliberately: one credential for
-    the whole bus means one place to rotate it."""
-    return (reg.get("reader") or {}).get("bot_token") or None
+    """The bot token, canonical source. Same resolver ingest.py reads, deliberately: one credential
+    for the whole bus means one place to rotate it. Degrades to None (with one stderr line naming
+    the cause) when reader.bot_token_ref cannot be resolved, so webhook delivery keeps working."""
+    return bot_credential.resolve_or_none(reg, "relay")
 
 
 def _post_bot(channel_id: str, content: str, files: list | None, token: str) -> bool:
@@ -597,7 +600,8 @@ def send(content: str, stream: str | None = None, channel_id: str | None = None,
         return False
     token = bot_token(reg)
     if not token:
-        sys.stderr.write("relay: no reader.bot_token in the registry; cannot use the bot transport\n")
+        sys.stderr.write("relay: no usable bot token (reader.bot_token_ref / reader.bot_token); "
+                         "cannot use the bot transport\n")
         return False
     return _post_bot(str(chan), content, files, token)
 

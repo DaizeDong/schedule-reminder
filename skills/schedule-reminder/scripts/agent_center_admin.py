@@ -14,6 +14,7 @@ import argparse
 import base64
 import json
 import os
+import bot_credential
 import private_data
 import subprocess
 import sys
@@ -49,9 +50,20 @@ def _load_registry(path: str) -> dict:
         raise AdminError("registry root must be an object")
     if not reg.get("guild_id"):
         raise AdminError("registry.guild_id is required")
-    if not (reg.get("reader") or {}).get("bot_token"):
-        raise AdminError("registry.reader.bot_token is required")
+    if not bot_credential.configured(reg):
+        raise AdminError("registry.reader.bot_token_ref (or reader.bot_token) is required")
     return reg
+
+
+def _bot_token(reg: dict) -> str:
+    """Resolve the bot token for an admin call; any failure is a hard AdminError with the cause."""
+    try:
+        token = bot_credential.resolve(reg)
+    except bot_credential.BotTokenUnavailable as error:
+        raise AdminError(str(error)) from None
+    if not token:
+        raise AdminError("registry.reader.bot_token_ref (or reader.bot_token) is required")
+    return token
 
 
 def _write_registry(path: str, reg: dict) -> None:
@@ -160,7 +172,7 @@ def ensure_notification(registry_path: str, stream: str, category_name: str,
                         client=None, sender=None) -> dict:
     private_data.prove_private(registry_path)
     reg = _load_registry(registry_path)
-    api = client or DiscordAPI(reg["reader"]["bot_token"])
+    api = client or DiscordAPI(_bot_token(reg))
     channels = api.list_channels(str(reg["guild_id"]))
 
     category = _one_named(channels, category_name, _CATEGORY, "categories")
@@ -215,7 +227,7 @@ def check_notification(registry_path: str, stream: str, category_name: str,
     entry = (reg.get("streams") or {}).get(stream)
     if not isinstance(entry, dict):
         raise AdminError("stream %r is not registered" % stream)
-    api = client or DiscordAPI(reg["reader"]["bot_token"])
+    api = client or DiscordAPI(_bot_token(reg))
     channels = api.list_channels(str(reg["guild_id"]))
     category = _one_named(channels, category_name, _CATEGORY, "categories")
     channel = _one_named(channels, channel_name, _TEXT, "text channels")

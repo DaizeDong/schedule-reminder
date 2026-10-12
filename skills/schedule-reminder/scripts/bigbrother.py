@@ -8,7 +8,8 @@ This module folds that capability into the skill: it opens the bot->user DM and 
 `urllib` and the SAME registry every other Agent Center path reads.
 
 Config (from the registry, discovery via relay.load_registry):
-  reader.bot_token        the Discord bot token (canonical; same one ingest reads)
+  reader.bot_token_ref    cv:// reference to the Discord bot token, resolved through credvault
+                          (or reader.bot_token inline; same resolver ingest uses, bot_credential.py)
   big_brother.user_id     the recipient user id for the DM
 
 Honors AGENT_CENTER_RELAY_DRYRUN (skip network, return True) so tests/CI never hit Discord.
@@ -37,7 +38,11 @@ def _registry():
 
 
 def _creds(reg):
-    token = (reg.get("reader") or {}).get("bot_token")
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import bot_credential  # sibling; the one resolver for reader.bot_token_ref / reader.bot_token
+    token = bot_credential.resolve_or_none(reg, "bigbrother")
     user_id = (reg.get("big_brother") or {}).get("user_id")
     return token, user_id
 
@@ -72,7 +77,7 @@ def send_dm(text):
     try:
         token, user_id = _creds(_registry())
         if not token or not user_id:
-            sys.stderr.write("bigbrother: no token/user_id in registry (reader.bot_token / "
+            sys.stderr.write("bigbrother: no token/user_id in registry (reader.bot_token_ref / "
                              "big_brother.user_id)\n")
             return False
         st, body = _post("%s/users/@me/channels" % _API, token, {"recipient_id": str(user_id)})

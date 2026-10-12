@@ -39,7 +39,7 @@ python relay.py health                 # registry sane? (no network, no secrets)
 ```
 
 - **Two transports behind one caller contract.** `files` given, or `channel_id` given → the bot
-  (`registry.reader.bot_token`). A named stream uses its webhook when present; a notification-only
+  (the canonical bot token; see **Bot token** below). A named stream uses its webhook when present; a notification-only
   stream with just `channel_id` uses that same canonical bot token.
   A configured webhook carries per-stream identity and is bound to one channel. This relay routes
   attachments and explicit-channel responses through the bot; callers keep the same interface.
@@ -50,9 +50,21 @@ python relay.py health                 # registry sane? (no network, no secrets)
 - **Registry (secrets; never in THIS public repo)**: discovery = env `AGENT_CENTER_CONFIG`, else a
   registry file in the Agent Center config dir (outside this repo). Shape:
   `{"streams":{"<name>":{"webhook":"...","username":"..."}},
-  "reader":{"bot_token":"..."}, "big_brother":{...}}`. `reader.bot_token` is the canonical Discord
-  bot token the inbound ingest reads. That config dir is version-controlled in a **private**
+  "reader":{"bot_token_ref":"cv://<record>/<credential>"}, "big_brother":{...}}`. The reader block
+  names the canonical Discord bot token the inbound ingest reads. That config dir is version-controlled in a **private**
   companion repo for backup + portability, secrets live there, never here. See `deployment.md`.
+- **Bot token**: one resolver (`scripts/bot_credential.py`) serves ingest, the tick, relay, Big
+  Brother, the admin CLI, the config doctor and the route check. Order, with no fallback after a
+  failure: `AGENT_CENTER_BOT_TOKEN` in the environment (an explicit injection, for a machine without
+  a vault key); else `reader.bot_token_ref`, a `cv://` reference resolved at use through the
+  credvault Python library, so the value never sits in the registry file; else an inline
+  `reader.bot_token` (an install without a vault). A registry carrying both registry fields is a
+  configuration error, because a stale inline copy must never cover for a reference that failed.
+  When a reference cannot be resolved (package not importable by the interpreter running the task,
+  vault or key missing, unknown record), ingest and the admin CLI stop with
+  `BotTokenUnavailable` and the cause; relay and Big Brother write one
+  `bot token unavailable: <cause>` line to stderr and degrade (webhook streams keep delivering);
+  the tick logs the cause and still dispatches staged work. No path prints the value.
 - **Per-stream identity**: each message sets `username` so a stream shows its own name/avatar.
 - **Fallback**: an unknown stream or missing registry routes to Big Brother DM with a `[stream]`
   prefix. Callers must still inspect the delivery result.
@@ -198,7 +210,8 @@ judgment chain, and a claimed message never reaches a model.
   does not start provider CLIs or supply a provider ladder.
 - **User vs bot.** `ingest.py` counts a message as a user reply only when it is neither `author.bot`
   nor a `webhook_id` post, so the skill's own relay/digest confirmations never feed back on
-  themselves. Bot token: `registry.reader.bot_token`, else the legacy notifier config file.
+  themselves. Bot token: the resolver above (`AGENT_CENTER_BOT_TOKEN`, `reader.bot_token_ref` or
+  `reader.bot_token`).
   Same urllib `User-Agent` gotcha as relay (Discord 403s the default).
 - **Cursors & inboxes** live in `<state-dir>/<channel-id>.last` and `<state-dir>/<key>.inbox` under
   the Agent Center config dir, where `<key>` is the stream name for registered streams and the

@@ -205,7 +205,8 @@ def _resolve_channel(row: dict):
                          % row["stream"])
     token = relay.bot_token(reg)
     if not token:
-        raise RouteError("registry has no reader.bot_token; cannot read the channel back")
+        raise RouteError("registry has no usable bot token (reader.bot_token_ref / reader.bot_token); "
+                         "cannot read the channel back")
     channel_id = str(entry["channel_id"])
 
     channel = _get("/channels/%s" % channel_id, token)

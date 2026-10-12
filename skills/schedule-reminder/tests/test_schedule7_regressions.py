@@ -37,6 +37,22 @@ def forbidden(*args, **kwargs):
     raise AssertionError("Unexpected external effect in Schedule7 control")
 
 
+_BOT_CREDENTIAL = {}
+
+
+def bot_credential_module():
+    """The real token resolver, loaded once: ingest names it as a module-level import, which the
+    inert loader below does not execute."""
+    if "module" not in _BOT_CREDENTIAL:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "schedule7_bot_credential", ROOT / "skills/schedule-reminder/scripts/bot_credential.py")
+        loaded = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(loaded)
+        _BOT_CREDENTIAL["module"] = loaded
+    return _BOT_CREDENTIAL["module"]
+
+
 def module(relative, **dependencies):
     tree = ast.parse(source_text(relative), filename=relative)
     namespace = {"__name__": "schedule7_inert", "json": json, "copy": copy,
@@ -142,6 +158,7 @@ class ChannelWorld:
                                   basename=posixpath.basename),
                                   makedirs=lambda *args, **kwargs: None, fsync=lambda *args: None)
         self.ingest = module("skills/schedule-reminder/scripts/ingest.py",
+                             bot_credential=bot_credential_module(),
                              inbound=self.inbound, private_data=private, os=fake_os,
                              open=self.open, _STATE_DIR="/synthetic-state", _SAFE_KEY=re.compile(r"^[A-Za-z0-9_.-]+$"),
                              _fetch=self.fetch, _reactors=self.reactors,

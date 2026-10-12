@@ -70,7 +70,12 @@ def run(only_stream=None, post=True):
         except Exception as error:
             _log("tick: %s poll failed: %s" % (label, type(error).__name__))
     reg = ingest.load_registry()
-    token = ingest.bot_token(reg)
+    try:
+        token = ingest.bot_token(reg)
+    except Exception as error:  # BotTokenUnavailable; its message names the cause, never the value
+        # Staged work still dispatches; only the Discord acknowledgement needs the bot.
+        _log("tick: bot token unavailable: %s: %s" % (type(error).__name__, error))
+        token = None
     handled, handled_cmds = {}, {}
     for record in ingest.pending_work():
         stream = record["stream"]

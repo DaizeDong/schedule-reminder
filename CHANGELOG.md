@@ -20,6 +20,14 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - Persist notification claims under a stable business-event identity. Uncertain sends require reconciliation, and retries preserve the prepared target and payload.
 
 ### Changed
+- The Agent Center bot token can now be named by reference. `registry.reader.bot_token_ref` holds a
+  `cv://` credential reference resolved at use through the credvault Python library;
+  `AGENT_CENTER_BOT_TOKEN` in the environment is an explicit injection that wins; an inline
+  `reader.bot_token` still works for an install without a vault. Every reader (ingest, tick, relay,
+  Big Brother, admin CLI, config doctor, route check) goes through the new `bot_credential.py`.
+  A reference that fails never falls back to an inline copy, and a registry with both fields is
+  refused. Ingest and the admin CLI fail with `BotTokenUnavailable`; relay and Big Brother degrade
+  with one stderr line naming the cause.
 - `relay.py send --idempotency-key K [--receipt-adapter NAME]` prints one JSON receipt for a caller
   that must prove delivery: `confirmed` with the Discord message IDs, `not_applied` only when nothing
   can have been sent (no Big Brother fallback in this mode), otherwise `uncertain`. Plain `send` is

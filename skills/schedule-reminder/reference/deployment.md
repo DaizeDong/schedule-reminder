@@ -95,6 +95,15 @@ All model calls use installed `llmcall.call`, with agent mode for execution and 
 decisions. Model, routing, timeouts, fallback and runner policy remain owned by llmcall.
 Missing llmcall is unavailable; the worker does not install a provider ladder.
 
+When the registry names the bot token by `reader.bot_token_ref`, the credvault Python package must
+be importable by the exact interpreter the scheduled ticks use (they run under `pythonw.exe`
+with `-B`, so check that interpreter, not whichever `python` is first on PATH). Install it for
+the user rather than into a shared interpreter, for example
+`<that python.exe> -m pip install --user --no-deps -e <credvault>/python`, and confirm with
+`<that python.exe> -c "import credvault"`. The vault and its key are found by the library's own
+defaults. A tick that cannot resolve the reference logs `BotTokenUnavailable` with the cause; it
+does not read any other copy of the token.
+
 Work additionally requires llmcall process containment and truthful execution/cleanup receipts.
 Missing cleanup confirmation keeps the writer reservation; a stop whose tree kill is confirmed by a
 fresh process snapshot releases it itself. Completion review requires actor and
