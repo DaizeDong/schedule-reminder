@@ -41,10 +41,8 @@ def test_runner_uses_artifacts_only_for_explicit_artifact_work(tmp_path, monkeyp
     module()
     import agent_run
     workspace = fixtures.artifact_workspace(tmp_path / 'output')
-    monkeypatch.setattr(agent_run.agent_task, 'get', lambda _id: {'ext': {'x_agent_exec_evidence': 'artifacts'}})
     monkeypatch.setattr(agent_run, 'capture_diff', lambda _path: pytest.fail('Artifact work must not require Git'))
-    token = agent_run._OPERATION.set(('synthetic-work', 1))
-    try:
-        assert 'report.txt' in agent_run._capture_evidence(str(workspace))
-    finally:
-        agent_run._OPERATION.reset(token)
+    monkeypatch.setattr(agent_run, 'is_repo', lambda _path: pytest.fail('a recorded mode is not re-derived'))
+    mode = agent_run.evidence_mode({'ext': {'x_agent_exec_evidence': 'artifacts'}}, str(workspace))
+    assert mode == 'artifacts'
+    assert 'report.txt' in agent_run._capture_evidence(str(workspace), mode)

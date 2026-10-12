@@ -826,29 +826,29 @@ def test_native_command_timeout_cleans_snapshot_only_after_process_cleanup(sandb
     assert len(native_command_process) == 1
 
 
-def test_legacy_reap_reports_keep_distinct_work_order_notification_identities(sandbox, monkeypatch):
+def test_reap_reports_keep_distinct_work_order_notification_identities(sandbox, monkeypatch):
     import agent_task
     import agent_tick
     monkeypatch.setenv('TASK_RUN_ID', CASE['event']['run_id'])
-    monkeypatch.setattr(agent_tick, '_age_seconds', lambda item: agent_tick.CLAIM_GRACE_SECONDS + 1)
     monkeypatch.setattr(agent_tick, '_log', lambda *args: None)
-    legacy_orders = [receipts.store.add_item(title, state='doing', source=agent_task.WORK_SOURCE,
-        ext={agent_task.EXT_STATE: agent_task.STATE_RUNNING, agent_task.EXT_STREAM: CASE['event']['stream']})
-        for title in (CASE['content'], CASE['changed_content'])]
-    assert all(agent_task.operation(item['id']) is None for item in legacy_orders)
-
-    assert agent_tick._reap_legacy(legacy_orders, post=True) == [item['id'] for item in legacy_orders]
-    expected = {receipts.event_id('work-order:' + item['id'], 'terminal', 'reconcile')
-                for item in legacy_orders}
+    monkeypatch.setattr(agent_task, 'proc_identity', lambda pid: (False, None))
+    reaped = []
+    for title in (CASE['content'], CASE['changed_content']):
+        item = receipts.store.add_item(title, source=agent_task.WORK_SOURCE,
+            ext={agent_task.EXT_STATE: agent_task.STATE_QUEUED, agent_task.EXT_STREAM: CASE['event']['stream']})
+        op = agent_task.claim(item['id'], return_operation=True)
+        assert agent_task.begin_spawn(item['id'], op['generation'])
+        assert agent_task.start_runner(item['id'], op['generation'], 4101, 41)
+        assert agent_tick.reap(post=True) == [item['id']]   # the dead runner frees the serial slot
+        reaped.append((item, op['run_id']))
+    expected = {receipts.event_id(run_id, 'terminal', 'reconcile') for _item, run_id in reaped}
     with receipts._connection(None, readonly=True) as connection:
         actual = {row[0] for row in connection.execute('SELECT event_id FROM notification_receipts')}
     assert actual == expected and len(actual) == 2
-    for item in legacy_orders:
-        key = receipts.event_id('work-order:' + item['id'], 'terminal', 'reconcile')
-        receipt = receipts.get_receipt(key)
-        assert receipt['state'] == 'sent'
-        assert receipt['run_id'] == 'work-order:' + item['id']
+    for item, run_id in reaped:
+        receipt = receipts.get_receipt(receipts.event_id(run_id, 'terminal', 'reconcile'))
+        assert receipt['state'] == 'sent' and receipt['run_id'] == run_id
         assert receipts.store.get_item(item['id'])['state'] == 'blocked'
     assert len(sandbox[3]) == 2
-    assert agent_tick._reap_legacy(post=True) == []
+    assert agent_tick.reap(post=True) == []
     assert len(sandbox[3]) == 2

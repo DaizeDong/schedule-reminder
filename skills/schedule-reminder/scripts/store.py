@@ -1638,6 +1638,22 @@ def work_reservations(*, db_path=None):
         conn.close()
 
 
+def work_pending(*, db_path=None):
+    """True when the work tick has anything to do: an unreleased reservation, or an active order
+    that is queued, running or stopping. One read-only query; the idle tick stops here."""
+    if not os.path.isfile(db_path or default_db_path()):
+        return False
+    conn = _connect(db_path, readonly=True)
+    try:
+        return conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM agent_operations WHERE released_at IS NULL) OR EXISTS("
+            "SELECT 1 FROM items WHERE source=? AND state IN (%s) AND json_extract(ext, '$.%sstate') "
+            "IN ('queued','running','stop_pending'))" % (",".join("?" * len(ACTIVE_STATES)), _EXEC),
+            (_WORK_SOURCE, *ACTIVE_STATES)).fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
 def claim_work(item_id, *, run_id=None, actor=None, db_path=None):
     """Claim one queued item and the serial writer slot in one transaction; no lease replay."""
     conn = _connect(db_path)
@@ -1651,14 +1667,6 @@ def claim_work(item_id, *, run_id=None, actor=None, db_path=None):
                 return None
             if conn.execute("SELECT 1 FROM agent_operations WHERE released_at IS NULL LIMIT 1").fetchone():
                 return None
-            # Old runners have no operation row. They still reserve the single writer slot.
-            for other in conn.execute("SELECT id,state,ext FROM items WHERE source=? "
-                                      "AND id NOT IN (SELECT item_id FROM agent_operations)",
-                                      (_WORK_SOURCE,)):
-                other_ext = json.loads(other["ext"] or "{}")
-                if other["state"] == "doing" or (other["state"] in ACTIVE_STATES and
-                        other_ext.get(_EXEC + "state") in ("running", "stop_pending", "reconcile")):
-                    return None
             previous = _operation(conn, item_id)
             generation = previous["generation"] + 1 if previous else 1
             now, attempt_id = to_rfc3339(now_utc()), uuid7()
@@ -1772,7 +1780,7 @@ def advance_work(item_id, generation, action, *, pid=None, pstart=None, checkpoi
     start is a one-shot runner handshake. receipt is an idempotent parent acknowledgement and
     cannot replace a different process identity. reconcile requires the caller's exact snapshot.
     release requires a quiescent child receipt; a dead runner cannot clear unknown cleanup (only a
-    verified job kill of the whole runner tree can, see verified_cleanup).
+    verified job kill of the runner's job can, see verified_cleanup).
     """
     conn = _connect(db_path)
     try:
@@ -1802,25 +1810,22 @@ def advance_work(item_id, generation, action, *, pid=None, pstart=None, checkpoi
                     raise ValueError('reviewed cleanup evidence is required')
                 updates.update(cleanup_state='quiescent', cleanup_receipt=_dump_json(receipt), released_at=now)
             elif action == 'verified_cleanup':
-                # A stop that recorded the runner tree before taskkill and confirmed every member
-                # and later descendant gone from a fresh snapshot. The receipt must name every
-                # recorded runner identity; a parent's absence alone never reaches this branch.
+                # A stop that terminated the runner's own job and then saw it report
+                # ActiveProcesses == 0 (runner_job); its roots were verified members first. The
+                # receipt must name every recorded runner identity; a parent's absence alone never
+                # reaches this branch.
                 if (expected is None or op['outcome'] != 'cancelled' or op['released_at'] is not None
                         or op['cleanup_state'] not in ('quiescent', 'in_flight', 'unknown')):
                     return False
-                # 'verified-job-kill': the runner's own job was terminated and then reported
-                # ActiveProcesses == 0 (runner_job); its roots were verified members first.
-                if (not isinstance(receipt, dict)
-                        or receipt.get('authority') not in ('verified-tree-kill', 'verified-job-kill')
+                if (not isinstance(receipt, dict) or receipt.get('authority') != 'verified-job-kill'
                         or not receipt.get('members') or not receipt.get('confirmed_at')):
-                    raise ValueError('verified tree-kill receipt is required')
+                    raise ValueError('verified job-kill receipt is required')
                 # 'unknown' is what a child receipt without confirmed cleanup (llmcall could not
-                # prove its own children gone) or a legacy operation leaves. A tree kill is
-                # inference from parent PIDs and cannot override that report. A job kill can: every
-                # process llmcall started, its nested job included, was a member of the runner job,
-                # and the kernel counted zero members left. It cannot speak for processes that
-                # left the job, so it supersedes only when the child receipt names none, its own
-                # breakaway check ran and found none.
+                # prove its own children gone) or a migrated operation leaves. A job kill can
+                # override it: every process llmcall started, its nested job included, was a member
+                # of the runner job, and the kernel counted zero members left. It cannot speak for
+                # processes that left the job, so it supersedes only when the child receipt names
+                # none, its own breakaway check ran and found none.
                 if op['cleanup_state'] == 'unknown' and not _job_kill_supersedes(
                         receipt, json.loads(op['cleanup_receipt'] or 'null')):
                     return False

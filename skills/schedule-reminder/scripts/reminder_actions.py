@@ -68,13 +68,13 @@ def origin_links(item):
     return result
 
 
-def _task_link(item, db_path):
+def _task_link(item, db_path, connection=None):
     link = item['ext'].get('task_console')
     task_id = link.get('task_id') if isinstance(link, dict) else None
     if not isinstance(task_id, str) or not task_id:
         return None
     from reminder_linked_items import read_task_binding
-    return read_task_binding(item['id'], task_id, db_path=db_path)
+    return read_task_binding(item['id'], task_id, db_path=db_path, connection=connection)
 
 
 def _revision(item, current):
@@ -103,7 +103,7 @@ def project_item(connection, item, *, db_path, workspace_root=None, workspace_ch
     offers = []
     email_task = item.get('source') == 'email-monitor' and item.get('kind') == 'task'
     eligible = item.get('state') in ACTIVE_TODOS and (item.get('source') not in SIGNALS or email_task)
-    task = _task_link(item, db_path) if eligible else None
+    task = _task_link(item, db_path, connection) if eligible else None
     if task:
         links.append({'kind': 'task', 'id': task['task_id'], 'label': '关联任务'})
     active = bool(current and current['state'] in receipts.ACTIVE)
@@ -145,7 +145,7 @@ def _validate(request):
         raise ActionError('invalid_request_id')
 
 
-def _reserve(request, db_path, workspace_root):
+def _reserve(request, db_path, workspace):
     import store
     connection = receipts.connect(db_path, write=True)
     try:
@@ -165,7 +165,7 @@ def _reserve(request, db_path, workspace_root):
                 if latest['action_id'] != request['action_id']:
                     raise ActionError('another_action_active')
                 return latest, False, None
-            projection = project_item(connection, item, db_path=db_path, workspace_root=workspace_root)
+            projection = project_item(connection, item, db_path=db_path, workspace_check=lambda: workspace)
             if projection['revision'] != request['revision']:
                 raise ActionError('stale_recommendation')
             offer = next((row for row in projection['offers'] if row['id'] == request['action_id'] and row['enabled']), None)
@@ -215,7 +215,10 @@ def _reply(db_path, row, *, wakeup=False, dispatch=False):
 
 def start(request, *, db_path, workspace_root=None, context=None):
     _validate(request)
-    row, created, item = _reserve(request, db_path, workspace_root)
+    # Resolved once, before the write transaction: it does not depend on the transaction and
+    # must not hold the SQLite writer lock while it runs.
+    root = _workspace(workspace_root)
+    row, created, item = _reserve(request, db_path, root)
     if not created:
         return _reply(db_path, row, wakeup=row['kind'] == 'agent' and row['state'] == 'queued')
     if row['kind'] == 'complete':
@@ -224,7 +227,6 @@ def start(request, *, db_path, workspace_root=None, context=None):
         return _reply(db_path, row, dispatch=True)
     try:
         import agent_task
-        root = _workspace(workspace_root)
         if root is None:
             raise ActionError('action_workspace_unavailable')
         workspace = root / row['work_item_id']

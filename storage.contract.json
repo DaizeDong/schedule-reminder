@@ -602,10 +602,10 @@
     {
       "artifact_id": "agent-runs-lifecycle-lock",
       "path_pattern": "agent-runs/.lifecycle.lock",
-      "purpose": "Run-root lifecycle coordination lock.",
-      "schema": "scripts/agent_task.py and private_data.file_lock.",
-      "producer": "The owning queue lifecycle operation.",
-      "consumer_or_final_deliverable": "One active queue lifecycle operation.",
+      "purpose": "Run-root launch/stop exclusion lock.",
+      "schema": "scripts/agent_task.py launch_lock and private_data.file_lock.",
+      "producer": "A work launch or stop.",
+      "consumer_or_final_deliverable": "One active launch or stop.",
       "rebuild_or_restore": "Recreate after checking that the previous owner is inactive.",
       "retention_rule": {
         "class": "rebuildable",
@@ -615,14 +615,14 @@
     {
       "artifact_id": "agent-runs-enqueue-lock",
       "path_pattern": "agent-runs/*/.enqueue.lock",
-      "purpose": "Per-work enqueue coordination or unpublished request bytes.",
-      "schema": "scripts/agent_task.py enqueue request publication.",
-      "producer": "The owning queue writer.",
-      "consumer_or_final_deliverable": "One active enqueue and its recovery.",
-      "rebuild_or_restore": "Recreate after request publication and matching task-store operation are reconciled.",
+      "purpose": "Leftover per-work enqueue lock from earlier versions; no longer produced.",
+      "schema": "One-byte lock file, no content.",
+      "producer": "Earlier versions of scripts/agent_task.py enqueue.",
+      "consumer_or_final_deliverable": "None.",
+      "rebuild_or_restore": "Not needed.",
       "retention_rule": {
         "class": "rebuildable",
-        "rule": "Hold while enqueue outcome is unresolved; retire only after writer inactivity and final request/receipt reconciliation."
+        "rule": "Inert; may be deleted."
       }
     },
     {
@@ -863,10 +863,10 @@
     {
       "artifact_id": "data-agent-runs-lifecycle-lock",
       "path_pattern": "data/agent-runs/.lifecycle.lock",
-      "purpose": "Run-root lifecycle coordination lock.",
-      "schema": "scripts/agent_task.py and private_data.file_lock.",
-      "producer": "The owning queue lifecycle operation.",
-      "consumer_or_final_deliverable": "One active queue lifecycle operation.",
+      "purpose": "Run-root launch/stop exclusion lock.",
+      "schema": "scripts/agent_task.py launch_lock and private_data.file_lock.",
+      "producer": "A work launch or stop.",
+      "consumer_or_final_deliverable": "One active launch or stop.",
       "rebuild_or_restore": "Recreate after checking that the previous owner is inactive.",
       "retention_rule": {
         "class": "rebuildable",
@@ -876,14 +876,14 @@
     {
       "artifact_id": "data-agent-runs-enqueue-lock",
       "path_pattern": "data/agent-runs/*/.enqueue.lock",
-      "purpose": "Per-work enqueue coordination or unpublished request bytes.",
-      "schema": "scripts/agent_task.py enqueue request publication.",
-      "producer": "The owning queue writer.",
-      "consumer_or_final_deliverable": "One active enqueue and its recovery.",
-      "rebuild_or_restore": "Recreate after request publication and matching task-store operation are reconciled.",
+      "purpose": "Leftover per-work enqueue lock from earlier versions; no longer produced.",
+      "schema": "One-byte lock file, no content.",
+      "producer": "Earlier versions of scripts/agent_task.py enqueue.",
+      "consumer_or_final_deliverable": "None.",
+      "rebuild_or_restore": "Not needed.",
       "retention_rule": {
         "class": "rebuildable",
-        "rule": "Hold while enqueue outcome is unresolved; retire only after writer inactivity and final request/receipt reconciliation."
+        "rule": "Inert; may be deleted."
       }
     },
     {

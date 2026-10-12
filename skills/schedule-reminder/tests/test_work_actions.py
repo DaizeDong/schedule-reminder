@@ -171,8 +171,8 @@ def test_cli_stop_of_a_running_action_replies_with_json_only(case):
 
     Stopping a running order logged "stopped <id> (...)" to stdout in front of the JSON, so every
     stop of a running action showed owner_reply_unknown although it had succeeded. The order here
-    is running in the store with a runner identity that no live process matches (offline tests
-    block taskkill), so the stop takes the same finish-and-log path as a real one."""
+    is running in the store with a runner identity that no live process matches, so the stop
+    takes the same finish-and-log path as a real one."""
     import os
     import subprocess
     import agent_task
@@ -607,3 +607,30 @@ def test_work_feed_checks_the_action_workspace_once_not_per_todo(case, monkeypat
     assert calls == [str(workspace)]
 
 
+
+
+def test_start_checks_the_workspace_once_and_opens_no_connection_inside_its_transaction(case, monkeypatch):
+    """The workspace does not depend on the write transaction, so it is resolved once before it,
+    and the task binding is read on the transaction's own connection."""
+    import store
+    import reminder_linked_items
+    actions = module()
+    database, workspace, item = case
+    payload = request(actions, database, workspace, item)
+    calls, opened = [], []
+    real_workspace, real_admitted = actions._workspace, store.admitted_connection
+    monkeypatch.setattr(actions, '_workspace', lambda root: calls.append(root) or real_workspace(root))
+    def admitted(*args, **kwargs):
+        if store._WRITE_LOCK._is_owned():
+            opened.append(args)
+        return real_admitted(*args, **kwargs)
+    monkeypatch.setattr(store, 'admitted_connection', admitted)
+    seen = []
+    real_binding = reminder_linked_items.read_task_binding
+    monkeypatch.setattr(reminder_linked_items, 'read_task_binding',
+                        lambda *a, **k: seen.append(k.get('connection')) or real_binding(*a, **k))
+    reply = actions.start(payload, db_path=str(database), workspace_root=str(workspace))
+    assert reply['ok'] and reply['action']['work_item_id']
+    assert calls == [str(workspace)]
+    assert opened == [], 'no second connection while the writer lock is held'
+    assert all(connection is not None for connection in seen)

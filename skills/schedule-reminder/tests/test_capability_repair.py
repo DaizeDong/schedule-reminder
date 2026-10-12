@@ -48,26 +48,18 @@ def test_model_call_does_not_override_installed_policy(monkeypatch):
     calls = []
     result = SimpleNamespace(**FIX['model_result'], error=None)
     monkeypatch.setattr(sys.modules['llmcall'], 'call', lambda prompt, **kw: calls.append(kw) or result)
-    agent_run._llm(FIX['request'], None, None, 'agent')
+    agent_run._llm(FIX['request'], None, 'agent')
     assert calls and calls[0]['mode'] == 'agent'
     assert not ({'chain', 'model', 'providers', 'timeout', 'fallback'} & calls[0].keys())
 
 
 def test_duplicate_message_creates_one_work_order_and_run(tmp_path, monkeypatch):
     store.init_db()
-    def rem(*args):
-        import contextlib
-        import io
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            assert reminder.main(list(args)) == 0
-        return json.loads(out.getvalue())
-    monkeypatch.setattr(agent_task, 'rem', rem)
     first = agent_task.enqueue(FIX['stream'], FIX['request'], workspace=str(tmp_path), msg_id=FIX['message_id'])
     second = agent_task.enqueue(FIX['stream'], FIX['request'], workspace=str(tmp_path), msg_id=FIX['message_id'])
     assert first['id'] == second['id']
     runs = [path for path in (tmp_path/'runs').iterdir() if path.is_dir()]
-    assert (tmp_path/'runs'/'.lifecycle.lock').is_file()
+    assert not list((tmp_path/'runs').rglob('*.lock')), 'enqueue takes no lock'
     assert len(runs) == 1
     assert len((runs[0]/'events.jsonl').read_text(encoding='utf-8').splitlines()) == 1
 

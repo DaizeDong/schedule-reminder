@@ -100,8 +100,8 @@ defaults. A tick that cannot resolve the reference logs `BotTokenUnavailable` wi
 does not read any other copy of the token.
 
 Work additionally requires llmcall process containment and truthful execution/cleanup receipts.
-Missing cleanup confirmation keeps the writer reservation; a stop whose tree kill is confirmed by a
-fresh process snapshot releases it itself. Completion review requires actor and
+Missing cleanup confirmation keeps the writer reservation; a stop whose runner job is terminated and
+then reports no live member releases it itself. Completion review requires actor and
 reviewer model-family identities plus the original workspace baseline and actual change evidence.
 Offline synthetic tests exercise those checks but do not establish support in an installed
 llmcall version. `agent_task.py status` observes reservations; `recover-cleanup` accepts an explicit,

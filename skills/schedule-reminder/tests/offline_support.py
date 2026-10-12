@@ -91,6 +91,15 @@ def install():
         return original_run(argv, *args, **kwargs)
     subprocess.run = run
 
+    class Popen(subprocess.Popen):
+        """A detached work tick would outlive the test that woke it; tests drive ticks directly."""
+        def __init__(self, argv, *args, **kwargs):
+            command = [str(value) for value in argv] if isinstance(argv, (list, tuple)) else []
+            if command and Path(command[-1]).name == 'agent_tick.py':
+                raise OSError('detached work tick blocked in offline tests')
+            super().__init__(argv, *args, **kwargs)
+    subprocess.Popen = Popen
+
     def audit(event, args):
         if not ACTIVE:
             return

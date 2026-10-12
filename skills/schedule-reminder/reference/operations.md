@@ -14,9 +14,9 @@ A newly discovered or registered channel first records a PRIVATE baseline of own
 
 ## Work completion
 
-Work orders use agent_task.py, agent_run.py and agent_tick.py. Finalization commits execution metadata and pool state in one SQLite transaction through the CLI's additive `--ext` option on `done` and `transition`. A failed transaction leaves the prior running state available to recovery.
+Work orders use agent_task.py, agent_run.py and agent_tick.py. Finalization commits execution metadata and pool state in one generation-fenced SQLite transaction (`store.advance_work`). A failed transaction leaves the prior running state available to recovery.
 
-The serial lifecycle lock remains required. PID creation-time checks, detached process survival and termination need platform tests. Synthetic state-transition checks do not establish those properties.
+The launch/stop lock remains required: it keeps a stop out of the window between a runner's spawn and its PID receipt. PID creation-time checks, detached process survival and Job Object termination need platform tests. Synthetic state-transition checks do not establish those properties.
 
 Model calls use the installed llmcall interface: `llmcall.call(prompt, mode="agent")` for agent work, and its default judge mode for text decisions. Routing, models, timeouts and fallback policy belong to that interface.
 

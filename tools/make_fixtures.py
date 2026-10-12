@@ -545,12 +545,6 @@ def schedule11_query_cases():
             failures.append({"name": name + ("_later" if later else "_first"),
                              "pages": [deepcopy(page), deepcopy(bad)] if later else [deepcopy(bad)]})
     failures.append({"name": "repeated_page", "pages": [deepcopy(page), deepcopy(page)]})
-    invalid_work = deepcopy(first[0])
-    invalid_work["ext"] = "unreadable execution state"
-    work_failures = [
-        {"name": "missing_execution_state", "pages": [{"items": [invalid_work], "next_cursor": None}]},
-        {"name": "missing_pool_state", "pages": [{"items": [{"id": "synthetic-100", "ext": {"x_agent_exec_state": "running"}}], "next_cursor": None}]},
-    ]
     positives = [
         {"name": "empty", "pages": [empty], "expected": []},
         {"name": "multipage_running", "pages": [deepcopy(page), {"items": [item("synthetic-100", "running")], "next_cursor": None}],
@@ -559,33 +553,149 @@ def schedule11_query_cases():
          "expected": first + [item("synthetic-100", "stop_pending")]},
     ]
     found = item("wo-1")
-    wrong = item("synthetic-other")
-    get_failures = [
-        {"name": "busy", "response": {"_err": "ERR_BUSY"}},
-        {"name": "error_envelope", "response": {"error_code": "ERR_BUSY"}},
-        {"name": "non_object", "response": []},
-        {"name": "missing_item", "response": {}},
-        {"name": "null_item", "response": {"item": None}},
-        {"name": "wrong_identity", "response": {"item": wrong}},
-        {"name": "incomplete_state", "response": {"item": {"id": "wo-1", "state": "pending"}}},
-    ]
-    boundary = [deepcopy(case) for case in failures
-                if case["name"] in ("busy_first", "busy_later", "missing_boundary_first", "repeated_page")]
     dispatch_failures = [{**deepcopy(case), "name": "pool_" + case["name"], "route": "pool"}
-                         for case in boundary]
-    boundary += deepcopy(work_failures)
-    dispatch_failures += [{**deepcopy(case), "name": "work_" + case["name"], "route": "work"}
-                          for case in boundary]
-    return {"page_failures": failures, "work_failures": work_failures, "positives": positives,
-            "boundary_failures": boundary, "dispatch_failures": dispatch_failures,
-            "get_failures": get_failures, "found": {"item": found},
-            "absent": {"_err": "ERR_NOT_FOUND"}, "identity": "wo-1",
+                         for case in failures
+                         if case["name"] in ("busy_first", "busy_later", "missing_boundary_first", "repeated_page")]
+    return {"page_failures": failures, "positives": positives,
+            "dispatch_failures": dispatch_failures, "found": {"item": found}, "identity": "wo-1",
             "reply": "Perform the synthetic maintenance task.",
             "plan": {"actions": []}, "stream": "infra"}
 
 
 def schedule11_regression_source():
-    return '"""Generated queue-read regressions; all observations and actions are synthetic."""\nfrom copy import deepcopy\n\nimport pytest\n\nimport agent_task\nimport agent_tick\nimport dispatch\nimport store\nfrom make_fixtures import schedule11_query_cases\n\nCASE = schedule11_query_cases()\n\n\ndef pages(monkeypatch, owner, attribute, responses):\n    pending = iter(deepcopy(responses))\n    calls = []\n    def query(*args):\n        calls.append(args)\n        return next(pending)\n    monkeypatch.setattr(owner, attribute, query)\n    return calls\n\n\ndef invoke(role):\n    if role == "get":\n        return agent_task.get(CASE["identity"])\n    if role == "claim":\n        return agent_task.claim(CASE["identity"])\n    return agent_task.finish(CASE["identity"], True)\n\n\n@pytest.mark.parametrize("case", CASE["page_failures"], ids=lambda case: case["name"])\n@pytest.mark.parametrize("consumer", ("orders", "active_items"))\ndef test_failed_page_never_returns_a_partial_census(monkeypatch, case, consumer):\n    owner = agent_task if consumer == "orders" else dispatch\n    calls = pages(monkeypatch, owner, "rem" if consumer == "orders" else "_rem", case["pages"])\n    with pytest.raises(RuntimeError):\n        (agent_task.orders if consumer == "orders" else dispatch._active_items)()\n    assert len(calls) <= len(case["pages"])\n    assert all(call[0] == "list" for call in calls)\n\n\n@pytest.mark.parametrize("case", CASE["boundary_failures"], ids=lambda case: case["name"])\n@pytest.mark.parametrize("second_census", (False, True))\ndef test_tick_query_failure_stops_before_claim_or_launch(monkeypatch, case, second_census):\n    responses = deepcopy(case["pages"])\n    if second_census:\n        responses.insert(0, {"items": [deepcopy(CASE["found"]["item"])], "next_cursor": None})\n    pages(monkeypatch, agent_task, "rem", responses)\n    effects = []\n    reaped = []\n    monkeypatch.setattr(agent_tick, "reap", lambda *_args, **_kwargs: reaped.append(True) or [])\n    monkeypatch.setattr(agent_task, "claim", lambda *_args: effects.append("claim"))\n    monkeypatch.setattr(agent_tick, "launch", lambda *_args: effects.append("launch"))\n    with pytest.raises(RuntimeError):\n        agent_tick.run(post=False)\n    assert effects == []\n    assert len(reaped) == int(second_census)\n\n\n@pytest.mark.parametrize("case", CASE["dispatch_failures"], ids=lambda case: case["name"])\n@pytest.mark.parametrize("replay", (False, True))\ndef test_dispatch_query_failure_stops_before_any_planner_or_action(monkeypatch, case, replay):\n    owner = dispatch if case["route"] == "pool" else agent_task\n    pages(monkeypatch, owner, "_rem" if case["route"] == "pool" else "rem", case["pages"])\n    effects = []\n    monkeypatch.setattr(dispatch, "call_chain", lambda *_args, **_kwargs: effects.append("model"))\n    monkeypatch.setattr(dispatch, "execute", lambda *_args, **_kwargs: effects.append("execute"))\n    monkeypatch.setattr(dispatch, "_post", lambda *_args, **_kwargs: effects.append("confirm"))\n    record = {"plan": deepcopy(CASE["plan"]) if replay else None, "outcomes": {},\n              "authorized_ids": [], "authorized_work_ids": []}\n    before = deepcopy(record)\n    with pytest.raises(RuntimeError):\n        dispatch._dispatch("reminders" if case["route"] == "pool" else CASE["stream"],\n                           CASE["reply"], None, False, None, None, record,\n                           lambda: effects.append("save"))\n    assert effects == []\n    assert record == before\n\n\n@pytest.mark.parametrize("case", CASE["get_failures"], ids=lambda case: case["name"])\n@pytest.mark.parametrize("role", ("get", "claim", "finish"))\ndef test_failed_get_cannot_transition_patch_or_finalize(monkeypatch, case, role):\n    mutations = []\n    def query(*args):\n        if args[0] == "get":\n            return deepcopy(case["response"])\n        mutations.append(args[0])\n        return deepcopy(CASE["found"])\n    monkeypatch.setattr(agent_task, "rem", query)\n    monkeypatch.setattr(agent_task, "patch_ext", lambda *_args, **_kwargs: mutations.append("patch") or {})\n    with pytest.raises(RuntimeError):\n        invoke(role)\n    assert mutations == []\n\n\n@pytest.mark.parametrize("role", ("get", "claim", "finish"))\ndef test_confirmed_absence_is_distinct_and_performs_no_mutation(monkeypatch, role):\n    calls = pages(monkeypatch, agent_task, "rem", [CASE["absent"]])\n    monkeypatch.setattr(agent_task, "patch_ext", lambda *_args, **_kwargs: pytest.fail("absent item cannot be patched"))\n    result = invoke(role)\n    if role == "get":\n        assert result is None\n    elif role == "claim":\n        assert result is False\n    else:\n        assert result["_err"] == "ERR_NOT_FOUND"\n    assert calls == [("get", "--id", CASE["identity"])]\n\n\n@pytest.mark.parametrize("case", CASE["positives"], ids=lambda case: case["name"])\n@pytest.mark.parametrize("consumer", ("orders", "active_items"))\ndef test_complete_empty_and_multipage_reads_remain_available(monkeypatch, case, consumer):\n    owner = agent_task if consumer == "orders" else dispatch\n    calls = pages(monkeypatch, owner, "rem" if consumer == "orders" else "_rem", case["pages"])\n    result = (agent_task.orders if consumer == "orders" else dispatch._active_items)()\n    expected = case["expected"] if consumer == "orders" else [\n        {"id": item["id"], "title": item["title"]} for item in case["expected"]]\n    assert result == expected\n    assert len(calls) == len(case["pages"])\n\n\n@pytest.mark.parametrize("case", CASE["positives"], ids=lambda case: case["name"])\ndef test_complete_census_retains_serial_running_and_stop_guards(monkeypatch, case):\n    store.init_db()\n    pages(monkeypatch, agent_task, "rem", case["pages"] + case["pages"])\n    monkeypatch.setattr(agent_tick, "reap", lambda *_args, **_kwargs: [])\n    effects = []\n    monkeypatch.setattr(agent_task, "claim", lambda *_args: effects.append("claim"))\n    monkeypatch.setattr(agent_tick, "launch", lambda *_args: effects.append("launch"))\n    result = agent_tick.run(post=False)\n    assert result["launched"] is None\n    assert result["running"] == (0 if case["name"] == "empty" else 1)\n    assert effects == []\n\n\n@pytest.mark.parametrize("role", ("get", "claim", "finish"))\ndef test_successful_get_keeps_normal_claim_and_finish_paths(monkeypatch, role):\n    store.init_db()\n    item = CASE["found"]["item"]\n    store.add_item(item["title"], source=agent_task.WORK_SOURCE, ext=item["ext"], _id=item["id"])\n    effects = []\n    def query(*args):\n        if args[0] != "get":\n            effects.append(args[0])\n        return deepcopy(CASE["found"])\n    monkeypatch.setattr(agent_task, "rem", query)\n    monkeypatch.setattr(agent_task, "patch_ext", lambda *_args, **_kwargs: effects.append("patch") or {})\n    result = invoke(role)\n    if role == "get":\n        assert result == CASE["found"]["item"]\n        assert effects == []\n    elif role == "claim":\n        assert result is True\n        assert effects == []\n        assert store.get_item(CASE["identity"])["state"] == "doing"\n        assert agent_task.operation(CASE["identity"])["generation"] == 1\n    else:\n        assert result == CASE["found"]\n        assert effects == ["done"]\n'
+    return '''"""Generated queue-read regressions; all observations and actions are synthetic."""
+from copy import deepcopy
+
+import pytest
+
+import agent_task
+import agent_tick
+import dispatch
+import store
+from make_fixtures import schedule11_query_cases
+
+CASE = schedule11_query_cases()
+
+
+def pages(monkeypatch, owner, attribute, responses):
+    pending = iter(deepcopy(responses))
+    calls = []
+    def query(*args):
+        calls.append(args)
+        return next(pending)
+    monkeypatch.setattr(owner, attribute, query)
+    return calls
+
+
+def busy(*_args, **_kwargs):
+    raise store.SkillError("ERR_BUSY", "synthetic busy store")
+
+
+def add(item):
+    store.add_item(item["title"], source=agent_task.WORK_SOURCE, state=item["state"],
+                   ext=item["ext"], _id=item["id"])
+
+
+@pytest.mark.parametrize("case", CASE["page_failures"], ids=lambda case: case["name"])
+def test_failed_page_never_returns_a_partial_census(monkeypatch, case):
+    calls = pages(monkeypatch, dispatch, "_rem", case["pages"])
+    with pytest.raises(RuntimeError):
+        dispatch._active_items()
+    assert len(calls) <= len(case["pages"])
+    assert all(call[0] == "list" for call in calls)
+
+
+def test_tick_store_failure_stops_before_claim_or_launch(monkeypatch):
+    store.init_db()
+    add(CASE["found"]["item"])
+    monkeypatch.setattr(agent_task.store, "list_items", busy)
+    effects = []
+    monkeypatch.setattr(agent_task, "claim", lambda *_args, **_kwargs: effects.append("claim"))
+    monkeypatch.setattr(agent_tick, "launch", lambda *_args, **_kwargs: effects.append("launch"))
+    with pytest.raises(store.SkillError):
+        agent_tick.run(post=False)
+    assert effects == []
+
+
+def _dispatch_without_effects(monkeypatch, stream, replay):
+    effects = []
+    monkeypatch.setattr(dispatch, "call_chain", lambda *_args, **_kwargs: effects.append("model"))
+    monkeypatch.setattr(dispatch, "execute", lambda *_args, **_kwargs: effects.append("execute"))
+    monkeypatch.setattr(dispatch, "_post", lambda *_args, **_kwargs: effects.append("confirm"))
+    record = {"plan": deepcopy(CASE["plan"]) if replay else None, "outcomes": {},
+              "authorized_ids": [], "authorized_work_ids": []}
+    before = deepcopy(record)
+    with pytest.raises((RuntimeError, store.SkillError)):
+        dispatch._dispatch(stream, CASE["reply"], None, False, None, None, record,
+                           lambda: effects.append("save"))
+    assert effects == []
+    assert record == before
+
+
+@pytest.mark.parametrize("case", CASE["dispatch_failures"], ids=lambda case: case["name"])
+@pytest.mark.parametrize("replay", (False, True))
+def test_dispatch_query_failure_stops_before_any_planner_or_action(monkeypatch, case, replay):
+    pages(monkeypatch, dispatch, "_rem", case["pages"])
+    _dispatch_without_effects(monkeypatch, "reminders", replay)
+
+
+@pytest.mark.parametrize("replay", (False, True))
+def test_dispatch_work_read_failure_stops_before_any_planner_or_action(monkeypatch, replay):
+    store.init_db()
+    pages(monkeypatch, dispatch, "_rem", [{"items": [], "next_cursor": None}] * 3)
+    monkeypatch.setattr(agent_task.store, "list_items", busy)
+    _dispatch_without_effects(monkeypatch, CASE["stream"], replay)
+
+
+def test_confirmed_absence_is_distinct_and_performs_no_mutation():
+    store.init_db()
+    assert agent_task.get(CASE["identity"]) is None
+    assert agent_task.claim(CASE["identity"]) is False
+    assert agent_task.finish(CASE["identity"], True, generation=1) is False
+    assert store.list_items()["items"] == []
+
+
+@pytest.mark.parametrize("case", CASE["positives"], ids=lambda case: case["name"])
+def test_complete_empty_and_multipage_reads_remain_available(monkeypatch, case):
+    calls = pages(monkeypatch, dispatch, "_rem", case["pages"])
+    result = dispatch._active_items()
+    assert result == [{"id": item["id"], "title": item["title"]} for item in case["expected"]]
+    assert len(calls) == len(case["pages"])
+
+
+@pytest.mark.parametrize("case", CASE["positives"], ids=lambda case: case["name"])
+def test_work_census_reads_every_page_in_order(case):
+    store.init_db()
+    for item in case["expected"]:
+        add(item)
+    result = agent_task.orders()
+    assert [(row["id"], row["ext"]["x_agent_exec_state"]) for row in result] == [
+        (item["id"], item["ext"]["x_agent_exec_state"]) for item in case["expected"]]
+
+
+@pytest.mark.parametrize("case", CASE["positives"], ids=lambda case: case["name"])
+def test_complete_census_retains_serial_running_and_stop_guards(monkeypatch, case):
+    store.init_db()
+    for item in case["expected"]:
+        add(item)
+    monkeypatch.setattr(agent_tick, "reap", lambda *_args, **_kwargs: [])
+    effects = []
+    monkeypatch.setattr(agent_task, "claim", lambda *_args, **_kwargs: effects.append("claim"))
+    monkeypatch.setattr(agent_tick, "launch", lambda *_args, **_kwargs: effects.append("launch"))
+    result = agent_tick.run(post=False)
+    assert result["launched"] is None
+    assert result["running"] == (0 if case["name"] == "empty" else 1)
+    assert effects == []
+
+
+def test_successful_get_keeps_normal_claim_path():
+    store.init_db()
+    add(CASE["found"]["item"])
+    assert agent_task.get(CASE["identity"])["ext"] == CASE["found"]["item"]["ext"]
+    assert agent_task.claim(CASE["identity"]) is True
+    assert store.get_item(CASE["identity"])["state"] == "doing"
+    assert agent_task.operation(CASE["identity"])["generation"] == 1
+'''
 
 
 def schedule12_review_cases():

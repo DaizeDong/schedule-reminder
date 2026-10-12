@@ -102,45 +102,41 @@ def test_command_intent_failure_prevents_handler(tmp_path, monkeypatch):
     assert read_record(case)["status"] == "pending"
 
 
-def order_bridge(tmp_path, monkeypatch):
+def started_order(tmp_path, monkeypatch):
+    """A running generation that has reached review, so either terminal outcome is allowed."""
     db = database(tmp_path)
     monkeypatch.setenv('SCHEDULE_DB_PATH', db)
-    ext = {**F["unknown_ext"], agent_task.EXT_STATE: agent_task.STATE_RUNNING}
-    item = store.add_item(F["title"], state="doing", source=agent_task.WORK_SOURCE, ext=ext, db_path=db)
-    calls = []
-    def rem(*args):
-        calls.append(args)
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = reminder.main(["--db", db, *args])
-        return {"_err": json.loads(err.getvalue())["error_code"]} if code else json.loads(out.getvalue())
-    monkeypatch.setattr(agent_task, "rem", rem)
-    return SimpleNamespace(db=db, item=item, calls=calls)
+    ext = {**F["unknown_ext"], agent_task.EXT_STATE: agent_task.STATE_QUEUED}
+    item = store.add_item(F["title"], source=agent_task.WORK_SOURCE, ext=ext, db_path=db)
+    assert agent_task.claim(item["id"]) and agent_task.begin_spawn(item["id"], 1)
+    assert agent_task.start_runner(item["id"], 1, 6102, 61)
+    assert agent_task.checkpoint(item["id"], 1, "reviewing")
+    return SimpleNamespace(db=db, item=store.get_item(item["id"], db_path=db))
 
 
 @pytest.mark.parametrize("outcome", [False, True])
 def test_finish_failure_rolls_back_state_and_metadata(tmp_path, monkeypatch, outcome):
-    case = order_bridge(tmp_path, monkeypatch)
+    case = started_order(tmp_path, monkeypatch)
     original = store._append_event
-    def fail_terminal(conn, item_id, actor, kind, **kwargs):
+    def fail_terminal(conn, item_id, actor, kind, *args, **kwargs):
         if kind == "status_change":
             raise OSError(F["error"])
-        return original(conn, item_id, actor, kind, **kwargs)
+        return original(conn, item_id, actor, kind, *args, **kwargs)
     monkeypatch.setattr(store, "_append_event", fail_terminal)
-    result = agent_task.finish(case.item["id"], outcome, F["note"])
-    assert result.get("_err")
+    with pytest.raises(OSError):
+        agent_task.finish(case.item["id"], outcome, F["note"], generation=1)
     current = store.get_item(case.item["id"], db_path=case.db)
     assert current["state"] == case.item["state"] and current["ext"] == case.item["ext"]
     assert agent_task.running([current]) == [current]
+    assert agent_task.operation(case.item["id"])["outcome"] is None
     monkeypatch.setattr(store, "_append_event", original)
-    assert not agent_task.finish(case.item["id"], outcome, F["note"]).get("_err")
+    assert agent_task.finish(case.item["id"], outcome, F["note"], generation=1)
 
 
 @pytest.mark.parametrize("outcome", [False, True])
 def test_finish_commits_state_with_execution_metadata(tmp_path, monkeypatch, outcome):
-    case = order_bridge(tmp_path, monkeypatch)
-    result = agent_task.finish(case.item["id"], outcome, F["note"])
-    assert not result.get("_err")
+    case = started_order(tmp_path, monkeypatch)
+    assert agent_task.finish(case.item["id"], outcome, F["note"], generation=1)
     current = store.get_item(case.item["id"], db_path=case.db)
     assert current["state"] == ("done" if outcome else "blocked")
     assert agent_task.exec_state(current) == (agent_task.STATE_DONE if outcome else agent_task.STATE_FAILED)
@@ -148,15 +144,13 @@ def test_finish_commits_state_with_execution_metadata(tmp_path, monkeypatch, out
 
 
 def test_reaper_does_not_report_failed_persistence_as_reaped(tmp_path, monkeypatch):
-    case = order_bridge(tmp_path, monkeypatch)
-    item = case.item
-    item["ext"].update({agent_task.EXT_PID: 6102, agent_task.EXT_PSTART: 61})
-    monkeypatch.setattr(agent_task, "is_live", lambda *args: False)
-    monkeypatch.setattr(agent_task, "append_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr(agent_task, "finish", lambda *args, **kwargs: {"_err": F["error"]})
-    monkeypatch.setattr(agent_tick, "log_tail", lambda *args: "")
+    case = started_order(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent_task, "proc_identity", lambda pid: (False, None))
+    monkeypatch.setattr(agent_task, "reconcile", lambda *args, **kwargs: False)
+    monkeypatch.setattr(agent_tick, "_post", lambda *args, **kwargs: pytest.fail("reported a failed reconcile"))
     monkeypatch.setattr(agent_tick, "_log", lambda *args: None)
-    assert agent_tick.reap([item], post=False) == []
+    assert agent_tick.reap(post=True) == []
+    assert agent_task.operation(case.item["id"])["outcome"] is None
 
 
 def exhausted(db):

@@ -245,47 +245,34 @@ class Schedule8Regressions(unittest.TestCase):
     def test_cancel_state_and_metadata_share_one_transaction(self):
         store, connection = storage()
         try:
-            item = store.add_item(case()["title"], state="doing",
+            item = store.add_item(case()["title"], state="doing", source="agent-center:work",
                 ext={"x_agent_exec_state": "stop_pending", **case()["preserved_ext"]})
-            calls = []
-            def rem(*argv):
-                calls.append(argv)
-                if argv[0] != "transition":
-                    return {"_err": "synthetic forbidden second transaction"}
-                ext = json.loads(argv[argv.index("--ext")+1]) if "--ext" in argv else None
-                return {"item": store.transition(item["id"], "cancelled", ext=ext)}
-            task = inert_module("skills/schedule-reminder/scripts/agent_task.py", rem=rem)
-            result = task.cancel(item["id"], case()["failure"])
+            task = inert_module("skills/schedule-reminder/scripts/agent_task.py", store=store)
+            result = task.cancel(item["id"], case()["failure"], expected_generation=0)
             self.assertNotIn("_err", result)
             saved = store.get_item(item["id"])
             self.assertEqual(saved["state"], "cancelled")
             self.assertEqual(saved["ext"]["x_agent_exec_state"], "failed")
             self.assertEqual(saved["ext"]["x_synthetic_existing"], "keep")
-            self.assertEqual(len(calls), 1)
         finally:
             connection.close()
 
     def test_cancel_write_failure_leaves_active_state_and_metadata(self):
         store, connection = storage()
         try:
-            item = store.add_item(case()["title"], state="doing",
+            item = store.add_item(case()["title"], state="doing", source="agent-center:work",
                 ext={"x_agent_exec_state": "stop_pending", **case()["preserved_ext"]})
             before = (store.get_item(item["id"]), list(connection.execute("SELECT * FROM events")))
             original = store.transition.__globals__["_append_event"]
             def fail_event(*args, **kwargs):
                 raise OSError(case()["failure"])
             store.transition.__globals__["_append_event"] = fail_event
-            def rem(*argv):
-                try:
-                    ext = json.loads(argv[argv.index("--ext")+1]) if "--ext" in argv else None
-                    return {"item": store.transition(item["id"], "cancelled", ext=ext)}
-                except OSError:
-                    return {"_err": case()["failure"]}
-            task = inert_module("skills/schedule-reminder/scripts/agent_task.py", rem=rem)
-            self.assertIn("_err", task.cancel(item["id"]))
+            task = inert_module("skills/schedule-reminder/scripts/agent_task.py", store=store)
+            with self.assertRaises(OSError):
+                task.cancel(item["id"], expected_generation=0)
             self.assertEqual((store.get_item(item["id"]), list(connection.execute("SELECT * FROM events"))), before)
             store.transition.__globals__["_append_event"] = original
-            self.assertNotIn("_err", task.cancel(item["id"]))
+            self.assertNotIn("_err", task.cancel(item["id"], expected_generation=0))
             current = store.get_item(item["id"])
             self.assertEqual((current["state"], current["ext"]["x_agent_exec_state"]), ("cancelled", "failed"))
         finally:

@@ -79,9 +79,8 @@ def test_unknown_cleanup_with_a_breakaway_found_by_the_stop_stays_held(runner, h
     assert agent_task.operation(iid)["released_at"] is None
 
 
-def test_only_a_job_kill_supersedes_unknown_cleanup_never_the_tree_fallback(pool):  # noqa: F811
-    # Store level and deterministic: a real-OS tree fallback also holds on any unrelated orphan
-    # born during the stop, which would let this test pass for the wrong reason.
+def test_only_a_complete_job_kill_receipt_releases_unknown_cleanup(pool):  # noqa: F811
+    # Store level and deterministic.
     iid = started_order(pool)
     assert agent_task.child_started(iid, 1, {"phase": "actor"})
     leave_cleanup_unknown(iid)
@@ -89,7 +88,11 @@ def test_only_a_job_kill_supersedes_unknown_cleanup_never_the_tree_fallback(pool
     op = agent_task.operation(iid)
     proof = {"roots": [[123, "456"]], "members": [[123, "456"]], "confirmed_at": "2026-01-01T00:00:00+00:00",
              "broke_away": [], "breakaway_check": "checked"}
-    assert not agent_task.release_verified_cleanup(iid, 1, {"authority": "verified-tree-kill", **proof}, op)
+    for authority in ("verified-tree-kill", "operator-reviewed"):
+        with pytest.raises(ValueError):
+            agent_task.release_verified_cleanup(iid, 1, {**proof, "authority": authority}, op)
+    omitted = {**proof, "authority": "verified-job-kill", "roots": [[999, "1"]], "members": [[999, "1"]]}
+    assert not agent_task.release_verified_cleanup(iid, 1, omitted, op), "every recorded identity must be covered"
     assert agent_task.operation(iid)["cleanup_state"] == "unknown"
     assert agent_task.release_verified_cleanup(iid, 1, {"authority": "verified-job-kill", **proof}, op)
     assert agent_task.operation(iid)["released_at"] is not None
@@ -196,6 +199,19 @@ def test_repeated_not_started_launches_end_blocked_with_the_slot_free(sleeper, h
     assert agent_task.operation(iid)["released_at"] is not None
     assert next_order_claims()
     assert agent_tick.NOT_STARTED_ATTEMPTS == 3
+
+
+def test_a_runner_that_cannot_be_adopted_never_runs_without_its_job(sleeper, held, monkeypatch):
+    """Adoption is mandatory: no job means the suspended runner is ended and the launch requeued."""
+    iid, started = sleeper
+    monkeypatch.setattr(runner_job, "adopt", lambda *a, **k: "JobUnavailable: synthetic job refusal")
+    monkeypatch.setattr(runner_job, "resume", lambda *a, **k: pytest.fail("resumed a runner outside its job"))
+    _generation, launched = claim_and_launch(iid)
+    assert launched is False and held.wait_gone("runner0")
+    op = agent_task.operation(iid)
+    assert op["outcome"] == "not_started" and op["released_at"] is not None
+    item = agent_task.get(iid)
+    assert item["state"] == "pending" and agent_task.exec_state(item) == agent_task.STATE_QUEUED
 
 
 def test_a_runner_with_a_thread_already_resumed_stays_launch_outcome_unknown(sleeper, held, monkeypatch):

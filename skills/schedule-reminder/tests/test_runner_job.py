@@ -2,9 +2,8 @@
 
 Every process here is started by this file (a synthetic runner script, its synthetic children and
 a synthetic stranger) and every survivor is terminated through a handle opened on it, so a
-recycled PID can never be hit. Only taskkill aimed at this file's own runner is let through the
-offline harness, so the same file also runs against code without runner jobs: there the stranger
-born during the stop holds the slot (the negative control).
+recycled PID can never be hit. A stranger born during the stop must not hold the slot, which
+parent-PID inference could not guarantee.
 """
 import ctypes
 import json
@@ -18,7 +17,6 @@ import pytest
 
 import agent_task
 import agent_tick
-import offline_support
 import runner_job
 import store
 from test_agent_lifecycle import pool  # noqa: F401  (fixture reuse)
@@ -113,15 +111,6 @@ def runner(pool, tmp_path, monkeypatch, held):  # noqa: F811
     monkeypatch.setattr(agent_tick, "RUNNER", str(script))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    original_run = subprocess.run
-
-    def run(argv, *args, **kwargs):
-        # Real taskkill only for this file's own runner (the process-tree fallback and old code).
-        command = [str(value) for value in argv] if isinstance(argv, (list, tuple)) else []
-        if command[:1] == ["taskkill"] and command[-1] == str(held.handles.get("runner", (None,))[0]):
-            return offline_support.ORIGINAL_RUN(argv, *args, **kwargs)
-        return original_run(argv, *args, **kwargs)
-    monkeypatch.setattr(subprocess, "run", run)
 
     def start(mode="tree"):
         monkeypatch.setenv("SYNTHETIC_RUNNER_MODE", mode)
@@ -148,7 +137,7 @@ def runner(pool, tmp_path, monkeypatch, held):  # noqa: F811
 
 def stranger_during_stop(monkeypatch, held):
     """An unrelated orphan born during the stop: its parent exits at once, so its ancestry is
-    unknown, which is exactly the process the tree fallback cannot tell from a runner survivor."""
+    unknown. Only job membership, not parent-PID inference, can tell it from a runner survivor."""
     original_cancel = agent_task.cancel
 
     def cancel(*args, **kwargs):
@@ -198,17 +187,6 @@ def test_a_process_that_broke_away_is_reported_and_left_running(runner, held, po
     assert result["cleanup"] == "released"
     receipt = json.loads(agent_task.operation(iid)["cleanup_receipt"])
     assert receipt["broke_away"] == [pids["breakaway"]]
-
-
-def test_without_a_job_the_tree_fallback_still_fails_closed(runner, held, monkeypatch, pool):  # noqa: F811
-    monkeypatch.setattr(runner_job, "adopt", lambda *args: "synthetic job refusal")
-    iid, _pids = runner()
-    stranger_during_stop(monkeypatch, held)
-    result = agent_tick.stop(iid, post=False, expected_generation=1)[0]
-    assert result["stopped"] is True
-    assert held.wait_gone("runner") and held.wait_gone("grandchild")
-    assert result["cleanup"] == "held"
-    assert agent_task.operation(iid)["released_at"] is None
 
 
 def test_a_job_that_does_not_hold_the_recorded_runner_is_refused(held, tmp_path):

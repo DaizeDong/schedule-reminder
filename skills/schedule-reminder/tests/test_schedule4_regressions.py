@@ -171,51 +171,54 @@ def lifecycle(tmp_path, monkeypatch):
     item = store.add_item(generated["title"], state=generated["state"],
                           source=agent_task.WORK_SOURCE, ext=generated["ext"],
                           _id=generated["id"], db_path=db_path)
-    live = {"value": False}
+    live, fail = {"value": False}, {"termination": False}
     launches, kills, events = [], [], []
-    def rem(*args):
-        def option(name, default=None):
-            return args[args.index(name) + 1] if name in args else default
-        item_id = option("--id")
-        try:
-            if args[0] == "get":
-                current = store.get_item(item_id, db_path=db_path)
-            elif args[0] == "update":
-                current = store.update_item(item_id, ext=json.loads(option("--ext", "{}")),
-                                            actor=agent_task.ACTOR, db_path=db_path)
-            elif args[0] == "transition":
-                current = store.transition(item_id, option("--to"), expect_state=option("--expect"),
-                                           reason=option("--reason"), ext=json.loads(option("--ext", "{}")),
-                                           actor=agent_task.ACTOR, db_path=db_path)
-            else:
-                raise AssertionError("unexpected lifecycle bridge operation")
-        except store.SkillError as error:
-            return {"_err": error.error_code}
-        return {"item": current}
     def spawn(*args, **kwargs):
         launches.append(args)
         live["value"] = True
         return SimpleNamespace(pid=F["pid"])
-    def kill(pid, pstart):
-        if pid != F["pid"] or pstart != F["process_start"]:
-            raise RuntimeError("synthetic process identity unavailable")
-        kills.append((pid, pstart))
-        was_live = live["value"]
-        live["value"] = False
-        return was_live
-    monkeypatch.setattr(agent_task, "rem", rem)
-    monkeypatch.setattr(agent_task, "orders", lambda active_only=True: store.list_items(
-        source=agent_task.WORK_SOURCE, active_only=active_only, db_path=db_path)["items"])
+
+    class Job:
+        """The synthetic runner job: terminating it ends the one synthetic runner."""
+        broke_away, breakaway_check = [], "checked"
+
+        def __init__(self, root):
+            self.root = (int(root[0]), int(root[1]))
+
+        def terminate(self):
+            if fail["termination"] or self.root != (F["pid"], F["process_start"]):
+                raise RuntimeError("synthetic job termination unavailable")
+            kills.append(self.root)
+            was_live = live["value"]
+            live["value"] = False
+            return was_live
+
+        def confirm_empty(self):
+            root = [self.root[0], str(self.root[1])]
+            return {"authority": "verified-job-kill", "roots": [root], "members": [root],
+                    "confirmed_at": "2026-01-01T00:00:00+00:00", "broke_away": [],
+                    "breakaway_check": "checked"}
+
+        def close(self):
+            pass
+
+    def open_for(item_id, generation, roots, jobs=None):
+        if not live["value"]:
+            raise agent_tick.runner_job.JobUnavailable("synthetic runner exited")
+        return Job(roots[0])
     monkeypatch.setattr(agent_task, "append_event", lambda *args, **kwargs: events.append((args, kwargs)))
     monkeypatch.setattr(agent_task, "proc_identity", lambda _: (live["value"], F["process_start"]))
-    monkeypatch.setattr(agent_task, "kill_tree", kill)
+    monkeypatch.setattr(agent_task, "job_backend", lambda: None)
+    monkeypatch.setattr(agent_tick.runner_job, "open_for", open_for)
     monkeypatch.setattr(agent_tick, "_log", lambda *args: None)
     monkeypatch.setattr(agent_tick.subprocess, "Popen", spawn)
+    monkeypatch.setattr(agent_tick, "_spawn_runner",
+                        lambda argv, item_id, generation, **kw: agent_tick.subprocess.Popen(argv, **kw))
     class Lifecycle(SimpleNamespace):
         @property
         def item(self):
             return store.get_item(item["id"], db_path=db_path)
-    return Lifecycle(live=live, launches=launches, kills=kills, events=events, spawn=spawn)
+    return Lifecycle(live=live, launches=launches, kills=kills, events=events, spawn=spawn, fail=fail)
 
 
 @pytest.mark.parametrize("claimed", [False, True])
@@ -227,7 +230,7 @@ def test_source4_stop_before_spawn_prevents_later_launch(lifecycle, claimed):
     assert result[0]["stopped"] is True
     assert lifecycle.item["state"] == "cancelled"
     assert agent_task.claim(stale["id"]) is False
-    assert agent_tick.launch(stale) is False
+    assert agent_tick.launch(stale, generation=agent_task.current_generation(stale["id"])) is False
     assert lifecycle.launches == [] and lifecycle.kills == []
 
 
@@ -239,7 +242,7 @@ def test_source4_stale_queued_stop_snapshot_uses_current_process(lifecycle, monk
         if first:
             first = False
             assert agent_task.claim(stale["id"])
-            assert agent_tick.launch(agent_task.get(stale["id"]))
+            assert agent_tick.launch(agent_task.get(stale["id"]), generation=1)
             return [stale]
         return [copy.deepcopy(lifecycle.item)]
     monkeypatch.setattr(agent_task, "orders", orders)
@@ -264,18 +267,16 @@ def test_source4_unregistered_start_requires_cleanup_reconciliation(lifecycle):
 @pytest.mark.parametrize("termination_succeeds", [False, True])
 def test_source4_registration_failure_tracks_or_terminates_spawn(lifecycle, monkeypatch, termination_succeeds):
     assert agent_task.claim(lifecycle.item["id"])
-    monkeypatch.setattr(agent_task, "record_process", lambda *args, **kwargs: {"_err": "synthetic persistence failure"})
+    monkeypatch.setattr(agent_task, "record_process", lambda *args, **kwargs: False)
     if not termination_succeeds:
-        def fail(*args):
-            raise RuntimeError("synthetic termination unavailable")
-        monkeypatch.setattr(agent_task, "kill_tree", fail)
+        lifecycle.fail["termination"] = True
         with pytest.raises(RuntimeError, match="termination is unproven"):
-            agent_tick.launch(agent_task.get(lifecycle.item["id"]))
+            agent_tick.launch(agent_task.get(lifecycle.item["id"]), generation=1)
         assert lifecycle.item["state"] == "doing"
         assert agent_task.exec_state(lifecycle.item) == agent_task.STATE_STOPPING
         assert lifecycle.live["value"] is True
     else:
-        assert agent_tick.launch(agent_task.get(lifecycle.item["id"])) is False
+        assert agent_tick.launch(agent_task.get(lifecycle.item["id"]), generation=1) is False
         assert lifecycle.item["state"] == "cancelled"
         assert lifecycle.live["value"] is False
 
@@ -291,7 +292,7 @@ def test_source4_stop_serializes_with_spawn_registration(lifecycle, monkeypatch)
     monkeypatch.setattr(agent_tick.subprocess, "Popen", spawn)
     def launch():
         try:
-            agent_tick.launch(agent_task.get(lifecycle.item["id"]))
+            agent_tick.launch(agent_task.get(lifecycle.item["id"]), generation=1)
         except BaseException as error:
             errors.append(error)
     def stop():

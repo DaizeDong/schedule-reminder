@@ -27,7 +27,7 @@ SQLite (WAL) single file          <- private storage, NEVER touched by downstrea
 [Windows task: PT5M heartbeat] -> reminder.py tick -> reconcile due items -> Discord relay (out)
 [Windows task: PT10M ingest]   -> ingest_tick    -> poll every readable channel -> commands.py
                                                     (deterministic) or dispatch (LLM judge)  (in)
-[Windows task: PT2M work]      -> agent_tick     -> reap the dead, launch one work order (do)
+[Windows task: PT2M work]      -> agent_tick     -> reap the dead, launch one work order (do; also woken on enqueue and release)
 ```
 
 The Agent Center bus is **two-way**: `relay.py`/`digest.py` push out; `ingest.py`/`commands.py`/

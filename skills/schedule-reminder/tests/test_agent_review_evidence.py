@@ -88,8 +88,8 @@ def _round(monkeypatch, tmp_path, actor, reviewer, configure=None):
     monkeypatch.setattr(llmcall, "call", call)
     if configure:
         configure(harness)
-    result = agent_run._run_approach(item_id, "synthetic", "synthetic request", str(tmp_path),
-                                     0, ["inspect"], False, generation=1)
+    result = agent_run._run_approach(store.get_item(item_id), "synthetic", "synthetic request", str(tmp_path),
+                                     0, False, generation=1)
     return result, harness, calls
 
 
@@ -253,8 +253,8 @@ def test_order_outside_a_repository_reaches_review(monkeypatch, tmp_path_factory
             return _result("agent")
         return _result("judge")
     monkeypatch.setattr(llmcall, "call", call)
-    result = agent_run._run_approach(item_id, "synthetic", "synthetic request", str(workspace),
-                                     0, ["inspect"], False, generation=1)
+    result = agent_run._run_approach(store.get_item(item_id), "synthetic", "synthetic request", str(workspace),
+                                     0, False, generation=1)
     assert result["outcome"] == "done", result
     assert calls == ["agent", "judge"]
 

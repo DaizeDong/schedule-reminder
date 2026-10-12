@@ -260,8 +260,9 @@ calls, command execution and database changes. It is not a dry run. See
 - **A round is act, verify, review, decide.** The actor returns a final verification contract with
   a nonempty summary and a command, or an explicit `verify: null` when no executable check exists.
   A failing check cannot complete the work. Completion additionally requires the actual actor and
-  reviewer model identities, different reported model families, a `DONE` verdict and unchanged
-  before/after review evidence. A review-only completion is identified in the report. The verdict
+  reviewer model identities, different reported model families and a `DONE` verdict; in git mode
+  the review evidence must also be unchanged after the review. A review-only completion is
+  identified in the report. The verdict
   is the first non-empty line of the answer and lines after it are explanation
   (`agent_run.review_verdict`): `DONE` must be the bare token (one trailing full stop allowed) and
   no later line may itself read as a verdict; `CONTINUE:` must open the answer with a reason.
@@ -287,33 +288,47 @@ calls, command execution and database changes. It is not a dry run. See
   unresolved and cannot complete. `tools/llmcall_contract.py` pins the field and reason names
   this relies on against the installed package.
 - **What 0.3.0 cannot express.** Per-call `requirements` (tool or permission limits) have no
-  equivalent: `mode="agent"` grants the installed full agent policy on every rung. A caller that
-  passes explicit requirements to `agent_run._llm` is refused before launch
-  (`capability_unavailable`), never widened silently.
+  equivalent: `mode="agent"` grants the installed full agent policy on every rung. The runner
+  passes none.
 - **Revocation reaches a running call.** `run_order` runs the whole order inside
   `llmcall.process.execution_scope(cancel=...)`. llmcall 0.3.1 and later poll that token while a
-  model call runs and stop the client tree once it is set; commands (`verify`, git evidence) run
-  through `llmcall.process.run` with the same token. Both pollers ask every fraction of a second,
-  and one ownership answer costs a database read plus a CLI read, so they get a
-  `PolledCancellation`: the answer is
+  model call runs and stop the client tree once it is set; the `verify` command runs through
+  `llmcall.process.run`, which polls the same token. Both pollers ask every fraction of a second,
+  so they get a `PolledCancellation`: one ownership answer (two in-process database reads) is
   reused for `AGENT_EXEC_CANCEL_POLL_SECONDS` (default 30 s) and latched once set. A revoked or
-  lost order therefore stops within about 35 s. The runner's own decision points between phases
-  still ask the exact `OperationCancellation`. Under llmcall 0.3.0 the token is ignored while a
-  model call runs, so the order waits for that call's phase budget.
+  lost order therefore stops within about 35 s. Between phases the runner asks nothing extra:
+  ownership is checked once when an approach starts, and every step that commits (checkpoint,
+  child receipt, finish) is a generation-fenced store write whose `False` ends the round as
+  cancelled. Under llmcall 0.3.0 the token is ignored while a model call runs, so the order waits
+  for that call's phase budget.
+- **Evidence by mode.** The mode (`git` or `artifacts`) is fixed at enqueue and read once per run.
+  Git mode lists changed files with `git status`, captures the diff after a passing check and
+  captures it again after a `DONE` verdict to catch an edit made during review. These read-only
+  git inspections run as plain bounded children of the runner (30 s, no window), not as journaled
+  executions. Artifacts mode never runs git: one bounded capture of the order's own directory after
+  the check gives the changed-file list (paths whose sha256 differs from the baseline), the review
+  evidence and the stall signature.
+- **Work-order reads and writes are in process.** `agent_task.orders`/`get` read the store
+  directly, and every lifecycle write is a generation-fenced store transaction. No reminder.py
+  child is started on the tick or runner path.
 - **Liveness is `(pid, process creation time)`.** Windows recycles pids, so a pid-only probe reads a
   recycled number as the live holder, and `os.kill(pid, 0)` is not an existence check there at all.
-  Failed identity queries remain uncertainty. Stop intent is saved before tree termination;
+  Failed identity queries remain uncertainty. Stop intent is saved before the job is terminated;
   cancellation requires a verified absent/reused identity or verified termination.
 - **A stop terminates; it does not wait for the runner to cancel itself.** `agent_tick.stop` (the
-  Task Console's stop and `--stop`) saves the intent and then ends the runner's process tree with
-  `taskkill /T /F` within a few seconds. The runner's cooperative path (the polled token above)
+  Task Console's stop and `--stop`) saves the intent and then terminates the runner's job within a
+  few seconds. The runner's cooperative path (the polled token above)
   never gets to end the running llmcall call, so that call writes no ledger row; the record of
   the stop is the run's `events.jsonl` `stopped` event (`killed`, `status`) and the cancelled
   order. A grace period before termination was considered and not added: the runner notices
   revocation only after up to `AGENT_EXEC_CANCEL_POLL_SECONDS` (30 s) plus one ownership query,
-  which is longer than the console's 30 s budget for the whole stop command, and `stop` holds the
-  run-root lifecycle lock that the runner's own `finish` needs, so the runner could not finish
-  inside the wait anyway.
+  which is longer than the console's 30 s budget for the whole stop command.
+- **Launch and stop exclude each other, nothing else is locked.** Every state change is a fenced
+  store transaction, so the claim, the runner's own `finish`, enqueue and the reaper take no
+  lock. The run-root `.lifecycle.lock` is held only from the spawn checkpoint to the PID receipt
+  in `launch`, and around saving stop intent, terminating and cancelling in `stop`, so a stop
+  cannot land in the window where a spawned runner has no recorded identity. Owner reports are
+  sent after the lock is released.
 - **Each runner lives in its own Job Object, and a stop is verified by it.** The tick creates the
   runner suspended, puts it into a job named after its recorded identity
   (`Local\schedule-reminder-runner-<item>-g<generation>-<pid>-<creation time>`), hands the runner
@@ -333,33 +348,21 @@ calls, command execution and database changes. It is not a dry run. See
   child receipt in which llmcall reported unconfirmed cleanup (`cleanup_state` `unknown`), because
   llmcall's processes and nested jobs were all members; it does not when that receipt lists
   processes that broke away (`broke_away`), when the stop found or could not check for a breakaway,
-  and never on the process-tree fallback. A runner whose resume fails is ended while still
-  suspended; once its exit is confirmed the launch is `not_started`: the slot is released and the
-  order is requeued (blocked after three such launches). A resume that failed after a thread had
-  already resumed, or an end that cannot be confirmed, stays "launch outcome unknown". When the job
-  cannot be created at launch (`runner_job_unavailable` event) or opened at the stop (older runs, a
-  runner that already exited and took the name with it), the stop falls back to the process-tree
-  path below and keeps its fail-closed behaviour.
-- **Fallback: a verified tree kill releases the serial slot by itself.** Before `taskkill`, the stop records the
-  runner's tree (`process_tree.observe`: every recorded runner/launcher identity plus each
-  descendant created inside its parent's lifetime, each held by an open handle). After the kill it
-  requires every recorded handle to be signalled and a fresh snapshot to show no live process whose
-  ancestry runs through a recorded member, and no live process born after the recording whose
-  ancestry is unknown (its parent PID is gone or now belongs to a newer process: the shape a
-  `cmd /c start` launcher or an intermediate killed mid-spawn leaves behind). Only then does it
-  commit a `verified-tree-kill` cleanup receipt bound to those identities and release the
-  reservation (`stopped` event `cleanup: released`). An already-exited runner, a failed or refused
-  snapshot, any survivor, an unrelated orphan born during the stop, or (on this path, unlike the
-  job path) a child receipt in which llmcall reported unconfirmed cleanup (`cleanup_state`
-  `unknown`) leaves the reservation held
-  (`cleanup_held` event) for reconcile and `recover-cleanup` below. Residual limit: a descendant
-  whose own parent exited BEFORE the recording was already an orphan then; it has no ancestry link
-  and is not visible to this check or to `taskkill /T`. llmcall's kill-on-close Job Object does not
-  close that gap, because it allows breakaway.
+  A runner whose resume fails is ended while still suspended; once its exit is confirmed the
+  launch is `not_started`: the slot is released and the order is requeued (blocked after three
+  such launches). A resume that failed after a thread had already resumed, or an end that cannot
+  be confirmed, stays "launch outcome unknown".
+- **The job is mandatory.** A runner that cannot be adopted into its job (the job cannot be
+  created, no native handle, no creation time) is ended while still suspended and its launch is
+  `not_started`, the same bounded requeue as a failed resume; it never runs without containment.
+  At a stop, a job that cannot be opened while a recorded runner identity is still alive leaves
+  the stop pending (`stop_pending`, reservation held). When every recorded identity has already
+  exited, the stop cancels the order and holds the reservation (`cleanup_held`) until the reaper
+  releases it on a quiescent receipt, or `recover-cleanup` below.
 - **An interrupted spawn retains its reservation.** A missing parent or unregistered child is
   insufficient cleanup evidence. Stop revokes an unregistered spawn into `reconcile` with unknown
   cleanup. Unreleased or uncertain reservations keep the serial slot even when the item has a
-  terminal outcome; legacy running and stop-pending work also blocks another launch.
+  terminal outcome.
 - **Recovery requires a separate review.** Inspect `agent_task.py status`, establish that the
   relevant process tree is gone, and retain that audit in the PRIVATE companion. `recover-cleanup`
   requires the exact terminal generation plus a nonempty `note` and `evidence_sha256` in the JSON
@@ -384,8 +387,12 @@ calls, command execution and database changes. It is not a dry run. See
   cancellation travels through the execution scope instead.
 - **Terminal reports carry evidence**: changed files, the command, its actual output and the
   reviewer's verdict. Tests prohibit 已处理 as an unsupported completion statement.
-- **Schedule**: Windows task **AgentCenterWorkTick** (PT2M) runs `agent_tick.py`, separate from the
-  inbound tick so neither can starve the other.
+- **Schedule**: an order launches as soon as it can. Enqueue starts a detached `agent_tick.py`
+  (`pythonw`, no window, not waited for) once the order is published, and a runner does the same
+  after it releases the serial slot, so the next queued order does not wait for the poll. Windows
+  task **AgentCenterWorkTick** (PT2M) runs `agent_tick.py` as the backstop and the crash reaper,
+  separate from the inbound tick so neither can starve the other. A tick with no unreleased
+  reservation and no queued, running or stopping order returns after one read-only query.
 
 ## How a downstream skill integrates (copy-paste)
 

@@ -81,7 +81,7 @@ def test_the_default_interval_follows_the_environment(monkeypatch):
     assert agent_run.PolledCancellation(Exact([])).interval == agent_run.CANCEL_POLL_SECONDS
 
 
-def test_commands_get_the_polled_token_and_it_is_not_wrapped_twice(monkeypatch):
+def test_commands_leave_cancellation_to_the_execution_scope(monkeypatch):
     seen = []
 
     class FakeProcess:
@@ -99,14 +99,10 @@ def test_commands_get_the_polled_token_and_it_is_not_wrapped_twice(monkeypatch):
     import llmcall
     monkeypatch.setattr(llmcall, "process", FakeProcess, raising=False)
     monkeypatch.setitem(sys.modules, "llmcall.process", FakeProcess)
-    exact = agent_run.OperationCancellation("item", 1)
-    agent_run._contained_command(["cmd"], os.getcwd(), 5, cancel=exact)
-    polled = agent_run.PolledCancellation(exact)
-    agent_run._contained_command(["cmd"], os.getcwd(), 5, cancel=polled)
-    agent_run._contained_command(["cmd"], os.getcwd(), 5, cancel=None)
-    assert isinstance(seen[0], agent_run.PolledCancellation) and seen[0].exact is exact
-    assert seen[1] is polled
-    assert seen[2] is None
+    # llmcall.process.run falls back to the execution scope's token (run_order installs the
+    # polled one), so the command passes none of its own.
+    assert agent_run._contained_command(["cmd"], os.getcwd(), 5) == (0, "ok")
+    assert seen == [None]
 
 
 def test_run_order_gives_its_scope_the_polled_token(monkeypatch):

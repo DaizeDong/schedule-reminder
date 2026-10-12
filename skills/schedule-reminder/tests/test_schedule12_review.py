@@ -136,7 +136,7 @@ def test_complete_final_object_remains_selectable_after_a_malformed_example():
 @pytest.mark.parametrize("answer", F["bad_tails"])
 def test_invalid_contract_cannot_reach_judge_or_finalize(monkeypatch, tmp_path, answer):
     harness = _Harness(monkeypatch, tmp_path, [(0, F["text"])], answers=[answer or " "])
-    result = agent_run._run_approach("wo-1", F["stream"], F["request"], str(tmp_path), 0, ["synthetic"], False, generation=1)
+    result = agent_run._run_approach(store.get_item("wo-1"), F["stream"], F["request"], str(tmp_path), 0, False, generation=1)
     assert result["outcome"] == "review_unavailable"
     assert not any(ok for _, ok, _ in harness.finished)
     assert harness.reviews == harness.verifies == []
@@ -144,14 +144,14 @@ def test_invalid_contract_cannot_reach_judge_or_finalize(monkeypatch, tmp_path, 
 
 def test_explicit_explained_null_verify_retains_review(monkeypatch, tmp_path):
     harness = _Harness(monkeypatch, tmp_path, [], answers=[F["null_tail"]])
-    result = agent_run._run_approach("wo-1", F["stream"], F["request"], str(tmp_path), 0, ["synthetic"], False, generation=1)
+    result = agent_run._run_approach(store.get_item("wo-1"), F["stream"], F["request"], str(tmp_path), 0, False, generation=1)
     assert result["outcome"] == "done"
     assert harness.finished and harness.reviews and harness.verifies == []
 
 
 def test_quoted_failing_verifier_blocks_completion(monkeypatch, tmp_path):
     harness = _Harness(monkeypatch, tmp_path, [(1, F["text"])], answers=[json.dumps(F["tails"][0])])
-    result = agent_run._run_approach("wo-1", F["stream"], F["request"], str(tmp_path), 0, ["synthetic"], False, generation=1)
+    result = agent_run._run_approach(store.get_item("wo-1"), F["stream"], F["request"], str(tmp_path), 0, False, generation=1)
     assert result["outcome"] == "stalled"
     assert harness.finished == harness.reviews == []
     assert harness.verifies == [F["failing_verify"]] * 2
@@ -211,7 +211,7 @@ def test_native_quoted_verifier_runs_and_prevents_completion(monkeypatch, tmp_pa
         outcomes.append(outcome)
         return outcome
     monkeypatch.setattr(agent_run, "run_verify", verify)
-    result = agent_run._run_approach("wo-1", F["stream"], F["request"], str(tmp_path), 0, ["synthetic"], False, generation=1)
+    result = agent_run._run_approach(store.get_item("wo-1"), F["stream"], F["request"], str(tmp_path), 0, False, generation=1)
     assert result["outcome"] == "stalled"
     assert outcomes == [(1, "{"), (1, "{")]
     assert harness.finished == harness.reviews == []

@@ -1,9 +1,8 @@
 """Each work runner lives in its own named Windows Job Object (stdlib ctypes only).
 
 Why: a stop must decide whether the whole runner tree is gone before it frees the serial slot.
-Tracing parent PIDs and creation times (process_tree) cannot tell a descendant whose parent
-already died from an unrelated process born in the same second, so that path holds the slot on
-any such stranger. Job membership is kernel state instead of inference:
+Tracing parent PIDs and creation times cannot tell a descendant whose parent already died from an
+unrelated process born in the same second. Job membership is kernel state instead of inference:
 
   launch  The tick creates the runner SUSPENDED, creates the job
           ``Local\\schedule-reminder-runner-<item>-g<generation>-<pid>-<creation time>``, assigns
@@ -24,9 +23,9 @@ every job in the chain must allow. Such a process is outside the job by design; 
 the ones whose parent is still a member when the stop runs. One started through a helper that has
 already exited cannot be attributed and is not reported.
 
-When the job cannot be created or opened (older runs, a name collision, a runner that already
-exited and took the name with it), the caller falls back to the process_tree path and its
-fail-closed behaviour.
+Adoption is mandatory: a runner whose job cannot be created is ended while still suspended and
+its launch counts as not started. When a stop cannot open the job of a live runner, the stop stays
+pending and the reservation is held; there is no weaker fallback.
 """
 import ctypes
 import datetime
@@ -88,11 +87,19 @@ class NativeJobs:
                         ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
                         ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
 
+        class _Process(ctypes.Structure):
+            _fields_ = [("dwSize", w.DWORD), ("cntUsage", w.DWORD),
+                        ("th32ProcessID", w.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                        ("th32ModuleID", w.DWORD), ("cntThreads", w.DWORD),
+                        ("th32ParentProcessID", w.DWORD), ("pcPriClassBase", w.LONG),
+                        ("dwFlags", w.DWORD), ("szExeFile", w.WCHAR * 260)]
+
         class _Thread(ctypes.Structure):
             _fields_ = [("dwSize", w.DWORD), ("cntUsage", w.DWORD), ("th32ThreadID", w.DWORD),
                         ("th32OwnerProcessID", w.DWORD), ("tpBasePri", w.LONG),
                         ("tpDeltaPri", w.LONG), ("dwFlags", w.DWORD)]
         self._w, self._accounting, self._limits, self._thread = w, _Accounting, _Extended, _Thread
+        self._process = _Process
         k = ctypes.WinDLL("kernel32", use_last_error=True)
         for name, restype, argtypes in (
                 ("CreateJobObjectW", w.HANDLE, [w.LPVOID, w.LPCWSTR]),
@@ -110,6 +117,8 @@ class NativeJobs:
                 ("GetProcessTimes", w.BOOL, [w.HANDLE] + [ctypes.POINTER(w.FILETIME)] * 4),
                 ("GetExitCodeProcess", w.BOOL, [w.HANDLE, ctypes.POINTER(w.DWORD)]),
                 ("CreateToolhelp32Snapshot", w.HANDLE, [w.DWORD, w.DWORD]),
+                ("Process32FirstW", w.BOOL, [w.HANDLE, ctypes.POINTER(_Process)]),
+                ("Process32NextW", w.BOOL, [w.HANDLE, ctypes.POINTER(_Process)]),
                 ("Thread32First", w.BOOL, [w.HANDLE, ctypes.POINTER(_Thread)]),
                 ("Thread32Next", w.BOOL, [w.HANDLE, ctypes.POINTER(_Thread)]),
                 ("OpenThread", w.HANDLE, [w.DWORD, w.BOOL, w.DWORD]),
@@ -185,6 +194,24 @@ class NativeJobs:
             raise JobUnavailable("runner %s has no thread to resume" % pid)
 
     # ---- stop side
+    def snapshot(self):
+        """-> {pid: parent_pid} for every process in one native snapshot."""
+        handle = self._k.CreateToolhelp32Snapshot(2, 0)
+        if handle in (None, ctypes.c_void_p(-1).value):
+            self._fail("process snapshot")
+        try:
+            entry = self._process(dwSize=ctypes.sizeof(self._process))
+            found = self._k.Process32FirstW(handle, ctypes.byref(entry))
+            table = {}
+            while found:
+                table[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+                found = self._k.Process32NextW(handle, ctypes.byref(entry))
+            if ctypes.get_last_error() != _ERROR_NO_MORE_FILES:
+                self._fail("enumerate processes")
+            return table
+        finally:
+            self._k.CloseHandle(handle)
+
     def open(self, name):
         handle = self._k.OpenJobObjectW(_JOB_QUERY | _JOB_TERMINATE | _SYNCHRONIZE, False, name)
         if handle:
@@ -305,9 +332,10 @@ class RunnerJob:
                 self.jobs.close(handle)
         return sorted(found)
 
-    def terminate(self, snapshot=None):
+    def terminate(self):
         """Record members and breakaways, then terminate every member. Raises on failure."""
         self.members = sorted(self.jobs.pids(self.handle))
+        snapshot = getattr(self.jobs, "snapshot", None)
         if snapshot is not None:
             try:
                 self.broke_away = self._breakaways(snapshot())

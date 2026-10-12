@@ -286,7 +286,7 @@ def test_missing_llmcall_and_runner_environment_are_preserved(monkeypatch):
     assert os.environ['LLMCALL_AGENT_RUNNER'] == FIX['user']
     monkeypatch.setitem(sys.modules, 'llmcall', None)
     with pytest.raises(ModuleNotFoundError):
-        agent_run._llm(FIX['request'], None, None, 'agent')
+        agent_run._llm(FIX['request'], None, 'agent')
     with pytest.raises(ModuleNotFoundError):
         dispatch.call_chain(FIX['request'])
 

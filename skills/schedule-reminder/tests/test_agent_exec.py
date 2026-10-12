@@ -124,13 +124,30 @@ def test_stop_cancels_before_killing(monkeypatch):
     item = {"id": "wo-9", "title": "x",
             "ext": {agent_task.EXT_PID: 4242, agent_task.EXT_PSTART: 7,
                     agent_task.EXT_STREAM: "crypto", agent_task.EXT_STATE: agent_task.STATE_RUNNING}}
+    op = {"generation": 3, "run_id": "synthetic-run", "checkpoint": "running", "started_at": "t",
+          "pid": 4242, "pstart": "7", "launch_pid": 4241, "launch_pstart": "6"}
+
+    class Job:
+        broke_away, breakaway_check = [], "checked"
+
+        def terminate(self):
+            order.append("kill")
+            return True
+
+        def confirm_empty(self):
+            return {"authority": "verified-job-kill"}
+
+        def close(self):
+            pass
     monkeypatch.setattr(agent_task, "orders", lambda active_only=True: [item])
-    monkeypatch.setattr(agent_task, "request_stop", lambda i, n="": order.append("intent") or {})
-    monkeypatch.setattr(agent_task, "cancel", lambda i, n="": order.append("cancel") or {})
-    monkeypatch.setattr(agent_task, "kill_tree", lambda p, s: order.append("kill") or True)
+    monkeypatch.setattr(agent_task, "operation", lambda i: op)
+    monkeypatch.setattr(agent_task, "request_stop", lambda i, n="", **k: order.append("intent") or item)
+    monkeypatch.setattr(agent_task, "cancel", lambda i, n="", **k: order.append("cancel") or {})
+    monkeypatch.setattr(agent_tick, "_open_runner_job", lambda it, o: Job())
+    monkeypatch.setattr(agent_task, "release_verified_cleanup", lambda *a: True)
     monkeypatch.setattr(agent_task, "append_event", lambda *a, **k: None)
     monkeypatch.setattr(agent_tick, "_post", lambda *a, **k: None)
-    agent_tick.stop("wo-9")
+    assert agent_tick.stop("wo-9")[0]["cleanup"] == "released"
     assert order == ["intent", "kill", "cancel"]
 
 
@@ -172,6 +189,7 @@ def test_tick_will_not_launch_while_one_is_running(monkeypatch):
                                                          agent_task.EXT_PSTART: 2}),
              _order("waiting")]
     monkeypatch.setattr(agent_task, "orders", lambda active_only=True: items)
+    monkeypatch.setattr(agent_task.store, "work_pending", lambda **k: True)
     monkeypatch.setattr(agent_task, "is_live", lambda p, s: True)
     monkeypatch.setattr(agent_tick, "reap", lambda items=None, post=True: [])
     monkeypatch.setattr(agent_tick, "launch",
@@ -204,26 +222,18 @@ def test_liveness_needs_a_creation_time():
     assert agent_task.is_live(None, 5) is False
 
 
-@pytest.mark.skipif(not _WINDOWS, reason="process identity probe is the Windows implementation")
-def test_kill_tree_refuses_a_mismatched_identity(monkeypatch):
-    killed = []
-    monkeypatch.setattr(agent_task.subprocess, "run", lambda *a, **k: killed.append(a))
-    assert agent_task.kill_tree(99999999, 12345) is False
-    assert killed == [], "a pid whose creation time does not match must never be killed"
-
-
 def test_reaper_reports_a_dead_run_and_does_not_requeue(monkeypatch):
-    item = _order("dead-1", agent_task.STATE_RUNNING,
-                  **{agent_task.EXT_PID: 777, agent_task.EXT_PSTART: 5})
-    finished, posts = [], []
-    monkeypatch.setattr(agent_task, "is_live", lambda p, s: False)
-    monkeypatch.setattr(agent_task, "append_event", lambda *a, **k: None)
-    monkeypatch.setattr(agent_task, "finish",
-                        lambda i, ok, note="", **k: finished.append((i, ok, note)) or {})
-    monkeypatch.setattr(agent_tick, "log_tail", lambda it, lines=18: "boom")
+    item = _order("dead-1", agent_task.STATE_RUNNING)
+    op = {"item_id": "dead-1", "generation": 1, "run_id": "synthetic-run", "checkpoint": "running",
+          "pid": 777, "pstart": "5", "launch_pid": 776, "launch_pstart": "4", "outcome": None,
+          "started_at": "2020-01-01T00:00:00Z", "updated_at": "2020-01-01T00:00:00Z"}
+    reconciled, posts = [], []
+    monkeypatch.setattr(agent_task, "get", lambda item_id: item)
+    monkeypatch.setattr(agent_task, "proc_identity", lambda pid: (False, None))
+    monkeypatch.setattr(agent_task, "reconcile", lambda i, snapshot, note: reconciled.append((i, note)) or True)
     monkeypatch.setattr(agent_tick, "_post", lambda s, t: posts.append(t))
-    assert agent_tick.reap([item]) == ["dead-1"]
-    assert finished == [("dead-1", False, "runner process died (pid=777)")]
+    assert agent_tick.reap([op]) == ["dead-1"]
+    assert reconciled == [("dead-1", "runner identity absent; reconcile without replay (pid=777)")]
     assert "没有完成" in posts[0] and "不会自动重排" in posts[0]
 
 
@@ -232,9 +242,12 @@ def test_reaper_leaves_a_just_claimed_order_alone(monkeypatch):
     import datetime
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     item = _order("fresh", agent_task.STATE_RUNNING)
-    item["updated_at"] = now
-    monkeypatch.setattr(agent_task, "finish", lambda *a, **k: pytest.fail("reaped a starting run"))
-    assert agent_tick.reap([item], post=False) == []
+    op = {"item_id": "fresh", "generation": 1, "run_id": "synthetic-run", "checkpoint": "claimed",
+          "pid": None, "pstart": None, "launch_pid": None, "launch_pstart": None, "outcome": None,
+          "started_at": None, "updated_at": now}
+    monkeypatch.setattr(agent_task, "get", lambda item_id: item)
+    monkeypatch.setattr(agent_task, "reconcile", lambda *a, **k: pytest.fail("reaped a starting run"))
+    assert agent_tick.reap([op], post=False) == []
 
 
 # --------------------------------------------------------------------------- stall detection
@@ -337,10 +350,29 @@ def test_enqueued_ext_stays_well_inside_the_argv_ceiling(monkeypatch, tmp_path):
 
 
 def test_enqueue_writes_the_request_to_the_run_directory(monkeypatch, tmp_path):
-    monkeypatch.setattr(agent_task, "rem", lambda *a: {"item": {"id": "wo-7", "ext": {}}})
     monkeypatch.setattr(agent_task, "runs_root", lambda: str(tmp_path))
     item = agent_task.enqueue("crypto", "完整的请求原文", workspace=str(tmp_path))
     assert agent_task.read_request(item) == "完整的请求原文"
+    assert not list(tmp_path.rglob(".enqueue.lock")), "enqueue takes no per-order lock"
+    assert not list(tmp_path.rglob("*.tmp"))
+
+
+def test_enqueue_wakes_a_tick_once_the_order_is_published(monkeypatch, tmp_path):
+    """An order starts as soon as it is queued instead of waiting for the scheduled poll."""
+    monkeypatch.setattr(agent_task, "runs_root", lambda: str(tmp_path))
+    woken = []
+    monkeypatch.setattr(agent_task, "wake_tick",
+                        lambda: woken.append(agent_task.exec_state(store.list_items()["items"][0])))
+    agent_task.enqueue("crypto", "synthetic request", workspace=str(tmp_path), msg_id="m-1")
+    agent_task.enqueue("crypto", "synthetic request", workspace=str(tmp_path), msg_id="m-1")
+    assert woken == [agent_task.STATE_QUEUED], "only a newly published order wakes the tick"
+
+
+def test_wake_tick_never_raises_when_the_tick_cannot_start(monkeypatch):
+    def refuse(*args, **kwargs):
+        raise OSError("synthetic spawn refusal")
+    monkeypatch.setattr(agent_task.subprocess, "Popen", refuse)
+    assert agent_task.wake_tick() is False
 
 
 def test_bad_workspace_falls_back_and_says_so():
@@ -406,13 +438,10 @@ class _Harness:
         store.init_db()
         store.add_item("Synthetic execution task", source=agent_task.WORK_SOURCE,
                        ext={agent_task.EXT_STREAM: "crypto", agent_task.EXT_STATE: "queued"}, _id="wo-1")
-        monkeypatch.setattr(agent_task, "get", lambda item_id: store.get_item(item_id))
         assert agent_task.claim("wo-1")
         assert agent_task.begin_spawn("wo-1", 1)
         assert agent_task.start_runner("wo-1", 1, 123, 456)
         monkeypatch.setattr(agent_task, "run_dir", lambda it, create=False: str(tmp_path))
-        monkeypatch.setattr(agent_task, "patch_ext", lambda *a, **k: {})
-        monkeypatch.setattr(agent_task, "set_progress", lambda *a, **k: {})
         monkeypatch.setattr(agent_task, "append_event", lambda *a, **k: None)
         finish = agent_task.finish
         def finish_order(i, ok, note="", **kwargs):
@@ -426,7 +455,11 @@ class _Harness:
         monkeypatch.setattr(agent_run, "run_verify", self._verify)
         monkeypatch.setattr(agent_run, "STALL_ROUNDS", 2)
 
-    def _llm(self, prompt, chain, timeout, mode, **kwargs):
+    def run(self, request, workspace):
+        return agent_run._run_approach(store.get_item("wo-1"), "crypto", request, workspace, 0, False,
+                                       generation=1, mode="git")
+
+    def _llm(self, prompt, timeout, mode, **kwargs):
         if mode == "judge":
             self.reviews.append(prompt)
             return llm_call_result(text="DONE", effective_model="synthetic-reviewer", model_family="reviewer")
@@ -447,7 +480,7 @@ def test_a_failing_check_never_closes_the_round(monkeypatch, tmp_path):
     verification passes. Without this test, every other test here would still pass if the return
     code were ignored entirely."""
     h = _Harness(monkeypatch, tmp_path, verify_results=[(1, "assertion failed: still enabled")])
-    out = agent_run._run_approach("wo-1", "crypto", "停掉它", str(tmp_path), 0, ["codex"], False, generation=1)
+    out = h.run("停掉它", str(tmp_path))
     assert out["outcome"] == "stalled"
     assert h.finished == [], "a poisoned check must not produce a terminal success"
     assert h.reviews == [], "review must not run on top of a failed check"
@@ -457,7 +490,7 @@ def test_a_failing_check_never_closes_the_round(monkeypatch, tmp_path):
 def test_a_passing_check_plus_review_closes_the_round(monkeypatch, tmp_path):
     """The positive control for the test above: same harness, healthy check, must close."""
     h = _Harness(monkeypatch, tmp_path, verify_results=[(0, "disabled ok")])
-    out = agent_run._run_approach("wo-1", "crypto", "停掉它", str(tmp_path), 0, ["codex"], False, generation=1)
+    out = h.run("停掉它", str(tmp_path))
     assert out["outcome"] == "done"
     assert h.finished and h.finished[0][1] is True
     assert h.reviews, "a closed round must have been independently reviewed"
@@ -467,11 +500,11 @@ def test_a_continue_verdict_blocks_a_passing_check(monkeypatch, tmp_path):
     """A green check that checked the wrong thing must not be enough."""
     h = _Harness(monkeypatch, tmp_path, verify_results=[(0, "ok")])
     monkeypatch.setattr(agent_run, "_llm",
-                        lambda p, c, t, mode, **kw: llm_call_result(
+                        lambda p, t, mode, **kw: llm_call_result(
                             text="CONTINUE: 这条命令没验到点子上", effective_model="synthetic-reviewer", model_family="reviewer")
                         if mode == "judge"
                         else llm_call_result(text='{"verify": "c", "changed": [], "summary": "s"}'))
-    out = agent_run._run_approach("wo-1", "crypto", "停掉它", str(tmp_path), 0, ["codex"], False, generation=1)
+    out = h.run("停掉它", str(tmp_path))
     assert out["outcome"] == "stalled"
     assert h.finished == [], "a CONTINUE verdict must not close the order"
 
@@ -479,10 +512,10 @@ def test_a_continue_verdict_blocks_a_passing_check(monkeypatch, tmp_path):
 def test_an_unavailable_provider_records_failure_without_replay(monkeypatch, tmp_path):
     h = _Harness(monkeypatch, tmp_path, verify_results=[(0, "ok")])
     calls = []
-    monkeypatch.setattr(agent_run, "_llm", lambda p, c, t, mode, **kw:
+    monkeypatch.setattr(agent_run, "_llm", lambda p, t, mode, **kw:
                         calls.append(mode) or llm_call_result(text="", error="synthetic provider unavailable",
                             execution_started=False, outcome="not_started"))
-    out = agent_run._run_approach("wo-1", "crypto", "x", str(tmp_path), 0, ["codex"], False, generation=1)
+    out = h.run("x", str(tmp_path))
     assert out["outcome"] == "failed" and calls == ["agent"]
     assert h.finished and not any(ok for _, ok, _ in h.finished)
 
@@ -491,7 +524,7 @@ def test_llm_rejects_a_typo_mode():
     """llmcall's own mode tuple is dead code, so a typo would silently degrade an agentic call to a
     read-only judgement that changes nothing and then reports success."""
     with pytest.raises(ValueError):
-        agent_run._llm("p", ["codex"], 10, "agentic")
+        agent_run._llm("p", 10, "agentic")
 
 
 def test_unrunnable_check_counts_as_a_failure(tmp_path, real_process):
@@ -621,7 +654,7 @@ def test_report_is_chunked_below_the_discord_limit(monkeypatch, tmp_path):
     assert result["state"] == "sent"
     assert agent_run.post(fixture["event"]["stream"], body,
                           run_id=fixture["event"]["run_id"]) == result
-    assert len(sent) == 3 and all(len(s) <= agent_run._DISCORD_MAX for s in sent)
+    assert len(sent) == 3 and all(len(s) <= 2000 for s in sent)
     assert "".join(part.split("\n", 1)[1] for part in sent) == body
 
 
@@ -636,7 +669,6 @@ def test_approaches_vary_prompts_without_provider_selection():
     assert len(set(chain[0] for chain in agent_run.APPROACH_CHAINS)) == agent_run.MAX_APPROACHES
     # The phase budgets are the chain budgets for one act and one review, not routing.
     assert (agent_run.ACT_TIMEOUT, agent_run.REVIEW_TIMEOUT) == (1800, 420)
-    assert agent_run.REVIEW_CHAIN is None
 
 
 def test_actor_and_reviewer_keep_installed_routing(monkeypatch):
@@ -646,8 +678,8 @@ def test_actor_and_reviewer_keep_installed_routing(monkeypatch):
     monkeypatch.setattr(llmcall, "call", lambda prompt, **kw:
                         calls.append(kw) or SimpleNamespace(text="", provider=None, error=None))
     for mode in ("agent", "judge"):
-        agent_run._llm("", None, None, mode)
+        agent_run._llm("", None, mode)
     assert [call["mode"] for call in calls] == ["agent", "judge"]
     assert all(not ({"chain", "providers", "model", "timeout", "fallback"} & call.keys()) for call in calls)
-    agent_run._llm("", None, agent_run.ACT_TIMEOUT, "agent")
+    agent_run._llm("", agent_run.ACT_TIMEOUT, "agent")
     assert calls[-1]["timeout"] == 1800.0 and not ({"chain", "model"} & calls[-1].keys())

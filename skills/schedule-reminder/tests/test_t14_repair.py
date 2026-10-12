@@ -53,7 +53,7 @@ def work(tmp_path, monkeypatch, real_process):
     monkeypatch.setattr(agent_run, "capture_diff", lambda ws: "HEAD unborn\nSTAGED\nUNSTAGED")
     monkeypatch.setattr(agent_run, "detect_changes", lambda *a: ([], "git"))
     monkeypatch.setattr(agent_run, "run_verify", lambda *a, **k: (0, "synthetic passed"))
-    monkeypatch.setattr(agent_run, "_llm", lambda p, chain, t, mode, **kw: reply(mode))
+    monkeypatch.setattr(agent_run, "_llm", lambda p, t, mode, **kw: reply(mode))
     return item["id"], workspace
 
 
@@ -73,7 +73,7 @@ def assert_reserved(iid):
     assert not agent_task.claim(other["id"])
 
 
-@pytest.mark.parametrize("phase", ["actor", "verify", "reviewer", "evidence"])
+@pytest.mark.parametrize("phase", ["actor", "verify", "reviewer"])
 @pytest.mark.parametrize("cancelled", [False, True])
 def test_cleanup_failure_retains_reservation_across_all_boundaries(work, monkeypatch, phase, cancelled):
     iid, workspace = work
@@ -86,10 +86,8 @@ def test_cleanup_failure_retains_reservation_across_all_boundaries(work, monkeyp
     if phase == "verify":
         monkeypatch.setattr(agent_run, "run_verify", lambda *a, **k:
             agent_run._contained_command([], str(workspace), 1))
-    elif phase == "evidence":
-        monkeypatch.setattr(agent_run, "capture_diff", lambda ws: agent_run._git(ws, "status"))
     else:
-        def llm(prompt, chain, timeout, mode, **kwargs):
+        def llm(prompt, timeout, mode, **kwargs):
             if mode == ("agent" if phase == "actor" else "judge"):
                 fail_process()
                 return Result(error="synthetic cleanup failed", outcome="cleanup_failed",
@@ -168,7 +166,7 @@ def test_original_untracked_deletion_survives_retry_and_rotation(work, monkeypat
     user_file = workspace / "user-note.txt"
     user_file.write_text("SYNTHETIC_ORIGINAL_USER_NOTE", encoding="utf-8")
     calls, reviews = [], []
-    def llm(prompt, chain, timeout, mode, **kwargs):
+    def llm(prompt, timeout, mode, **kwargs):
         if mode == "judge":
             reviews.append(prompt)
             r = reply(mode)
@@ -196,7 +194,7 @@ def test_revision_changed_in_failed_round_cannot_become_new_baseline(work, monke
     state, reviews = {"acted": 0}, []
     monkeypatch.setattr(agent_run, "capture_diff", lambda ws:
         "HEAD " + ("synthetic-original" if state["acted"] == 0 else "synthetic-later") + "\nSTAGED\n")
-    def llm(prompt, chain, timeout, mode, **kwargs):
+    def llm(prompt, timeout, mode, **kwargs):
         if mode == "agent":
             state["acted"] += 1
         else:
@@ -230,9 +228,9 @@ def test_missing_baseline_after_action_checkpoint_is_not_recaptured(work, monkey
     assert agent_task.start_runner(iid, 1, 123, 456)
     assert agent_task.checkpoint(iid, 1, "acting")
     calls = []
-    monkeypatch.setattr(agent_run, "_llm", lambda p, chain, t, mode, **kw: calls.append(mode) or reply(mode))
+    monkeypatch.setattr(agent_run, "_llm", lambda p, t, mode, **kw: calls.append(mode) or reply(mode))
     try:
-        agent_run._run_approach(iid, "synthetic", "synthetic request", str(workspace), 0, ["inspect"], False, generation=1)
+        agent_run._run_approach(store.get_item(iid), "synthetic", "synthetic request", str(workspace), 0, False, generation=1)
     except RuntimeError:
         pass
     assert calls == [], "re-entry cannot invent an initial baseline after side effects"
@@ -248,7 +246,7 @@ def test_baseline_persistence_failure_prevents_first_actor(work, monkeypatch):
             raise OSError("synthetic baseline persistence failure")
         return advance(iid, generation, action, **kwargs)
     monkeypatch.setattr(store, "advance_work", fail_baseline)
-    monkeypatch.setattr(agent_run, "_llm", lambda p, chain, t, mode, **kw: calls.append(mode) or reply(mode))
+    monkeypatch.setattr(agent_run, "_llm", lambda p, t, mode, **kw: calls.append(mode) or reply(mode))
     with pytest.raises(OSError, match="baseline persistence"):
         agent_run.run_order(iid, post_reports=False, generation=1)
     assert calls == []
@@ -258,7 +256,7 @@ def test_baseline_persistence_failure_prevents_first_actor(work, monkeypatch):
 @pytest.mark.parametrize("outcome", ["cancelled", "timeout", "failed"])
 def test_started_model_failure_without_cleanup_confirmation_stays_unknown(work, monkeypatch, mode, outcome):
     iid, workspace = work
-    def llm(prompt, chain, timeout, actual_mode, **kwargs):
+    def llm(prompt, timeout, actual_mode, **kwargs):
         if actual_mode == mode:
             if outcome == "cancelled":
                 agent_task.cancel(iid, "synthetic cancellation")
@@ -311,14 +309,14 @@ def test_baseline_is_immutable_and_readable_by_a_fresh_interpreter(work, monkeyp
     monkeypatch.setattr(agent_run, "run_verify", lambda *a, **k: (1, "synthetic failure"))
     monkeypatch.setattr(agent_run, "STALL_ROUNDS", 1)
     assert agent_task.start_runner(iid, 1, 123, 456)
-    assert agent_run._run_approach(iid, "synthetic", "request", str(workspace), 0, ["inspect"], False,
+    assert agent_run._run_approach(store.get_item(iid), "synthetic", "request", str(workspace), 0, False,
                                    generation=1)["outcome"] == "stalled"
     original = agent_task.operation(iid)
     assert not agent_task.save_baseline(iid, 1, "changed", "changed", str(workspace))
     scripts = str(Path(agent_run.__file__).parent)
     code = ("import sys; sys.path.insert(0," + repr(scripts) + "); import agent_run; "
             "agent_run.capture_diff=lambda ws: (_ for _ in ()).throw(AssertionError('recaptured')); "
-            "print(agent_run._initial_baseline(sys.argv[1],1,sys.argv[2]))")
+            "print(agent_run._initial_baseline(sys.argv[1],1,sys.argv[2],'git'))")
     child = subprocess.run([sys.executable, "-c", code, iid, str(workspace)],
                            env=dict(os.environ), capture_output=True, text=True, timeout=15,
                            creationflags=0x08000000 if sys.platform == "win32" else 0)

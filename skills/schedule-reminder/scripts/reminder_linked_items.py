@@ -118,8 +118,11 @@ def _valid_receipt(receipt, binding, items):
             and review.get("unlinked_count") == review["item_count"] - len(actual))
 
 
-def read_task_binding(item_id, task_id, *, db_path):
-    """Return one explicitly reviewed controller name for an active linked item."""
+def read_task_binding(item_id, task_id, *, db_path, connection=None):
+    """Return one explicitly reviewed controller name for an active linked item.
+
+    A caller already inside a transaction on this database passes its connection, so the read
+    sees the same snapshot and opens no second connection."""
     import store
     path = Path(db_path)
     if not path.is_absolute() or not path.is_file():
@@ -127,8 +130,11 @@ def read_task_binding(item_id, task_id, *, db_path):
     conn = None
     try:
         identity = _database(path)
-        conn = store.admitted_connection(path, readonly=True)
-        conn.execute('BEGIN')
+        if connection is None:
+            conn = store.admitted_connection(path, readonly=True)
+            conn.execute('BEGIN')
+        else:
+            conn = connection
         if _meta(conn, MARKER_KEY) != '1':
             return None
         receipt = _loads(_meta(conn, REVIEW_KEY) or 'null')
@@ -146,7 +152,7 @@ def read_task_binding(item_id, task_id, *, db_path):
     except (sqlite3.Error, ValueError, TypeError, AttributeError, OSError, store.SkillError):
         return None
     finally:
-        if conn is not None:
+        if conn is not None and conn is not connection:
             conn.close()
 
 

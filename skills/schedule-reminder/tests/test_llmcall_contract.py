@@ -150,26 +150,11 @@ def test_translated_actor_and_reviewer_complete_only_across_families(installed):
 def test_actor_gets_the_act_budget_and_reviewer_the_review_budget(installed, monkeypatch):
     seen = []
     monkeypatch.setattr(installed, "call", lambda prompt, **kw: seen.append(kw) or Result())
-    agent_run._llm("p", None, agent_run.ACT_TIMEOUT, "agent")
-    agent_run._llm("p", None, agent_run.REVIEW_TIMEOUT, "judge", actor_family="codex")
+    agent_run._llm("p", agent_run.ACT_TIMEOUT, "agent")
+    agent_run._llm("p", agent_run.REVIEW_TIMEOUT, "judge", actor_family="codex")
     assert [kw["timeout"] for kw in seen] == [1800.0, 420.0]
     assert seen[1]["avoid"] == "codex"
     assert all(not {"cwd", "cancel", "requirements", "chain", "model"} & kw.keys() for kw in seen)
-
-
-def test_explicit_requirements_are_refused_before_launch(installed, monkeypatch):
-    monkeypatch.setattr(installed, "call", lambda *a, **k: pytest.fail("launched despite requirements"))
-    result = agent_run._llm("p", None, 10, "agent", requirements={"access": "read_only"})
-    assert (result.outcome, result.execution_started, result.cleanup_confirmed) == (
-        "capability_unavailable", False, True)
-    assert "not expressible" in result.error
-
-
-def test_revoked_operation_never_reaches_llmcall(installed, monkeypatch):
-    from types import SimpleNamespace
-    monkeypatch.setattr(installed, "call", lambda *a, **k: pytest.fail("called after revocation"))
-    with pytest.raises(agent_run.CleanupUncertain):
-        agent_run._llm("p", None, 10, "agent", cancel=SimpleNamespace(is_set=lambda: True))
 
 
 def test_runner_child_gets_a_hidden_console_not_a_detached_one():

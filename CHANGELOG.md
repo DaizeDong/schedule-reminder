@@ -14,6 +14,41 @@ All notable changes to this project are documented here (Keep a Changelog style)
   Publication safety stays with the commit-time Guards hooks and CI. The per-process proof memo,
   the work-feed workspace prefetch thread and the proof tests went with it.
 
+### Changed
+- Agent Center work orders launch immediately: enqueue and a runner that releases the serial slot
+  each start a detached `agent_tick.py`, so an order no longer waits up to two minutes (measured
+  27 to 165 s) for the scheduled poll. The PT2M AgentCenterWorkTick stays as the backstop and
+  crash reaper, and an idle tick now returns after one read-only query instead of a full census.
+- Work-order reads and writes run in process. `agent_task.orders`/`get` call the store instead of
+  starting a `python reminder.py list|get` child (0.9 to 1.7 s each on a loaded machine; about 6 per
+  launch tick and 8 to 10 per review round). A tick reads the census once and re-reads it only when
+  the reaper changed something.
+- The run-root lifecycle lock no longer wraps the whole tick, enqueue, claim, finish and the
+  reaper. Only `launch` (spawn to PID receipt) and `stop` take it, owner reports are sent after it
+  is released, and the reentrant lock machinery is gone. A runner's `finish` can no longer time out
+  on a 10 s lock held by a long tick and be recorded as `reconcile`.
+- Artifacts-mode orders (Task Console work) never run git: the changed-file list, the review
+  evidence and the stall signature come from one bounded artifact capture per round. Before, the
+  workspace's enclosing companion repository was inspected, so the reviewer saw unrelated files
+  such as the database as "changed", and every round hashed them.
+- Read-only git inspection in git mode runs as a plain bounded child instead of a journaled
+  execution with two fenced write transactions per command. The runner checks ownership once per
+  approach and otherwise relies on its fenced checkpoint, receipt and finish writes.
+- Runner Job Object adoption is mandatory: a runner that cannot be adopted is ended while still
+  suspended and counted as not started (bounded requeue). A stop that cannot open a live runner's
+  job stays pending instead of falling back to a process-tree kill.
+- Work-action start resolves the action workspace once, before its write transaction, and reads the
+  task binding on that transaction's own connection.
+
+### Removed
+- The process-tree stop fallback (`process_tree.py`, `taskkill /T` and the `verified-tree-kill`
+  receipt), the pre-generation work-order paths (`_reap_legacy`, generation-less finish, stop and
+  cancel, `patch_ext`, `set_progress`, the launch-phase ext field and the claim-time scan for
+  orders without an operation row), the per-order `.enqueue.lock`, the `reminder.py` bridge
+  (`agent_task.rem`), the third evidence capture in artifacts mode, and unused imports and
+  parameters (`relay` in the tick and runner, `REVIEW_CHAIN`, `_DISCORD_MAX`, and `_llm`'s
+  chain, workspace and requirements).
+
 ### Fixed
 - A Discord or mail dispatched order without a Git workspace no longer fails about a second after
   launch. It defaulted to the home directory, where `git diff --cached` exits 129, so the initial

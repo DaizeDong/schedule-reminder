@@ -212,12 +212,12 @@ def _existing_work_receipt(key, origin, request):
     item = store.creation_receipt_item(agent_task.WORK_SOURCE, key)
     if not item:
         return None
-    agent_task._work_item(item)
     ext = item.get('ext') or {}
     expected = hashlib.sha256(request.encode('utf-8')).hexdigest()
     if (item.get('source') != agent_task.WORK_SOURCE or not isinstance(ext, dict)
             or ext.get('x_console_origin_item') != origin
             or ext.get(agent_task.EXT_REQUEST_SHA) != expected
+            or ext.get(agent_task.EXT_STATE) not in agent_task.EXEC_STATES
             or ext[agent_task.EXT_STATE] == 'preparing'):
         raise ValueError('previously authorized work receipt does not match the saved action')
     if agent_task.read_request(item) != request:

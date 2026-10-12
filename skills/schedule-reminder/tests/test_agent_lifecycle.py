@@ -61,7 +61,7 @@ def test_stopped_spawn_without_identity_keeps_reservation_until_reviewed_cleanup
     iid = make_order(pool)['id']
     assert agent_task.claim(iid)
     assert agent_task.begin_spawn(iid, 1)
-    monkeypatch.setattr(agent_task, 'kill_tree', lambda *a: pytest.fail('no known process identity'))
+    monkeypatch.setattr(agent_tick, '_open_runner_job', lambda *a: pytest.fail('no known process identity'))
     result = agent_tick.stop(iid, post=False)
     assert result[0]['stopped'] is False and result[0]['status'] == 'reconcile'
     op = agent_task.operation(iid)
@@ -75,6 +75,54 @@ def test_stopped_spawn_without_identity_keeps_reservation_until_reviewed_cleanup
     assert agent_task.recover_cleanup(iid, 1, cleanup_recovery_evidence())
     assert agent_task.operation(iid)['released_at'] is not None
     assert agent_task.claim(waiting)
+
+
+def test_stop_without_the_runner_job_stays_pending_while_the_runner_lives(pool, monkeypatch):
+    iid = started_order(pool)
+
+    def refuse(*args, **kwargs):
+        raise agent_tick.runner_job.JobUnavailable("synthetic: no runner job")
+    monkeypatch.setattr(agent_tick.runner_job, "open_for", refuse)
+    monkeypatch.setattr(agent_task, "is_live", lambda pid, pstart: True)
+    result = agent_tick.stop(iid, post=False, expected_generation=1)[0]
+    assert result["stopped"] is False and result["status"] == "stop_pending"
+    assert store.get_item(iid)["state"] == "doing"
+    monkeypatch.setattr(agent_task, "is_live", lambda pid, pstart: False)
+    result = agent_tick.stop(iid, post=False, expected_generation=1)[0]
+    assert result["stopped"] is True and result["cleanup"] == "held"
+    assert store.get_item(iid)["state"] == "cancelled"
+    assert agent_task.operation(iid)["released_at"] is None
+
+
+def test_stop_report_is_sent_after_the_launch_lock_is_released(pool, monkeypatch):
+    item = make_order(pool)
+    held = []
+
+    def report(*args, **kwargs):
+        lock = Path(agent_task.runs_root()) / ".lifecycle.lock"
+        with open(lock, "a+b") as stream:   # a held msvcrt/flock lock would refuse this one
+            if sys.platform == "win32":
+                import msvcrt
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        held.append(args)
+    monkeypatch.setattr(agent_tick, "_post_owner", report)
+    assert agent_tick.stop(item["id"], post=True)[0]["stopped"] is True
+    assert len(held) == 1
+
+
+def test_revoked_operation_never_reaches_the_model(pool, monkeypatch):
+    """The fenced child_start receipt, not a separate ownership query, keeps a revoked order
+    from launching a model call."""
+    import agent_run
+    iid = started_order(pool)
+    assert not agent_task.request_stop(iid, "synthetic stop").get("_err")
+    token = agent_run._OPERATION.set((iid, 1))
+    try:
+        with pytest.raises(agent_run.CleanupUncertain):
+            agent_run._observed_call("actor", lambda *a: pytest.fail("called after revocation"), "p")
+    finally:
+        agent_run._OPERATION.reset(token)
 
 
 def test_unregistered_stop_reconciliation_rejects_stale_process_snapshot(pool):
@@ -99,7 +147,7 @@ def test_stale_stop_generation_never_revokes_or_kills_reopened_work(pool, monkey
     assert agent_task.claim(iid)
     assert agent_task.begin_spawn(iid, 2)
     assert agent_task.start_runner(iid, 2, 123, 456)
-    monkeypatch.setattr(agent_task, 'kill_tree', lambda *a: pytest.fail('stale stop killed replacement'))
+    monkeypatch.setattr(agent_tick, '_open_runner_job', lambda *a: pytest.fail('stale stop killed replacement'))
     for generation in (0, 1):
         result = agent_tick.stop(iid, post=False, expected_generation=generation)
         assert result[0]['status'] == 'stale_generation' and result[0]['stopped'] is False
@@ -112,7 +160,7 @@ def test_stale_stop_generation_never_revokes_or_kills_reopened_work(pool, monkey
 
 def test_legacy_stop_requires_absence_of_generation(pool, monkeypatch):
     item = make_order(pool)
-    monkeypatch.setattr(agent_task, 'kill_tree', lambda *a: pytest.fail('queued legacy work never started'))
+    monkeypatch.setattr(agent_tick, '_open_runner_job', lambda *a: pytest.fail('queued legacy work never started'))
     result = agent_tick.stop(item['id'], post=False, expected_generation=0)
     assert result[0]['stopped'] is True
     assert store.get_item(item['id'])['state'] == 'cancelled'
@@ -137,13 +185,24 @@ def test_generation_replacement_during_stop_cannot_be_killed_or_cancelled(pool, 
             replace()
             return result
         monkeypatch.setattr(agent_task, 'request_stop', request)
-    def kill(pid, pstart):
-        stopped.append((pid, pstart))
-        assert (pid, pstart) == (123, 456)
-        if race == 'during_cleanup':
-            replace()
-        return True
-    monkeypatch.setattr(agent_task, 'kill_tree', kill)
+    class Job:
+        broke_away, breakaway_check = [], 'checked'
+
+        def __init__(self, op):
+            self.op = op
+
+        def terminate(self):
+            stopped.append((self.op['pid'], int(self.op['pstart'])))
+            if race == 'during_cleanup':
+                replace()
+            return True
+
+        def confirm_empty(self):
+            pytest.fail('a replaced generation must not be released')
+
+        def close(self):
+            pass
+    monkeypatch.setattr(agent_tick, '_open_runner_job', lambda item, op: Job(op))
     result = agent_tick.stop(iid, post=False, expected_generation=1)
     assert not result[0]['stopped']
     assert stopped == ([] if race == 'after_intent' else [(123, 456)])
@@ -157,7 +216,7 @@ def test_reopened_queue_is_not_the_terminal_generation_authorized_for_stop(pool,
     assert agent_task.release(iid, 1)
     store.transition(iid, 'pending')
     store.update_item(iid, ext={agent_task.EXT_STATE: 'queued'})
-    monkeypatch.setattr(agent_task, 'kill_tree', lambda *a: pytest.fail('terminal generation cannot stop reopened queue'))
+    monkeypatch.setattr(agent_tick, '_open_runner_job', lambda *a: pytest.fail('terminal generation cannot stop reopened queue'))
     result = agent_tick.stop(iid, post=False, expected_generation=1)
     assert result[0]['status'] == 'stale_generation'
     assert not store.cancel_work(iid, 1, note='stale synthetic cancellation')
@@ -199,12 +258,6 @@ def test_creation_receipt_legacy_fallback_rejects_different_source(pool):
     with pytest.raises(store.SkillError) as conflict:
         store.creation_receipt_item("different-source", "synthetic-key")
     assert conflict.value.error_code == "ERR_CONFLICT"
-
-
-def test_legacy_stop_pending_keeps_writer_reserved(pool):
-    store.add_item("Synthetic stopping legacy work", source=agent_task.WORK_SOURCE,
-                   ext={agent_task.EXT_STATE: "stop_pending"})
-    assert not store.claim_work(make_order(pool)["id"])
 
 
 @pytest.mark.parametrize("raw", ["invalid-json", "{}", '{"item_id":"missing","request_digest":"' + "0" * 64 + '"}'])
@@ -396,7 +449,7 @@ def test_pid_reuse_reconciles_without_killing_unrelated_process(pool, monkeypatc
     agent_task.begin_spawn(item["id"], 1)
     agent_task.start_runner(item["id"], 1, 123, 456)
     monkeypatch.setattr(agent_task, "proc_identity", lambda pid: (True, 789))
-    monkeypatch.setattr(agent_task, "kill_tree", lambda *a: pytest.fail("unrelated process kill"))
+    monkeypatch.setattr(agent_tick, "_open_runner_job", lambda *a: pytest.fail("unrelated process kill"))
     assert agent_tick.reap(post=False) == [item["id"]]
 
 

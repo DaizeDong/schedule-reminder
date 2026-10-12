@@ -34,16 +34,12 @@ import re
 import subprocess
 import sys
 import private_data
-import process_tree
 import runner_job
 import store
-import threading
 import uuid
-from contextlib import contextmanager
-from functools import wraps
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-REMINDER = os.path.join(_HERE, "reminder.py")
+TICK = os.path.join(_HERE, "agent_tick.py")
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -65,7 +61,6 @@ EXT_MSG = "x_agent_exec_msg_id"           # origin Discord message id (may be No
 EXT_DIR = "x_agent_exec_dir"              # run directory NAME, relative to runs_root()
 EXT_WORKSPACE = "x_agent_exec_workspace"  # cwd the runner works in (== codex write sandbox)
 EXT_PID = "x_agent_exec_pid"
-EXT_LAUNCH = "x_agent_exec_launch_phase"  # claimed|starting|registered
 EXT_PSTART = "x_agent_exec_pstart"        # process creation time, the pid-reuse discriminator
 EXT_ROUND = "x_agent_exec_round"
 EXT_APPROACH = "x_agent_exec_approach"
@@ -86,64 +81,45 @@ EXT_MAX_CHARS = 2000
 STATE_QUEUED, STATE_RUNNING, STATE_STALLED = "queued", "running", "stalled"
 STATE_DONE, STATE_FAILED = "done", "failed"
 STATE_STOPPING = "stop_pending"
+# Every execution state an order can carry; anything else is a damaged record.
+EXEC_STATES = (STATE_QUEUED, STATE_RUNNING, STATE_STOPPING, STATE_STALLED, STATE_DONE, STATE_FAILED,
+               "preparing", "reconcile", "review_unavailable", "cancelled", "interrupted")
 
 
+def launch_lock():
+    """Exclude launch and stop from each other across processes.
 
-_LIFECYCLE_MUTEX = threading.RLock()
-_LIFECYCLE_DEPTH = 0
-
-
-@contextmanager
-def lifecycle_lock():
-    """Serialize claim, spawn, PID registration and stop across worker processes."""
-    global _LIFECYCLE_DEPTH
-    with _LIFECYCLE_MUTEX:
-        if _LIFECYCLE_DEPTH:
-            _LIFECYCLE_DEPTH += 1
-            try:
-                yield
-            finally:
-                _LIFECYCLE_DEPTH -= 1
-            return
-        with private_data.file_lock(os.path.join(runs_root(), ".lifecycle.lock")):
-            _LIFECYCLE_DEPTH = 1
-            try:
-                yield
-            finally:
-                _LIFECYCLE_DEPTH = 0
-
-
-def serialized_lifecycle(function):
-    @wraps(function)
-    def wrapped(*args, **kwargs):
-        with lifecycle_lock():
-            return function(*args, **kwargs)
-    return wrapped
+    Every state change is already a generation-fenced store transaction. This lock covers only
+    the gap the store cannot see: a stop that arrives between the spawn and the PID receipt would
+    find neither a process to kill nor a reason to cancel. Hold it for that window and nothing
+    slower (no notification, no model call)."""
+    return private_data.file_lock(os.path.join(runs_root(), ".lifecycle.lock"))
 
 
 def _utcnow():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-# --------------------------------------------------------------------------- reminder.py bridge
-def rem(*args):
-    """Call reminder.py and return its parsed JSON, or {"_err": ...}. Never raises.
-
-    --actor is a TOP-LEVEL flag and must precede the verb; passing it after would be an argparse
-    usage error (exit 2, plain text, not JSON)."""
-    p = subprocess.run([sys.executable, REMINDER, "--actor", ACTOR, *args],
-                       capture_output=True, text=True, encoding="utf-8")
-    if p.returncode != 0:
-        raw = (p.stderr or p.stdout).strip()
+def wake_tick():
+    """Start a detached tick now instead of waiting for the scheduled poll. Never raises: the
+    scheduled AgentCenterWorkTick remains the backstop when this cannot start."""
+    exe = sys.executable or "python"
+    windowless = os.path.join(os.path.dirname(exe), "pythonw.exe")
+    if os.path.isfile(windowless):
+        exe = windowless
+    # NO_WINDOW | DETACHED, first also leaving the caller's job (a runner waking the next order
+    # is inside its own runner job); a job that forbids breakaway refuses that, so retry without.
+    attempts = ((0x08000000 | 0x00000008 | 0x01000000), (0x08000000 | 0x00000008)) \
+        if sys.platform == "win32" else (0,)
+    for flags in attempts:
         try:
-            return {"_err": json.loads(raw.splitlines()[-1]).get("error_code") or raw[:200],
-                    "_raw": raw[:400]}
+            subprocess.Popen([exe, "-B", TICK], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, close_fds=True, creationflags=flags,
+                             **({} if sys.platform == "win32" else {"start_new_session": True}))
+            return True
         except Exception:
-            return {"_err": raw[:200] or "exit %d" % p.returncode}
-    try:
-        return json.loads(p.stdout.strip().splitlines()[-1])
-    except Exception:
-        return {"_err": "unparseable: %s" % (p.stdout or "")[:200]}
+            continue
+    return False
 
 
 def _ext(item):
@@ -261,52 +237,30 @@ def is_live(pid, pstart):
     return bool(alive and start is not None and int(start) == int(pstart))
 
 
-def kill_tree(pid, pstart):
-    """Return True for verified termination, False for an exited identity; raise on uncertainty."""
-    if not pid or pstart is None:
-        raise RuntimeError("termination identity is unavailable")
-    alive, start = proc_identity(pid)
-    if not alive or (start is not None and int(start) != int(pstart)):
-        return False
-    if start is None:
-        raise RuntimeError("process creation time is unavailable")
-    try:
-        result = subprocess.run(
-            ["taskkill", "/T", "/F", "/PID", str(int(pid))], capture_output=True, timeout=20,
-            **({"creationflags": 0x08000000} if sys.platform == "win32" else {}))
-    except (OSError, subprocess.SubprocessError) as error:
-        raise RuntimeError("process-tree termination could not run: " + type(error).__name__) from error
-    if result.returncode != 0:
-        raise RuntimeError("process-tree termination failed (taskkill exit %s)" % result.returncode)
-    alive, start = proc_identity(pid)
-    if alive and (start is None or int(start) == int(pstart)):
-        raise RuntimeError("process-tree termination unresolved after taskkill success")
-    return True
-
-
 # --------------------------------------------------------------------------- queue operations
 
 def _persist_request(item, request):
-    """Save the complete request atomically before publishing runnable work."""
+    """Save the complete request atomically before publishing runnable work.
+
+    No lock: one item has one request sha (checked before this), so two racing writers write
+    identical bytes, and each writes its own temporary file before the atomic replace."""
     directory = run_dir(item, create=True)
     path = os.path.join(directory, "request.txt")
-    with private_data.file_lock(os.path.join(directory, ".enqueue.lock")):
-        if os.path.exists(path):
-            with open(path, encoding="utf-8") as stream:
-                if stream.read() != (request or ""):
-                    raise RuntimeError("action identity already has a different durable request")
-            return directory
-        temporary = path + ".tmp"
-        with private_data.open_for_write(temporary, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write(request or "")
-            stream.flush()
-            os.fsync(stream.fileno())
-        private_data.assert_writable_path(path)
-        os.replace(temporary, path)
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as stream:
+            if stream.read() != (request or ""):
+                raise RuntimeError("action identity already has a different durable request")
+        return directory
+    temporary = "%s.%s.tmp" % (path, uuid.uuid4().hex)
+    with private_data.open_for_write(temporary, "w", encoding="utf-8", newline="\n") as stream:
+        stream.write(request or "")
+        stream.flush()
+        os.fsync(stream.fileno())
+    private_data.assert_writable_path(path)
+    os.replace(temporary, path)
     return directory
 
 
-@serialized_lifecycle
 def enqueue(stream, request, workspace=None, msg_id=None, title=None, *,
             idempotency_key=None, origin_item_id=None, evidence=None, work_id=None, db_path=None, action_id=None):
     """Create a queued work order. Returns the item dict, or {"_err": ...}."""
@@ -365,6 +319,7 @@ def enqueue(stream, request, workspace=None, msg_id=None, title=None, *,
     if not item:
         return {"_err": "work preparation cancelled or changed"}
     append_event(item, "enqueued", stream=stream, workspace=ws, note=note)
+    wake_tick()
     return item
 
 
@@ -396,7 +351,10 @@ def _query_item(item):
 
 
 def query_items(query, *args):
-    """Return a complete ordered census, or raise before exposing any partial page."""
+    """Return a complete ordered census, or raise before exposing any partial page.
+
+    Used by dispatch.py, which still reads the pool through the reminder.py CLI. Work orders
+    are read in process (orders/get below) and do not go through this."""
     out, cursor = [], None
     while True:
         argv = [*args, "--limit", "100"]
@@ -424,35 +382,20 @@ def query_items(query, *args):
         cursor = next_cursor
 
 
-def _work_item(item):
-    item = _query_item(item)
-    ext = item.get("ext")
-    if (item.get("state") not in ("pending", "doing", "blocked", "done", "cancelled")
-            or not isinstance(ext, dict)
-            or ext.get(EXT_STATE) not in (STATE_QUEUED, STATE_RUNNING, STATE_STOPPING,
-                                          STATE_STALLED, STATE_DONE, STATE_FAILED, "preparing",
-                                          "reconcile", "review_unavailable", "cancelled", "interrupted")):
-        raise RuntimeError("work query returned incomplete execution state")
-    return item
-
-
 def orders(active_only=True):
-    """Every work order, newest last; a failed page invalidates the entire census."""
-    args = ["list", "--source", WORK_SOURCE]
-    if active_only:
-        args.append("--active")
-    return [_work_item(item) for item in query_items(rem, *args)]
+    """Every work order, oldest first, read in process; a store failure raises."""
+    out, cursor = [], None
+    while True:
+        page = store.list_items(source=WORK_SOURCE, active_only=active_only, limit=100, cursor=cursor)
+        out.extend(page["items"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            return out
 
 
 def get(item_id):
-    result = rem("get", "--id", item_id)
-    if isinstance(result, dict) and result.get("_err") == "ERR_NOT_FOUND":
-        return None
-    result = _query_result(result, "get")
-    item = _work_item(result.get("item"))
-    if item["id"] != item_id:
-        raise RuntimeError("work query returned a different item")
-    return item
+    """The work order, or None when it does not exist."""
+    return store.get_item(item_id)
 
 
 def running(items=None):
@@ -466,78 +409,46 @@ def queued(items=None):
     return [it for it in (orders() if items is None else items) if exec_state(it) == STATE_QUEUED]
 
 
-def patch_ext(item_id, **fields):
-    """Merge fields into ext. reminder.py merges ext shallowly at the top level, which is all these
-    flat keys need."""
-    return rem("update", "--id", item_id, "--ext", json.dumps(fields, ensure_ascii=False))
-
-
-def set_progress(item_id, pct):
-    """Progress on an already-doing item must go through `update`. A same-state `transition` is an
-    idempotent no-op that returns BEFORE applying --progress, so it would silently do nothing."""
-    return rem("update", "--id", item_id, "--set", "progress=%d" % max(0, min(100, int(pct))))
-
-
-
-@serialized_lifecycle
 def claim(item_id, *, run_id=None, return_operation=False):
     """Atomically reserve the serial writer and publish state/ext/generation.
 
-    The legacy bool result remains available. The dispatcher requests the winning receipt,
+    The bool result remains available. The dispatcher requests the winning receipt,
     rather than rereading a possibly newer generation after cancellation/reopen.
     """
-    current = get(item_id)
-    if current is None:
-        return None if return_operation else False
     op = store.claim_work(item_id, run_id=run_id, actor=ACTOR)
     return op if return_operation else bool(op)
 
 
-@serialized_lifecycle
-def record_process(item_id, pid, pstart, *, generation=None):
+def record_process(item_id, pid, pstart, *, generation):
     return _advance(item_id, generation, "receipt", pid=pid, pstart=pstart)
 
 
-@serialized_lifecycle
-def finish(item_id, ok, note="", exec_state_value=None, *, generation=None):
-    """Commit pool state and execution metadata together; failure leaves the order recoverable."""
-    if generation is not None:
-        return _advance(item_id, generation, "finish", note=note,
-                        outcome=exec_state_value or (STATE_DONE if ok else STATE_FAILED))
-    current = get(item_id)
-    if current is None:
-        return {"_err": "ERR_NOT_FOUND", "message": "work order does not exist"}
-    if exec_state(current) == STATE_STOPPING or (current or {}).get("state") == "cancelled":
-        return {"_err": "ERR_STOP_PENDING", "message": "stop request owns finalization"}
-    st = exec_state_value or (STATE_DONE if ok else STATE_FAILED)
-    if operation(item_id) is not None:
-        return {"_err": "ERR_GENERATION_REQUIRED"}
-    metadata = json.dumps({EXT_STATE: st, EXT_NOTE: (note or "")[:300]}, ensure_ascii=False)
-    if ok:
-        return rem("done", "--id", item_id, "--ext", metadata)
-    return rem("transition", "--id", item_id, "--to", "blocked",
-               "--reason", (note or st)[:300], "--ext", metadata)
+def finish(item_id, ok, note="", exec_state_value=None, *, generation):
+    """Commit pool state and execution metadata together; a lost generation returns False."""
+    return _advance(item_id, generation, "finish", note=note,
+                    outcome=exec_state_value or (STATE_DONE if ok else STATE_FAILED))
 
 
-@serialized_lifecycle
+def current_generation(item_id):
+    """The generation a stop applies to when the caller saw none: 0 names a never-claimed order."""
+    op = operation(item_id)
+    return op["generation"] if op else 0
+
+
 def request_stop(item_id, note="", *, expected_generation=None):
     """Keep the work order active while termination is being established."""
-    if expected_generation is not None:
-        return store.request_work_stop(item_id, expected_generation,
-            note=note or 'user asked to stop', actor=ACTOR) or {'_err': 'ERR_STALE_GENERATION'}
-    return patch_ext(item_id, **{EXT_STATE: STATE_STOPPING, EXT_NOTE: (note or "user asked to stop")[:300]})
+    if expected_generation is None:
+        expected_generation = current_generation(item_id)
+    return store.request_work_stop(item_id, expected_generation,
+        note=note or 'user asked to stop', actor=ACTOR) or {'_err': 'ERR_STALE_GENERATION'}
 
 
-@serialized_lifecycle
 def cancel(item_id, note="", *, expected_generation=None):
     """Commit cancellation and execution metadata in the same pool transaction."""
-    if expected_generation is not None:
-        return store.cancel_work(item_id, expected_generation, note=note, actor=ACTOR) or {
-            '_err': 'ERR_STALE_GENERATION'}
-    metadata = json.dumps({EXT_STATE: STATE_FAILED,
-                           EXT_NOTE: ("cancelled: " + (note or ""))[:300]}, ensure_ascii=False)
-    return rem("transition", "--id", item_id, "--to", "cancelled",
-               "--reason", (note or "stopped")[:300], "--ext", metadata)
+    if expected_generation is None:
+        expected_generation = current_generation(item_id)
+    return store.cancel_work(item_id, expected_generation, note=note, actor=ACTOR) or {
+        '_err': 'ERR_STALE_GENERATION'}
 
 
 def operation(item_id):
@@ -620,21 +531,16 @@ def recover_cleanup(item_id, generation, evidence):
     return _advance(item_id, generation, 'recover_cleanup', expected=op, receipt=receipt)
 
 
-def process_backend():
-    """The OS process layer used to verify a stop's tree kill; tests substitute a synthetic one."""
-    return process_tree.NativeProcesses()
-
-
 def job_backend():
     """The OS job layer used by a stop to terminate and verify the runner's job."""
     return runner_job.NativeJobs()
 
 
 def release_verified_cleanup(item_id, generation, receipt, expected):
-    """Release a cancelled generation whose whole runner tree was confirmed gone after the kill.
+    """Release a cancelled generation whose runner job was terminated and confirmed empty.
 
-    The receipt comes from process_tree.confirm_gone; store.advance_work binds it to every recorded
-    runner identity and to the caller's exact reservation snapshot."""
+    The receipt comes from runner_job.RunnerJob.confirm_empty; store.advance_work binds it to every
+    recorded runner identity and to the caller's exact reservation snapshot."""
     return _advance(item_id, generation, "verified_cleanup", expected=expected, receipt=receipt)
 
 
@@ -658,14 +564,18 @@ def normalize_output(text):
     return re.sub(r"\s+", " ", _DIGITS.sub("#", text or "")).strip()
 
 
-def signature(verify_rc, verify_output, changed_files, workspace):
+def signature(verify_rc, verify_output, changed_files, workspace, evidence=None):
     """A round's fingerprint: what the check said, and what the tree actually looks like.
 
     File CONTENT is hashed, not just the name: an agent that rewrites the same file with the same
-    bytes every round has not moved, and a name-only signature would read that as progress."""
+    bytes every round has not moved, and a name-only signature would read that as progress.
+    Artifact evidence already carries every file's sha256, so it is used as is."""
     h = hashlib.sha256()
     h.update(("rc=%s\n" % verify_rc).encode("utf-8"))
     h.update((normalize_output(verify_output)[:4000] + "\n").encode("utf-8"))
+    if evidence is not None:
+        h.update(evidence.encode("utf-8"))
+        return h.hexdigest()
     for rel in sorted(set(changed_files or [])):
         p = rel if os.path.isabs(rel) else os.path.join(workspace or "", rel)
         try:
