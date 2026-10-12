@@ -77,8 +77,9 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - `install.ps1` registers each task with its real entrypoint (`reminder.py --db <db> tick`,
   `ingest_tick.py`, `agent_tick.py`) and exits zero once the database is healthy and the relay
   registry exists. It previously exited nonzero forever, waiting for readiness evidence.
-- `store.admitted_connection` is now the same function as `_connect`; a write connection checks
-  its database path and sidecars once instead of up to three times.
+- A database connection checks its path and sidecars once: `admitted_connection` admits reads
+  itself and leaves writes to `_connect`, which no longer repeats the walk before opening (writes
+  through `admitted_connection` walked it up to three times).
 
 ### Removed
 - The process-tree stop fallback (`process_tree.py`, `taskkill /T` and the `verified-tree-kill`

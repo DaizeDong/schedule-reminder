@@ -238,6 +238,17 @@ def test_idle_tick_opens_no_write_connection(tmp_path, monkeypatch):
     assert opened == [True, False]
 
 
+@pytest.mark.parametrize("readonly", [False, True])
+def test_admitted_connection_walks_its_paths_once(tmp_path, monkeypatch, readonly):
+    import private_data
+    db = database(tmp_path)
+    walks = []
+    real = private_data.assert_sqlite_paths
+    monkeypatch.setattr(private_data, "assert_sqlite_paths", lambda path: walks.append(path) or real(path))
+    store.admitted_connection(db, readonly=readonly).close()
+    assert len(walks) == 1
+
+
 @pytest.mark.parametrize("outcome", [False, True])
 def test_relay_bool_fallback_is_honoured_by_the_tick(tmp_path, monkeypatch, outcome):
     """relay.deliver returns a bare bool when the stream has no webhook/channel (Big Brother DM)."""

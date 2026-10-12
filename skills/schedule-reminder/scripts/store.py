@@ -178,16 +178,10 @@ def _connect(db_path=None, *, readonly=False, create=False, immutable=False):
     """Open a connection in autocommit mode (isolation_level=None) so WE control BEGIN IMMEDIATE.
 
     A write connection checks the database path and its sidecars once (no alias, outside the
-    public tree). Read-only connections cannot write anything and skip that walk."""
+    public tree). A plain read-only connection skips it; owner reads use admitted_connection."""
     path = db_path or default_db_path()
     if not readonly:
-        try:
-            private_data.assert_sqlite_paths(path)
-            private_data.check_destination(path)
-        except PermissionError as error:
-            raise SkillError("ERR_PERMISSION", str(error)) from error
-        except ValueError as error:
-            raise SkillError("ERR_DATA_POLICY", str(error)) from error
+        _admit(path)
     if not os.path.isfile(path) and not create:
         raise SkillError("ERR_UNINITIALIZED", "initialize the PRIVATE database with init")
     target = Path(path).resolve().as_uri()+"?mode=ro" if readonly else path
@@ -208,8 +202,25 @@ def _connect(db_path=None, *, readonly=False, create=False, immutable=False):
     return conn
 
 
-# Public name for sibling modules: opening existing PRIVATE storage is just _connect.
-admitted_connection = _connect
+def _admit(path):
+    try:
+        private_data.assert_sqlite_paths(path)
+        private_data.check_destination(path)
+    except PermissionError as error:
+        raise SkillError("ERR_PERMISSION", str(error)) from error
+    except ValueError as error:
+        raise SkillError("ERR_DATA_POLICY", str(error)) from error
+
+
+def admitted_connection(db_path=None, *, readonly=False):
+    """Open existing PRIVATE storage without creating it or migrating its schema.
+
+    Owner reads refuse a database outside admitted PRIVATE storage too. Each connection walks its
+    paths once: here for a read, in _connect for a write."""
+    path = db_path or default_db_path()
+    if readonly:
+        _admit(path)
+    return _connect(path, readonly=readonly)
 
 
 def _busy_retry(fn):
@@ -636,7 +647,7 @@ def creation_preflight(title, *, db_path=None, **fields):
     if not os.path.isfile(path):
         raise SkillError('ERR_NOT_INITIALIZED', 'initialize the owner before creation preflight')
     proposed = creation_guard.candidate(title, **fields)
-    conn = _connect(path, readonly=True)
+    conn = admitted_connection(path, readonly=True)
     try:
         return creation_guard.inspect(conn, proposed)
     finally:
@@ -655,7 +666,7 @@ def _dispatch_note_identity(item_id, note, request_key):
 def dispatch_note_receipt(item_id, note, request_key, *, db_path=None):
     """Recover an exact follow-up receipt without appending or reopening its target."""
     identity = _dispatch_note_identity(item_id, note, request_key)
-    conn = _connect(db_path, readonly=True)
+    conn = admitted_connection(db_path, readonly=True)
     try:
         conn.execute('BEGIN')
         seen = conn.execute('SELECT value FROM meta WHERE key=?',
@@ -678,7 +689,7 @@ def creation_receipt_item(source, idempotency_key, *, db_path=None):
     if any(not isinstance(value, str) or not value.strip() for value in (source, idempotency_key)):
         raise SkillError('ERR_BAD_INPUT', 'source and idempotency_key must be nonempty strings')
     key = 'creation:' + creation_guard._digest([source, idempotency_key])
-    conn = _connect(db_path, readonly=True)
+    conn = admitted_connection(db_path, readonly=True)
     try:
         conn.execute('BEGIN')
         row = conn.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()
@@ -1614,7 +1625,7 @@ def _migrate_work_evidence(conn):
 
 
 def work_operation(item_id, *, db_path=None):
-    conn = _connect(db_path, readonly=True)
+    conn = admitted_connection(db_path, readonly=True)
     try:
         return _operation(conn, item_id)
     finally:
@@ -1622,7 +1633,7 @@ def work_operation(item_id, *, db_path=None):
 
 
 def work_reservations(*, db_path=None):
-    conn = _connect(db_path, readonly=True)
+    conn = admitted_connection(db_path, readonly=True)
     try:
         return [dict(row) for row in conn.execute(
             "SELECT * FROM agent_operations WHERE released_at IS NULL")]
