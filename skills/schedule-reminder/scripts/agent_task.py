@@ -168,7 +168,7 @@ def run_dir(item, create=False):
     name = _ext(item).get(EXT_DIR) or item["id"]
     p = os.path.join(runs_root(), name)
     if create:
-        private_data.prove_private(p)
+        private_data.check_destination(p)
         os.makedirs(p, exist_ok=True)
     return p
 
@@ -184,6 +184,24 @@ def append_event(item, kind, **fields):
 # --------------------------------------------------------------------------- workspace
 def default_workspace():
     return os.environ.get("AGENT_EXEC_WORKSPACE") or os.path.expanduser("~")
+
+
+def is_git_workspace(path):
+    """True when ``path`` or a parent holds a .git entry."""
+    if not path:
+        return False
+    from pathlib import Path
+    return any((root/".git").exists() for root in (Path(path), *Path(path).parents))
+
+
+def order_workspace(token):
+    """A dedicated artifact workspace for one order, stable for one action identity.
+
+    It lives beside the run records in the private companion and is created here."""
+    path = os.path.join(runs_root(), "workspaces", hashlib.sha256(str(token).encode("utf-8")).hexdigest()[:32])
+    private_data.check_destination(path)
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def resolve_workspace(candidate):
@@ -292,7 +310,7 @@ def _persist_request(item, request):
 def enqueue(stream, request, workspace=None, msg_id=None, title=None, *,
             idempotency_key=None, origin_item_id=None, evidence=None, work_id=None, db_path=None, action_id=None):
     """Create a queued work order. Returns the item dict, or {"_err": ...}."""
-    private_data.prove_private(runs_root())
+    private_data.check_destination(runs_root())
     ws, note = resolve_workspace(workspace)
     ext = {
         EXT_V: EXT_VERSION,

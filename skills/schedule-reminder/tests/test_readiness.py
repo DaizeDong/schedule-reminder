@@ -231,19 +231,6 @@ def test_synthetic_delivery_cannot_establish_external_readiness(tmp_path, monkey
     assert not report['ready'] and not report['capabilities']['remind']['external_ready']
 
 
-def test_unknown_unmanaged_and_nested_paths_fail_before_writes(tmp_path):
-    for name, remote in [('unknown', FIX['unknown_remote']), ('public', FIX['public_remote'])]:
-        root = tmp_path/name
-        (root/'.git').mkdir(parents=True)
-        (root/'.git/config').write_text('[remote "origin"]\nurl = '+remote)
-        target = root/'absent'/'db.sqlite3'
-        with pytest.raises(store.SkillError, match='PRIVATE'):
-            store.init_db(str(target))
-        assert not target.parent.exists()
-    with pytest.raises(ValueError, match='PRIVATE'):
-        private_data.prove_private(tmp_path.parent/'unmanaged'/'data.json')
-
-
 def test_linked_private_repo_and_explicit_db_precedence(tmp_path, monkeypatch):
     linked = tmp_path/'linked'
     linked.mkdir()
@@ -252,7 +239,6 @@ def test_linked_private_repo_and_explicit_db_precedence(tmp_path, monkeypatch):
     (meta/'commondir').write_text('../..')
     (linked/'.git').write_text('gitdir: '+str(meta))
     path = linked/'db.sqlite3'
-    assert private_data.prove_private(path)['visibility'] == 'PRIVATE'
     monkeypatch.setenv('SCHEDULE_DB_PATH', str(tmp_path/'environment.sqlite3'))
     store.init_db(str(path))
     assert path.exists() and not (tmp_path/'environment.sqlite3').exists()
@@ -264,7 +250,7 @@ def test_missing_read_views_and_permission_failure(tmp_path, monkeypatch):
     assert store.due_items(db_path=path) == []
     assert not Path(path).parent.exists()
     def denied(*args): raise PermissionError('synthetic permission denial')
-    monkeypatch.setattr(private_data, 'prove_private', denied)
+    monkeypatch.setattr(private_data, 'check_destination', denied)
     with pytest.raises(store.SkillError) as error:
         store.init_db(path)
     assert error.value.error_code == 'ERR_PERMISSION'

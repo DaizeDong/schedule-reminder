@@ -38,7 +38,6 @@ def _workspace(root):
         private = private_data.assert_writable_path(private_data.data_dir()).resolve()
         if not resolved.is_relative_to(private):
             return None
-        private_data.prove_private(resolved)
     except (OSError, ValueError, RuntimeError):
         return None
     if resolved in (Path.home().resolve(), Path(resolved.anchor)):
@@ -46,38 +45,15 @@ def _workspace(root):
     return resolved
 
 
-def workspace_once(root, *, prefetch=False):
-    """Return a callable that proves ``root`` at most once.
+def workspace_once(root):
+    """Return a callable that checks ``root`` at most once, so a feed does not repeat it per item."""
+    outcome = []
 
-    The PRIVATE proof runs dozens of git queries and one live visibility lookup, and the
-    answer cannot differ between items of one read, so a feed must not repeat it per item.
-    ``prefetch`` starts that proof on a thread. private_data serialises full proofs, so the thread
-    overlaps the database proof only when the workspace lies in another companion's memo entry;
-    when both lie in one companion the second proof is a memo hit. Writers (_reserve, start) keep
-    calling _workspace, which reuses this process's memoised proof while it is valid (60 s, same
-    companion state) and proves in full otherwise.
-    """
-    import threading
-    outcome = {}
-
-    def run():
-        try:
-            outcome['value'] = _workspace(root)
-        except BaseException as error:  # surfaced to the caller of proof(), never swallowed
-            outcome['error'] = error
-    worker = threading.Thread(target=run, name='workspace-proof') if prefetch and root else None
-    if worker:
-        worker.start()
-
-    def proof():
-        if worker:
-            worker.join()
-        elif not outcome:
-            run()
-        if 'error' in outcome:
-            raise outcome['error']
-        return outcome['value']
-    return proof
+    def check():
+        if not outcome:
+            outcome.append(_workspace(root))
+        return outcome[0]
+    return check
 
 
 def origin_links(item):
@@ -119,7 +95,7 @@ def _label(item, current):
     return '接着处理'
 
 
-def project_item(connection, item, *, db_path, workspace_root=None, workspace_proof=None):
+def project_item(connection, item, *, db_path, workspace_root=None, workspace_check=None):
     if not receipts.ready(connection):
         return {'available': False, 'reason': '执行接口需要升级', 'code': 'action_schema_upgrade_required', 'offers': [], 'current': None, 'links': []}
     current = receipts.public(connection, receipts.latest(connection, item['id']))
@@ -136,7 +112,7 @@ def project_item(connection, item, *, db_path, workspace_root=None, workspace_pr
             offers.append({'id': 'task', 'kind': 'task', 'label': '运行关联任务',
                            'description': '运行已确认关联的计划任务', 'enabled': True,
                            'target_id': task['task_id'], 'task_binding': task})
-        if (workspace_proof or workspace_once(workspace_root))():
+        if (workspace_check or workspace_once(workspace_root))():
             offers.append({'id': 'agent', 'kind': 'agent', 'label': _label(item, current),
                            'description': '根据原对话继续处理' if any(link['kind'] == 'session' for link in links) else '根据待办内容处理', 'enabled': True})
     if eligible:

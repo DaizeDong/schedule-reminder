@@ -69,7 +69,7 @@ def main(argv=None) -> int:
     parser.add_argument("--data-dir", help="PRIVATE companion directory for synthetic verification output")
     args = parser.parse_args(argv)
     destination = Path(args.data_dir).expanduser() if args.data_dir else private_data.data_dir() / "verification"
-    private_data.prove_private(destination)
+    private_data.check_destination(destination)
     os.makedirs(destination, exist_ok=True)
     sys.path.insert(0, str(HERE.parents[2] / "tools"))
     from make_fixtures import expired_email_cases

@@ -1,5 +1,6 @@
 """Negative controls for uncertain execution and completion review."""
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -224,3 +225,50 @@ def test_contained_command_preserves_stdout_stderr_and_nonzero_exit(tmp_path, re
         "import sys; print('SYNTHETIC_STDOUT'); print('SYNTHETIC_STDERR',file=sys.stderr); sys.exit(7)"],
         str(tmp_path), 10)
     assert rc == 7 and "SYNTHETIC_STDOUT" in output and "SYNTHETIC_STDERR" in output
+
+
+def test_order_outside_a_repository_reaches_review(monkeypatch, tmp_path_factory, real_process):
+    """An order without an evidence mode whose workspace is not a Git repository.
+
+    `git diff --cached` outside a repository exits 129, so capture_diff refused the initial
+    baseline and every such order ended review_unavailable about a second after launch."""
+    import llmcall
+    workspace = tmp_path_factory.mktemp("plain-workspace")
+    (workspace / "notes.txt").write_text("synthetic note\n", encoding="utf-8")
+    assert not agent_run.is_repo(str(workspace))
+    store.init_db()
+    item = store.add_item("Synthetic plain-folder task", source=agent_task.WORK_SOURCE,
+                          ext={agent_task.EXT_STATE: "queued"})
+    item_id = item["id"]
+    assert agent_task.claim(item_id)
+    assert agent_task.begin_spawn(item_id, 1)
+    assert agent_task.start_runner(item_id, 1, 123, 456)
+    monkeypatch.setattr(agent_run, "run_verify", lambda *args, **kwargs: (0, "synthetic check passed"))
+    calls = []
+
+    def call(prompt, **kwargs):
+        calls.append(kwargs["mode"])
+        if kwargs["mode"] == "agent":
+            (workspace / "report.txt").write_text("synthetic report\n", encoding="utf-8")
+            return _result("agent")
+        return _result("judge")
+    monkeypatch.setattr(llmcall, "call", call)
+    result = agent_run._run_approach(item_id, "synthetic", "synthetic request", str(workspace),
+                                     0, ["inspect"], False, generation=1)
+    assert result["outcome"] == "done", result
+    assert calls == ["agent", "judge"]
+
+
+def test_dispatch_gives_an_order_without_a_repository_its_own_artifact_workspace(tmp_path_factory):
+    import dispatch
+    plain = tmp_path_factory.mktemp("plain-request")
+    for requested in (None, str(plain)):
+        workspace, evidence = dispatch._order_workspace(requested, "dispatch:synthetic-key")
+        assert evidence == "artifacts"
+        assert Path(workspace).is_dir() and Path(workspace) != Path.home()
+        assert Path(workspace).resolve().is_relative_to(Path(agent_task.runs_root()).resolve())
+    assert dispatch._order_workspace(None, "dispatch:synthetic-key")[0] == workspace
+    repository = tmp_path_factory.getbasetemp()
+    (repository / "synthetic-repo" / ".git").mkdir(parents=True)
+    assert dispatch._order_workspace(str(repository / "synthetic-repo"), "k") == (
+        str(repository / "synthetic-repo"), None)

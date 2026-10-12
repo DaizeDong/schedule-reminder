@@ -46,7 +46,7 @@ up **all** missed reminders on the next run (idempotent, at-least-once + dedupe)
 ## Installation and measured readiness
 
 Initialize a PRIVATE versioned companion and set `SCHEDULE_REMINDER_CONFIG` to its root before writes.
-`SCHEDULE_REMINDER_DATA_DIR` optionally selects DATA inside another proven PRIVATE repository.
+`SCHEDULE_REMINDER_DATA_DIR` optionally selects DATA inside another PRIVATE repository.
 An explicit `--db` takes precedence over `SCHEDULE_DB_PATH`. Reads do not initialize storage:
 list reads may return empty, work-feed reports unavailable, and creation preflight requires an
 initialized database. Writes fail until the PRIVATE database is explicitly initialized.

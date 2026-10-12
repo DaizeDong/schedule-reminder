@@ -14,9 +14,22 @@ import store
 from make_fixtures import schedule12_review_cases
 from test_agent_exec import _Harness
 from test_agent_review_evidence import real_process
-from test_schedule3_boundary import native_storage
+import offline_support
+from make_fixtures import runtime_storage_case
 
 F = schedule12_review_cases()
+
+
+@pytest.fixture
+def native_storage(tmp_path, monkeypatch):
+    """A real Git companion with a committed HEAD; writes need no visibility answer."""
+    case = runtime_storage_case(tmp_path/'native', offline_support.REAL_RUN)
+    for key in list(os.environ):
+        monkeypatch.delenv(key)
+    for key, value in case['environment'].items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv('SCHEDULE_REMINDER_CONFIG', str(case['repository']))
+    return case
 
 
 def apply_progress(db, operation, value, item):
@@ -146,9 +159,8 @@ def test_quoted_failing_verifier_blocks_completion(monkeypatch, tmp_path):
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows filename semantics")
 @pytest.mark.parametrize("name", F["unsafe_names"])
-def test_windows_nonordinary_paths_fail_before_proof(tmp_path, monkeypatch, name):
+def test_windows_nonordinary_paths_fail_before_write(tmp_path, monkeypatch, name):
     target = tmp_path / name
-    monkeypatch.setattr(private_data, "_shared_boundary", lambda: pytest.fail("unsafe path reached Git proof"))
     with pytest.raises(ValueError, match="Windows"):
         private_data.open_for_write(target)
 

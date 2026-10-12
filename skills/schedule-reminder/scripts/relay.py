@@ -181,7 +181,7 @@ def release_prepared(prepared):
     if path is not None and prepared.get('snapshot_cleanup_safe', True):
         try:
             private_data.assert_writable_path(path)
-            private_data.prove_private(path)
+            private_data.check_destination(path)
             Path(path).unlink(missing_ok=True)
         except (OSError, ValueError):
             # A leftover private artifact does not change a confirmed delivery verdict.

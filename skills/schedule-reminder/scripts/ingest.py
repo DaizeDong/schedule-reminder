@@ -83,7 +83,7 @@ def state_dir():
 
 
 def prepare_state():
-    private_data.prove_private(state_dir())
+    private_data.check_destination(state_dir())
     os.makedirs(state_dir(), exist_ok=True)
 
 

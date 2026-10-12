@@ -4,6 +4,24 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ## [Unreleased]
 
+### Removed
+- The runtime PRIVATE visibility proof before every DATA write, lock and database open (about 56
+  git and gh subprocesses, 15 to 43 s under load, memoised per process for 60 s). It made the Task
+  Console work-feed and work-action calls time out before their insert, got the Agent Center ticks
+  killed at their time limit, and cost several proofs per ledger line. DATA location is still
+  decided by companion resolution with no in-repo fallback; a write is refused only by cheap path
+  checks (public source tree, Git metadata, filesystem aliases, an uninitialized companion).
+  Publication safety stays with the commit-time Guards hooks and CI. The per-process proof memo,
+  the work-feed workspace prefetch thread and the proof tests went with it.
+
+### Fixed
+- A Discord or mail dispatched order without a Git workspace no longer fails about a second after
+  launch. It defaulted to the home directory, where `git diff --cached` exits 129, so the initial
+  baseline was unavailable and every such order ended `review_unavailable`. Dispatch now gives such
+  an order its own artifact workspace beside the run records with artifact evidence, and the runner
+  uses artifact evidence for any order without a recorded mode whose workspace is not a Git
+  repository.
+
 ### Configuration lifecycle
 - Declare native registry settings explicitly and add a non-overwriting initializer plus a local schema/private-storage doctor. Empty registries stay NOT READY.
 - Match inbound ownership requirements and the runtime readers' UTF-8 format; missing owner identity and BOM registries remain NOT READY without rewriting settings.

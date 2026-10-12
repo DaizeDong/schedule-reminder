@@ -46,7 +46,7 @@ def register(row, data_directory):
     except (OSError, ValueError, ET.ParseError, subprocess.SubprocessError):
         matches = False
     if not matches:
-        private_data.prove_private(data_directory)
+        private_data.check_destination(data_directory)
         descriptor, filename = tempfile.mkstemp(prefix='task-', suffix='.xml', dir=data_directory)
         try:
             with os.fdopen(descriptor, 'w', encoding='utf-16') as stream:
@@ -70,11 +70,11 @@ def install(selection=None, db_path=None, python=None, config=None, no_task=Fals
     if not selected:
         return 0, {**planned, 'noop': True}
     database = planned['dependencies']['store']['db_path']
-    private_data.prove_private(database)
+    private_data.check_destination(database)
     for name in selected:
         row = planned['capabilities'][name]
         if name in capabilities.TASKS:
-            private_data.prove_private(planned['config'])
+            private_data.check_destination(planned['config'])
             capabilities.task_identity(row, planned['config'])
             if not capabilities.probe_runtime(row):
                 raise RuntimeError('selected runtime or adapter unavailable: '+name)

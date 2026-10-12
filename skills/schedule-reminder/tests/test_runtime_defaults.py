@@ -107,16 +107,6 @@ def test_config_and_registry_pointers_keep_independent_precedence(defaults, monk
     assert private_data.registry_path() == registry
 
 
-def test_discovery_intent_never_replaces_private_write_proof(defaults):
-    config = defaults["companion"] / ".git/config"
-    config.write_text((defaults["source"] / ".git/config").read_text(encoding="utf-8"), encoding="utf-8")
-    assert private_data.config_root() == defaults["companion"]
-    target = defaults["companion"] / "state/record.json"
-    with pytest.raises(ValueError):
-        private_data.prepare_parent(target)
-    assert not target.parent.exists()
-
-
 @pytest.mark.parametrize("override", (False, True))
 def test_default_namespaces_and_writers_use_the_selected_roots(defaults, monkeypatch, override):
     root = defaults["companion"]
@@ -167,7 +157,6 @@ def test_reload_of_runtime_modules_is_inert(defaults, monkeypatch):
         guard.setattr(private_data, "data_dir", blocked)
         guard.setattr(private_data, "prepare_parent", blocked)
         guard.setattr(private_data, "open_for_write", blocked)
-        guard.setattr(private_data, "_query", blocked)
         for module in (agent_task, digest, dispatch, inbound, ingest, ingest_tick):
             importlib.reload(module)
     assert effects == []

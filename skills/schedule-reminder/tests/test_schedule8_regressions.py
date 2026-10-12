@@ -155,7 +155,7 @@ class Schedule8Regressions(unittest.TestCase):
             fdopen=broken_stream, close=lambda fd: state.update(closed=state["closed"]+1),
             path=SimpleNamespace(samestat=lambda left, right: left is right))
         private = inert_module("skills/schedule-reminder/scripts/private_data.py",
-            os=fake_os, prepare_parent=lambda path: None, prove_private=lambda path: None,
+            os=fake_os, prepare_parent=lambda path: None,
             assert_writable_path=lambda value: path)
         with self.assertRaises(OSError):
             private.open_for_write("synthetic-record", "w")
@@ -321,51 +321,6 @@ class Schedule8Regressions(unittest.TestCase):
             authorized_work_generations={fixture["work_id"]: 1})
         self.assertEqual(result["stopped"], [fixture["work_id"]])
         self.assertEqual(stops, [fixture["work_id"]])
-
-    def test_shared_https_transport_refusal_stops_writes(self):
-        fixture = case()
-        for config in fixture["http_config_overrides"]:
-            with self.subTest(config=config[0]):
-                self._private_transport(config, {})
-        for key, value in fixture["http_environment_overrides"]:
-            with self.subTest(environment=key):
-                self._private_transport(None, {key: value})
-
-    def _private_transport(self, config, environment, reject=True):
-        """Generated transport outcomes verify adapter propagation, not Guards policy."""
-        boundary = offline_support.synthetic_boundary()
-        calls = []
-        with tempfile.TemporaryDirectory(prefix="schedule-transport-") as directory:
-            root = Path(directory).resolve()
-            target = Path(directory)/"pending"/"record.json"
-            def prove(destination):
-                calls.append(("proof", str(destination)))
-                if reject:
-                    raise boundary.GitError("synthetic shared transport refusal")
-                return SimpleNamespace(root=str(root), repositories=("example-owner/private-data",),
-                                       signature="synthetic-transport")
-            def query(argv):
-                self.assertEqual(argv[:3], ["gh", "repo", "view"])
-                calls.append(("visibility", argv[3]))
-                return json.dumps({"nameWithOwner": argv[3], "visibility": "PRIVATE"})
-            boundary.prove_private_companion = prove
-            with patch.object(private_data, "_shared_boundary", return_value=boundary), \
-                    patch.object(private_data, "_query", side_effect=query), \
-                    patch.dict(private_data.os.environ, environment, clear=True):
-                if reject:
-                    with self.assertRaises(ValueError):
-                        private_data.prepare_parent(target)
-                    self.assertEqual(calls, [("proof", str(root))])
-                    self.assertFalse(target.parent.exists())
-                else:
-                    self.assertEqual(private_data.prove_private(target)["repositories"],
-                                     ["example-owner/private-data"])
-                    self.assertEqual(calls, [("proof", str(root)),
-                                            ("visibility", "example-owner/private-data"),
-                                            ("proof", str(root))])
-
-    def test_shared_https_private_proof_is_admitted(self):
-        self._private_transport(None, {}, reject=False)
 
     def test_invalid_priority_cannot_insert_or_update(self):
         for priority in case()["invalid_priorities"]:

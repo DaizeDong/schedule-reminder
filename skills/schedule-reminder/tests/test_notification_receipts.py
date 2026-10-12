@@ -610,18 +610,6 @@ def test_missing_receipt_database_is_not_created(tmp_path):
     assert not missing.exists()
 
 
-def test_receipt_read_and_write_recheck_private_admission(sandbox):
-    from make_fixtures import cases
-    send()
-    metadata = sandbox[0] / ".git" / "config"
-    metadata.write_text('[remote "origin"]\nurl = ' + cases()["public_remote"], encoding="utf-8")
-    with pytest.raises(receipts.store.SkillError, match="PUBLIC"):
-        receipts.get_receipt(event().event_id)
-    with pytest.raises(receipts.store.SkillError, match="PUBLIC"):
-        send(retry_failed=True)
-    assert len(sandbox[3]) == 1
-
-
 def test_client_does_not_claim_unpersisted_after_delivery_receipt_failure(sandbox, monkeypatch):
     import notification_client
     original = receipts._finish

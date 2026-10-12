@@ -179,7 +179,7 @@ def _connect(db_path=None, *, readonly=False, create=False, immutable=False):
     if not readonly:
         try:
             private_data.assert_sqlite_paths(path)
-            private_data.prove_private(path)
+            private_data.check_destination(path)
         except PermissionError as error:
             raise SkillError("ERR_PERMISSION", str(error)) from error
         except ValueError as error:
@@ -213,7 +213,7 @@ def admitted_connection(db_path=None, *, readonly=False):
     path = db_path or default_db_path()
     try:
         private_data.assert_sqlite_paths(path)
-        private_data.prove_private(path)
+        private_data.check_destination(path)
     except PermissionError as error:
         raise SkillError("ERR_PERMISSION", str(error)) from error
     except ValueError as error:

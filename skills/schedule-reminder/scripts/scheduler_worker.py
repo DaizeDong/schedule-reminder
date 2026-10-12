@@ -9,8 +9,8 @@ import private_data
 
 
 def run(capability, db_path, config):
-    private_data.prove_private(db_path)
-    private_data.prove_private(config)
+    private_data.check_destination(db_path)
+    private_data.check_destination(config)
     os.environ['SCHEDULE_DB_PATH'] = db_path
     os.environ['AGENT_CENTER_CONFIG'] = config
     if capability == 'remind':

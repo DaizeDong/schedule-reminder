@@ -170,11 +170,12 @@ def readiness(store_health, selection=None, python=None, config=None):
     if not selected:
         return {'ready': False, 'capabilities': rows, 'dependencies': dependencies}
     try:
-        proof = private_data.prove_private(store_health['db_path'])
+        resolved = private_data.check_destination(store_health['db_path'])
         store_ok = (all(store_health.get(key) for key in ('db_ok', 'wal_ok', 'integrity_ok'))
                     and store_health.get('schema_user_version') == store.SCHEMA_USER_VERSION)
-        store_reason = 'PRIVATE initialized store verified' if store_ok else 'store is not initialized or healthy'
-        dependencies['store'].update(ready=store_ok, proof=proof)
+        store_reason = ('initialized store verified; data resolved at '+str(resolved) if store_ok
+                        else 'store is not initialized or healthy')
+        dependencies['store'].update(ready=store_ok, data_path=str(resolved))
     except (OSError, ValueError) as error:
         store_ok, store_reason = False, str(error)
         dependencies['store'].update(ready=False, reason=store_reason)
@@ -183,7 +184,7 @@ def readiness(store_health, selection=None, python=None, config=None):
     evidence, evidence_error = {}, 'worker evidence unavailable'
     try:
         path = evidence_path(store_health['db_path'])
-        private_data.prove_private(path)
+        private_data.check_destination(path)
         evidence = json.loads(path.read_text(encoding='utf-8'))
         if not isinstance(evidence, dict) or evidence.get('schema_version') != 1 or not isinstance(evidence.get('tasks'), dict):
             raise ValueError('invalid worker evidence schema')
@@ -205,7 +206,7 @@ def readiness(store_health, selection=None, python=None, config=None):
                 raise ValueError('selected runtime or adapter import unavailable')
             reasons.append('selected runtime and adapter import verified')
             row['runtime_ready'] = True
-            private_data.prove_private(result['config'])
+            private_data.check_destination(result['config'])
             identity = task_identity(row, result['config'])
             record = evidence.get('tasks', {}).get(name)
             if record is None:

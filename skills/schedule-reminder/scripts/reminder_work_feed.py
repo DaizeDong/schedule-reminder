@@ -72,19 +72,12 @@ def read_work_feed(*, db_path=None, limit=5000, event_limit=250):
     if not path.is_absolute() or not path.is_file():
         return dict(base, reason="work_database_unavailable")
     from reminder_actions import workspace_once
-    # One workspace proof per feed, overlapping the database proof below. A per-item proof
-    # (~3 s each, 100+ tracked items) made the console reader exceed its 20 s budget.
-    workspace_proof = workspace_once(os.environ.get('SCHEDULE_ACTION_WORKSPACE'), prefetch=True)
-    try:
-        return _read(store, path, base, limit, event_limit, workspace_proof)
-    finally:
-        try:
-            workspace_proof()
-        except Exception:
-            pass  # joined only so no proof thread outlives the read; offers already reflect it
+    # One workspace check per feed, not one per tracked item.
+    return _read(store, path, base, limit, event_limit,
+                 workspace_once(os.environ.get('SCHEDULE_ACTION_WORKSPACE')))
 
 
-def _read(store, path, base, limit, event_limit, workspace_proof):
+def _read(store, path, base, limit, event_limit, workspace_check):
     try:
         conn = store.admitted_connection(path, readonly=True)
         try:
@@ -147,7 +140,7 @@ def _read(store, path, base, limit, event_limit, workspace_proof):
                     raw_item = dict(row)
                     raw_item['ext'] = ext
                     item['actions'] = project_item(conn, raw_item, db_path=str(path),
-                                                  workspace_proof=workspace_proof)
+                                                  workspace_check=workspace_check)
                 items.append(item)
             events, event_total = [], None
             events_available = {"seq", "ts", "item_id", "actor", "event_type", "from_state", "to_state"} <= _columns(conn, "events")

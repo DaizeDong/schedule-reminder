@@ -588,11 +588,8 @@ def test_stop_crash_after_commit_revokes_running_ownership(case, monkeypatch):
     assert actions.inspect_item(str(database), item['id'])['current']['state'] == 'stopped'
 
 
-def test_work_feed_proves_the_action_workspace_once_not_per_todo(case, monkeypatch):
-    """The console reader has a 20 s budget; one PRIVATE proof costs ~3 s on a real companion.
-
-    Proving the workspace again for every tracked todo made work-feed run for minutes."""
-    import threading
+def test_work_feed_checks_the_action_workspace_once_not_per_todo(case, monkeypatch):
+    """The answer cannot differ between items of one read, so a feed checks the workspace once."""
     import store
     actions = module()
     database, workspace, item = case
@@ -608,35 +605,5 @@ def test_work_feed_proves_the_action_workspace_once_not_per_todo(case, monkeypat
     offers = {row['id']: [offer['id'] for offer in row['actions']['offers']] for row in feed['items'] if row['id'] in todos}
     assert set(offers) == set(todos) and all('agent' in ids for ids in offers.values())
     assert calls == [str(workspace)]
-    assert not any(thread.name == 'workspace-proof' for thread in threading.enumerate())
 
 
-def test_one_private_proof_per_work_action_and_per_stop(case, monkeypatch):
-    """The console gives work-action and work-action-stop 30 s; one PRIVATE proof costs ~3 s live.
-
-    Each CLI command proved the same companion again for the database, the action workspace, the
-    run directory, every lock and every record (22 full proofs for one start). One process must
-    prove an unchanged companion once and reuse it everywhere, the DB proof included."""
-    import private_data
-    actions = module()
-    database, workspace, item = case
-    live_queries = []
-    query = private_data._query
-    monkeypatch.setattr(private_data, '_query', lambda argv: live_queries.append(argv[3]) or query(argv))
-    reset = getattr(private_data, 'clear_proof_memo', lambda: None)
-
-    payload = request(actions, database, workspace, item)
-    reset()  # a CLI command is a fresh process
-    live_queries.clear()
-    started = actions.start(payload, db_path=str(database), workspace_root=str(workspace))
-    assert started['ok'] and started['status'] == 'queued', started
-    assert live_queries == ['example-owner/private-data']
-
-    offer = actions.inspect_item(str(database), item['id'], workspace_root=str(workspace))
-    stop = {'item_id': item['id'], 'action_id': offer['current']['id'], 'revision': offer['revision'],
-            'request_id': 'synthetic-stop-01'}
-    reset()
-    live_queries.clear()
-    stopped = actions.stop(stop, db_path=str(database), workspace_root=str(workspace))
-    assert stopped['status'] == 'stopped', stopped
-    assert live_queries == ['example-owner/private-data']

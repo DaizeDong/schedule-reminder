@@ -44,15 +44,6 @@ def test_store_readiness_requires_the_current_schema(tmp_path, version_delta):
         'ready' if version_delta == 0 else 'unavailable')
 
 
-def test_explicit_database_in_nested_public_repo_is_refused(tmp_path):
-    nested = tmp_path/'nested'
-    (nested/'.git').mkdir(parents=True)
-    (nested/'.git/config').write_text('[remote "origin"]\nurl = '+FIX['public_remote'], encoding='utf-8')
-    with pytest.raises(store.SkillError, match='PRIVATE'):
-        store.init_db(str(nested/'blocked.sqlite3'))
-    assert not (nested/'blocked.sqlite3').exists()
-
-
 def test_model_call_does_not_override_installed_policy(monkeypatch):
     calls = []
     result = SimpleNamespace(**FIX['model_result'], error=None)

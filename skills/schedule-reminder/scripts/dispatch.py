@@ -167,6 +167,17 @@ def _thread_key(title):
     return "manual:%s-%s" % (slug, h) if slug else "manual:%s" % h
 
 
+def _order_workspace(requested, key):
+    """Git evidence only for a requested Git workspace; every other order gets its own artifact
+    workspace. The default workspace (the home directory) is neither a repository nor an artifact
+    root, so an order sent there failed its initial baseline about a second after launch."""
+    if requested:
+        workspace, _ = agent_task.resolve_workspace(requested)
+        if agent_task.is_git_workspace(workspace):
+            return workspace, None
+    return agent_task.order_workspace(key), 'artifacts'
+
+
 def _action_identity(stream, msg_id, index, action):
     # Saved plans sort object keys; identity must survive that serialization boundary.
     encoded = json.dumps([stream, str(msg_id), index, action], ensure_ascii=False,
@@ -260,8 +271,9 @@ def execute(stream, cfg, plan, items, log=None, work=None, msg_id=None,
                         else:
                             outcome['reason'] = 'agent origin was not shown to the planner'
                     elif request:
-                        item = agent_task.enqueue(stream, request, workspace=action.get("workspace"),
-                                                  msg_id=msg_id,
+                        workspace, evidence = _order_workspace(action.get("workspace"), key)
+                        item = agent_task.enqueue(stream, request, workspace=workspace,
+                                                  msg_id=msg_id, evidence=evidence,
                                                   idempotency_key=key if source_identity is not None else None,
                                                   **({'origin_item_id': origin} if origin is not None else {}))
                         outcome = ({"op": op, "status": "succeeded", "id": item["id"]} if item.get("id")

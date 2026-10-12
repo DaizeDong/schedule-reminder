@@ -4,7 +4,7 @@
   "layout": "separate_companion",
   "max_bytes": 67108864,
   "budget_policy": "A 64 MiB aggregate working-tree review threshold, excluding Git administration. A threshold breach remains a failed capacity check and never authorizes deletion of required state, configuration, selected deliverables or recovery evidence.",
-  "scope": "Paths are relative to the exact initialized PRIVATE companion Git root. Defaults use root-level state/, agent-runs/ and digest.json; the sole reminder DB and action workspace use data/. Explicit environment overrides need reviewed path families and PRIVATE write proof. Known writer leaves are declared; arbitrary action-workspace outputs require owner-action and selected-output manifest review and remain gaps until classified.",
+  "scope": "Paths are relative to the exact initialized PRIVATE companion Git root. Defaults use root-level state/, agent-runs/ and digest.json; the sole reminder DB and action workspace use data/. Explicit environment overrides need reviewed path families. Known writer leaves are declared; arbitrary action-workspace outputs require owner-action and selected-output manifest review and remain gaps until classified.",
   "protected_paths": [
     "registry.json",
     "routes.json",
@@ -549,9 +549,9 @@
       "path_pattern": "agent-runs/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]",
       "purpose": "Immediate UUID run directory created before durable request and event files; ownership covers the container only.",
       "schema": "scripts/agent_task.py run_dir and task-store UUID work identities.",
-      "producer": "The work queue and agent worker create the directory after PRIVATE storage proof.",
+      "producer": "The work queue and agent worker create the directory inside the companion run root.",
       "consumer_or_final_deliverable": "Independently declared request, event and attempt artifacts for the matching work item.",
-      "rebuild_or_restore": "Recreate only for the matching retained work identity and configured run root after PRIVATE proof; restore child artifacts separately.",
+      "rebuild_or_restore": "Recreate only for the matching retained work identity and configured run root; restore child artifacts separately.",
       "persistence": "transient",
       "transient_reason": "An empty structural directory has no versioned payload; each child artifact retains its own persistence requirement.",
       "retention_rule": {

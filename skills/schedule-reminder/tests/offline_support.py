@@ -1,6 +1,5 @@
 """Test-only transport adapters. Never used by the shipped runtime."""
 import configparser
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,78 +17,15 @@ TEMP_ROOT = Path(tempfile.gettempdir()).resolve()
 FIX = json.loads((Path(__file__).parent/'capability_cases.json').read_text(encoding='utf-8'))
 
 
-class SyntheticProofError(ValueError):
-    pass
-
-
-def synthetic_boundary():
-    """Business tests receive public API snapshots; native tests restore the real loader."""
-    def prove(destination, visibility_map=None):
-        path = Path(destination).resolve()
-        if not path.is_relative_to(TEMP_ROOT):
-            raise SyntheticProofError('proof attempted outside synthetic storage')
-        for root in (path, *path.parents):
-            if not root.is_relative_to(TEMP_ROOT):
-                break
-            metadata = root/'.git'
-            if not metadata.exists():
-                continue
-            if metadata.is_file():
-                metadata = (root/metadata.read_text(encoding='utf-8').split(':', 1)[1].strip()).resolve()
-                common = metadata/'commondir'
-                if common.is_file():
-                    metadata = (metadata/common.read_text(encoding='utf-8').strip()).resolve()
-            if not metadata.is_relative_to(TEMP_ROOT):
-                raise SyntheticProofError('synthetic metadata escaped temporary storage')
-            config = metadata/'config'
-            parser = configparser.ConfigParser()
-            parser.read(config, encoding='utf-8')
-            names = set()
-            for section in parser.sections():
-                if section.startswith('remote "'):
-                    for option in ('url', 'pushurl'):
-                        if parser.has_option(section, option):
-                            url = parser.get(section, option)
-                            known = {'https://github.com/'+name+'.git': name for name in FIX['visibility']}
-                            name = known.get(url)
-                            if name is None or FIX['visibility'][name] != 'PRIVATE':
-                                raise SyntheticProofError('synthetic PUBLIC or unknown destination')
-                            names.add(name)
-            if not names:
-                raise SyntheticProofError('synthetic PRIVATE metadata is absent')
-            return types.SimpleNamespace(root=str(root), repositories=tuple(sorted(names)),
-                                         signature=hashlib.sha256(config.read_bytes()).hexdigest())
-        raise SyntheticProofError('no synthetic PRIVATE repository')
-
-    def read(proof, *arguments):
-        if arguments == ('rev-parse', '--verify', 'HEAD'):
-            return subprocess.CompletedProcess(arguments, 0, 'a'*40, '')
-        if arguments[:4] == ('check-ignore', '--no-index', '-q', '--'):
-            return subprocess.CompletedProcess(arguments, 1, '', '')
-        raise AssertionError('unadmitted synthetic metadata query')
-
-    def visibility(name):
-        # Same answers as the synthetic `gh repo view` below; production asks every gh account.
-        if name in FIX['visibility']:
-            return FIX['visibility'][name]
-        raise SyntheticProofError('unknown synthetic visibility')
-
-    return types.SimpleNamespace(prove_private_companion=prove, query_github_visibility=visibility,
-                                 read_private_companion_git=read, GitError=SyntheticProofError)
-
-
 ORIGINAL_RUN = None  # the interpreter's subprocess.run, kept for tests that need a real child
 
 
 def install():
-    global INSTALLED, REAL_BOUNDARY_FACTORY, ORIGINAL_RUN
+    global INSTALLED, ORIGINAL_RUN
     if INSTALLED:
         return
     INSTALLED = True
     sys.path.insert(0, str(ROOT/'skills/schedule-reminder/scripts'))
-    import private_data
-    REAL_BOUNDARY_FACTORY = private_data._shared_boundary
-    private_data._shared_boundary = synthetic_boundary
     if os.environ.get('SCHEDULE_TEST_TRACE'):
         import faulthandler
         faulthandler.dump_traceback_later(20)

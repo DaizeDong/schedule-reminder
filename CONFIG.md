@@ -21,10 +21,11 @@ is `<companion>/data`. `SCHEDULE_DB_PATH` overrides the default `<data>/db.sqlit
 
 Switch by setting the root and, when used, its registry file together. Stop the relevant writers
 before moving state. Run the configuration doctor again, then inspect capability health. Do not
-copy old cursors or a stale database over newer work. All writes require PRIVATE versioned
-storage. The native registry initializer also enforces its exact artifact declaration in
-[storage.contract.json](storage.contract.json). Existing runtime write helpers check PRIVATE
-version eligibility; they do not yet enforce artifact ownership for every output. Undeclared
+copy old cursors or a stale database over newer work. Runtime DATA belongs in the PRIVATE
+versioned companion. The native registry initializer also enforces its exact artifact declaration in
+[storage.contract.json](storage.contract.json). Existing runtime write helpers refuse only
+destinations in the public source tree, Git metadata or filesystem aliases; they run no
+visibility proof and do not yet enforce artifact ownership for every output. Undeclared
 runtime paths remain an audit failure, and universal pre-write ownership enforcement is unverified.
 
 ## Registry schema
@@ -59,8 +60,7 @@ The doctor rejects a BOM and leaves the file unchanged.
 
 ## Initialize and inspect
 
-Create or clone the PRIVATE companion with a committed HEAD and current Guards visibility proof
-first. Then, from the source root:
+Create or clone the PRIVATE companion first. Then, from the source root:
 
 ```powershell
 $env:SCHEDULE_REMINDER_CONFIG = '<private-companion>'

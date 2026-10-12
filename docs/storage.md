@@ -21,13 +21,14 @@ relative to the selected private repository root, not to this source checkout.
 Without an explicit config pointer, the pinned Guards resolver selects an initialized
 sibling companion before a home companion. DATA overrides do not select the config
 root. Missing storage remains inert for reads; missing Guards or an unproven inferred
-companion fails explicitly, and every write still requires PRIVATE proof. One process
-reuses a successful proof of an unchanged companion for at most 60 s; any change to what the
-proof depends on, or a refusal, proves in full again.
+companion fails explicitly, and a write below an uninitialized companion fails instead of
+creating it. Runtime writes run no visibility proof: they refuse only destinations inside the
+public source tree, inside Git metadata, or reached through a filesystem alias. Publication
+safety is enforced at commit time by the Guards hooks and CI.
 Current defaults use root-level `state/`, `agent-runs/` and `digest.json`; the sole
 reminder database is `data/db.sqlite3`. The contract also declares known leaves for
 retained `data/state/`, `data/agent-runs/` and `data/digest.json` selections. Explicit
-overrides need their own reviewed path families and PRIVATE write proof. An entry
+overrides need their own reviewed path families. An entry
 does not create a directory or change the installed consumer's selected path. See
 [deployment](../skills/schedule-reminder/reference/deployment.md) for initialization
 and SQLite-aware backup requirements.

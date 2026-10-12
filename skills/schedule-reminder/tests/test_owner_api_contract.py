@@ -62,13 +62,13 @@ def test_owner_read_contracts_refuse_lost_private_admission(tmp_path, monkeypatc
     database = tmp_path / 'work.sqlite3'
     store.init_db(database)
     item = store.add_item(FIX['schedule3']['title'], db_path=database)
-    def unproven(*args, **kwargs):
-        raise ValueError('synthetic visibility unavailable')
-    monkeypatch.setattr(private_data, 'prove_private', unproven)
+    def refused(*args, **kwargs):
+        raise ValueError('synthetic admission refused')
+    monkeypatch.setattr(private_data, 'check_destination', refused)
     assert not reminder_work_feed.read_work_feed(db_path=database)['available']
     assert not reminder_actions.inspect_item(database, item['id'])['available']
     assert reminder_linked_items.read_linked_items([], db_path=database)['status'] == 'error'
-    with pytest.raises(store.SkillError, match='synthetic visibility unavailable'):
+    with pytest.raises(store.SkillError, match='synthetic admission refused'):
         reminder_link_review.build_review(db_path=database,
             decisions={'schemaVersion': 1, 'links': {}, 'unmapped_items': 'reviewed-unlinked'})
 

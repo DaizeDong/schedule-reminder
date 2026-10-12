@@ -149,7 +149,7 @@ class ChannelWorld:
                                        _read=self.read_record, _write=self.write_record,
                                        processing=lambda record, root: contextlib.nullcontext(record),
                                        attempted=self.attempted)
-        private = SimpleNamespace(prove_private=lambda *args: None,
+        private = SimpleNamespace(check_destination=lambda *args: None,
                                   prepare_parent=lambda *args: None,
                                   open_for_write=self.open,
                                   file_lock=lambda *args: contextlib.nullcontext())

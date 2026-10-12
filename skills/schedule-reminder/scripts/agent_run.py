@@ -256,10 +256,8 @@ def independent_review(actor, reviewer):
 class OperationCancellation:
     """Exact ownership check for the runner's own decision points; DB failure revokes work.
 
-    One answer costs an ownership query: a PRIVATE storage proof plus a CLI read. The proof is a
-    full one (about 54 git subprocesses and one `gh` visibility query, measured at 4 to 5 s) at most
-    once per 60 s for an unchanged companion and a memo hit otherwise. Pollers get a
-    PolledCancellation around it instead, never this object directly."""
+    One answer costs an ownership query (a database read plus a CLI read). Pollers get a PolledCancellation
+    around it instead, never this object directly."""
     def __init__(self, item_id, generation):
         self.item_id, self.generation = item_id, generation
 
@@ -276,8 +274,8 @@ CANCEL_POLL_SECONDS = float(os.environ.get("AGENT_EXEC_CANCEL_POLL_SECONDS") or 
 class PolledCancellation:
     """The token handed to pollers: llmcall's running model call and llmcall.process commands.
 
-    Both ask every fraction of a second, and an unthrottled ownership query per ask would run the
-    PRIVATE proof back to back for the whole act budget. The underlying answer is therefore
+    Both ask every fraction of a second, and an unthrottled ownership query per ask would spawn the
+    CLI back to back for the whole act budget. The underlying answer is therefore
     reused for CANCEL_POLL_SECONDS (AGENT_EXEC_CANCEL_POLL_SECONDS) and latched once set, so a
     revoked or lost order is stopped within about one interval plus one query.
     """
@@ -430,11 +428,7 @@ def _git(workspace, *args):
 
 
 def is_repo(workspace):
-    if not workspace:
-        return False
-    from pathlib import Path
-    path = Path(workspace)
-    return any((root/".git").exists() for root in (path, *path.parents))
+    return agent_task.is_git_workspace(workspace)
 
 
 def detect_changes(workspace, claimed):
@@ -630,9 +624,15 @@ def _write(path, text):
 
 
 def _capture_evidence(workspace):
+    """Git evidence for a Git workspace, artifact evidence otherwise.
+
+    An order records its mode at enqueue. An order without one (older orders) is judged by its
+    workspace: `git diff` outside a repository exits 129, so a non-repository workspace that was
+    sent to capture_diff could never reach review."""
     operation = _OPERATION.get()
     item = agent_task.get(operation[0]) if operation else None
-    if (item or {}).get('ext', {}).get('x_agent_exec_evidence') == 'artifacts':
+    mode = (item or {}).get('ext', {}).get('x_agent_exec_evidence')
+    if mode == 'artifacts' or (mode is None and not is_repo(workspace)):
         from agent_artifacts import capture_artifacts, ArtifactEvidenceUnavailable
         try:
             return capture_artifacts(workspace)

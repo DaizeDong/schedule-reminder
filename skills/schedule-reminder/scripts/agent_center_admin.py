@@ -170,7 +170,7 @@ def ensure_notification(registry_path: str, stream: str, category_name: str,
                         channel_name: str, skill: str, description: str,
                         username: str | None = None, test_text: str | None = None,
                         client=None, sender=None) -> dict:
-    private_data.prove_private(registry_path)
+    private_data.check_destination(registry_path)
     reg = _load_registry(registry_path)
     api = client or DiscordAPI(_bot_token(reg))
     channels = api.list_channels(str(reg["guild_id"]))

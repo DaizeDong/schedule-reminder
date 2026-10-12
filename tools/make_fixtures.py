@@ -75,40 +75,6 @@ def runtime_storage_case(root, run, *, versioned=True):
             'changed_commit_message': 'Generated synthetic next revision\n'}
 
 
-def ssh_alias_publication_cases():
-    """Synthetic Schedule routes with explicit URL users and expected host proofs."""
-    repository = "example-owner/private-data"
-    first = "git@synthetic-first:" + repository + ".git"
-    second = "ssh://git@synthetic-second/" + repository + ".git"
-    canonical = "git@github.com:" + repository + ".git"
-    return [
-        {"id": name, "fetch": fetch, "push": push, "blocked_hosts": blocked,
-         "repositories": (repository, "example-owner/other-private-data"),
-         "visibility": visibility, "hosts": hosts, "allowed": allowed}
-        for name, fetch, push, blocked, visibility, hosts, allowed in [
-            ("alias-private", [first], [first], [], "PRIVATE", ["synthetic-first"], True),
-            ("aliases-private", [first], [second], [], "PRIVATE", ["synthetic-first", "synthetic-second"], True),
-            ("canonical-alias", [canonical], [first], [], "PRIVATE", ["github.com", "synthetic-first"], True),
-            ("alias-canonical", [first], [canonical], [], "PRIVATE", ["synthetic-first", "github.com"], True),
-            ("multiple-fetch-urls", [first, second], [canonical], [], "PRIVATE",
-             ["synthetic-first", "synthetic-second", "github.com"], True),
-            ("second-host-hostile", [first], [second], ["synthetic-second"], "PRIVATE", ["synthetic-first", "synthetic-second"], False),
-            ("hostile-first", [second], [first], ["synthetic-second"], "PRIVATE", ["synthetic-second"], False),
-            ("canonical-before-hostile", [canonical], [first], ["synthetic-first"], "PRIVATE", ["github.com", "synthetic-first"], False),
-            ("alias-public", [first], [second], [], "PUBLIC", ["synthetic-first", "synthetic-second"], False),
-            ("alias-unknown", [first], [second], [], "UNKNOWN", ["synthetic-first", "synthetic-second"], False),
-            ("wrong-url-user", [first], [second.replace("git@", "other@")], [], "PRIVATE", ["synthetic-first"], False),
-            ("missing-url-user", [first], [second.replace("git@", "")], [], "PRIVATE", ["synthetic-first"], False),
-            ("url-password", [first], [second.replace("git@", "git:synthetic@")], [], "PRIVATE", ["synthetic-first"], False),
-            ("explicit-url-port", [first], [second.replace("synthetic-second/", "synthetic-second:22/")], [],
-             "PRIVATE", ["synthetic-first"], False),
-            ("url-query", [first], [second + "?synthetic"], [], "PRIVATE", ["synthetic-first"], False),
-            ("unknown-transport", [first], ["file:///synthetic/no-repository"], [], "PRIVATE", ["synthetic-first"], False),
-        ]
-    ]
-
-
-
 def creation_case(source='synthetic-a', request='request-a'):
     return {'title': 'Prepare Acme report', 'description': 'Review the synthetic quarterly figures.',
             'due_at': '2030-05-01T12:00:00Z', 'source': source, 'idempotency_key': request}
@@ -347,47 +313,6 @@ def cases():
 
 
 
-def publication_environment_case(root, kind='override'):
-    """Generate a private SSH repository and command-inventory redirection controls."""
-    root = Path(root)
-    repository = root/"repository"
-    admin = repository/".git"
-    (admin/"objects").mkdir(parents=True)
-    (admin/"refs/heads").mkdir(parents=True)
-    (admin/"HEAD").write_text("ref: refs/heads/main\n", encoding="ascii")
-    if kind not in {'override', 'private', 'linked-private'}:
-        raise ValueError('unknown synthetic publication case')
-    config = '[core]\nrepositoryformatversion = 0\nbare = false\n'
-    if kind == 'override':
-        config += 'sshCommand = synthetic-unexecuted-ssh\n'
-    remote = ('git@github.com:example-owner/private-data.git' if kind == 'override'
-              else 'https://github.com/example-owner/private-data.git')
-    config += '[remote "origin"]\nurl = ' + remote + '\n'
-    (admin/"config").write_text(config, encoding="utf-8", newline="\n")
-    import hashlib
-    index_header = b'DIRC' + (2).to_bytes(4, 'big') + bytes(4)
-    index = index_header + hashlib.sha1(index_header).digest()
-    (admin/"index").write_bytes(index)
-    copied_index = root/"copied.index"
-    copied_index.write_bytes(index)
-    if kind == 'linked-private':
-        linked = root/"linked"
-        linked.mkdir()
-        worktree = admin/"worktrees/synthetic"
-        worktree.mkdir(parents=True)
-        (worktree/"HEAD").write_text("ref: refs/heads/main\n", encoding="ascii")
-        (worktree/"commondir").write_text("../..\n", encoding="ascii")
-        (worktree/"gitdir").write_text(str(linked/".git")+"\n", encoding="utf-8")
-        (linked/".git").write_text("gitdir: "+str(worktree)+"\n", encoding="utf-8")
-        repository = linked
-    empty = root/"empty.gitconfig"
-    empty.write_text("", encoding="ascii")
-    return {"repository": repository, "empty_config": empty, "copied_index": copied_index,
-            "overrides": {"GIT_CONFIG": str(empty), "GIT_CONFIG_KEY_0": "core.sshCommand",
-                          "GIT_CONFIG_VALUE_0": "synthetic-unexecuted-ssh",
-                          "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_PARAMETERS": "'core.sshCommand=synthetic-unexecuted-ssh'"}}
-
-
 def expired_email_cases():
     """Generate the complete synthetic input and expected sets for the verifier."""
     reply = "\u9700\u56de\u590d:"
@@ -561,78 +486,11 @@ def schedule8_cases():
         "valid_priorities": [0, 1, 9, "4"],
         "blank_reasons": [" ", "\t", "\n"],
         "private_url": "https://github.com/example-owner/private-data.git",
-        "http_config_overrides": [
-            ["http.curloptresolve", "github.com:443:192.0.2.81"],
-            ["http.https://github.com/.curloptresolve", "github.com:443:192.0.2.81"],
-            ["http.sslverify", "false"], ["http.sslcainfo", "/synthetic/ca.pem"],
-            ["http.proxy", "http://proxy.example:8080"],
-        ],
-        "http_environment_overrides": [
-            ["GIT_SSL_NO_VERIFY", "1"], ["GIT_SSL_CAINFO", "/synthetic/ca.pem"],
-            ["HTTPS_PROXY", "http://proxy.example:8080"],
-        ],
         "existing_record": "synthetic durable record",
         "bad_digest": "{synthetic broken json",
         "preserved_ext": {"x_synthetic_existing": "keep"},
     }
 
-
-
-def schedule9_selector_cases(area):
-    """Generate publication selectors and inert Git/GitHub answers for author controls."""
-    from pathlib import Path
-    import json
-    area = Path(area)
-    private = "https://github.com/example-owner/private-data.git"
-    public = "https://github.com/example-owner/public-data.git"
-    selectors = ("remote.pushDefault", "branch.main.pushRemote", "branch.main.remote")
-    cases = []
-
-    def add(group, label, entries=(), allowed=False, remotes=None, visibility="PRIVATE"):
-        index = len(cases)
-        root = area / ("%03d-%s" % (index, label))
-        root.mkdir(parents=True, exist_ok=True)
-        configured = remotes or {"origin": private}
-        config = "".join("remote.%s.url\n%s\0" % (name, url)
-                         for name, url in configured.items())
-        config += "".join(key + ("\n" + value if value is not None else "") + "\0"
-                          for key, value in entries)
-        cases.append({"id": "%03d-%s" % (index, label), "group": group,
-                      "root": root, "destination": root / "pending" / "record.json",
-                      "config": config, "remotes": configured, "allowed": allowed,
-                      "visibility_response": json.dumps({"nameWithOwner": "example-owner/private-data",
-                                                         "visibility": visibility})})
-
-    for key in selectors + ("branch.inactive.pushRemote", "branch.inactive.remote",
-                            "ReMoTe.PuShDeFaUlT", "BrAnCh.Inactive.PuShReMoTe"):
-        add("raw", "raw-url", [(key, public)])
-    for key in selectors:
-        for label, value, allowed in (
-                ("named", "origin", True), ("unknown", "missing", False),
-                ("local-dot", ".", False), ("valueless", None, False),
-                ("empty", "", False), ("null-literal", "null", False),
-                ("case-mismatch", "ORIGIN", False), ("padded", " origin ", False)):
-            add("names", label, [(key, value)], allowed)
-        add("names", "exact-case-name", [(key, "Origin")], True,
-            {"origin": private, "Origin": private})
-        for name in ("null", "unknown"):
-            add("names", "configured-literal-name", [(key, name)], True,
-                {"origin": private, name: private})
-        add("names", "configured-dot", [(key, ".")], False,
-            {"origin": private, ".": private})
-    add("absent", "unset", allowed=True)
-    for entries in (
-            [("branch.Main.remote", public), ("branch.main.remote", "origin")],
-            [("branch.main.remote", "origin"), ("branch.Main.remote", public)],
-            [("remote.pushDefault", public), ("remote.pushDefault", "origin")],
-            [("branch.inactive.pushRemote", public), ("branch.main.remote", "origin")]):
-        add("all_entries", "all-entries", entries)
-    for visibility in ("PUBLIC", "UNKNOWN", None):
-        add("visibility", "visibility", [("remote.pushDefault", "origin")],
-            visibility=visibility)
-    for key in selectors:
-        add("writer", "writer-rejected", [(key, public)])
-    return cases
 
 
 def schedule10_review_cases():
@@ -918,16 +776,6 @@ def test_config_and_registry_pointers_keep_independent_precedence(defaults, monk
     assert private_data.registry_path() == registry
 
 
-def test_discovery_intent_never_replaces_private_write_proof(defaults):
-    config = defaults["companion"] / ".git/config"
-    config.write_text((defaults["source"] / ".git/config").read_text(encoding="utf-8"), encoding="utf-8")
-    assert private_data.config_root() == defaults["companion"]
-    target = defaults["companion"] / "state/record.json"
-    with pytest.raises(ValueError):
-        private_data.prepare_parent(target)
-    assert not target.parent.exists()
-
-
 @pytest.mark.parametrize("override", (False, True))
 def test_default_namespaces_and_writers_use_the_selected_roots(defaults, monkeypatch, override):
     root = defaults["companion"]
@@ -978,7 +826,6 @@ def test_reload_of_runtime_modules_is_inert(defaults, monkeypatch):
         guard.setattr(private_data, "data_dir", blocked)
         guard.setattr(private_data, "prepare_parent", blocked)
         guard.setattr(private_data, "open_for_write", blocked)
-        guard.setattr(private_data, "_query", blocked)
         for module in (agent_task, digest, dispatch, inbound, ingest, ingest_tick):
             importlib.reload(module)
     assert effects == []
