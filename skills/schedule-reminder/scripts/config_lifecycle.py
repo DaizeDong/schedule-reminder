@@ -1,10 +1,8 @@
 """Registry initialization and local configuration checks, without runtime side effects."""
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
-import sys
 from urllib.parse import urlparse
 
 import bot_credential
@@ -12,16 +10,8 @@ import private_data
 
 
 def authorize(path):
-    source = private_data.SOURCE / "guards/tools/storage_contract.py"
-    if not source.is_file():
-        raise ValueError("Initialize the pinned Guards submodule before configuring storage")
-    spec = importlib.util.spec_from_file_location("schedule_config_storage", source)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    path = private_data.assert_writable_path(path)
-    return module.authorize_artifact_write(private_data.SOURCE, path.parent, path.name,
-                                           artifact_id="registry")
+    """Path checks only: outside the public source tree and below an existing companion."""
+    return private_data.check_destination(path)
 
 
 def template():

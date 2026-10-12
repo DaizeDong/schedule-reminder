@@ -22,10 +22,9 @@ is `<companion>/data`. `SCHEDULE_DB_PATH` overrides the default `<data>/db.sqlit
 Switch by setting the root and, when used, its registry file together. Stop the relevant writers
 before moving state. Run the configuration doctor again, then inspect capability health. Do not
 copy old cursors or a stale database over newer work. Runtime DATA belongs in the PRIVATE
-versioned companion. The native registry initializer also enforces its exact artifact declaration in
-[storage.contract.json](storage.contract.json). Existing runtime write helpers refuse only
+versioned companion. Runtime write helpers, including the registry initializer, refuse only
 destinations in the public source tree, Git metadata or filesystem aliases; they run no
-visibility proof and do not yet enforce artifact ownership for every output. Undeclared
+visibility proof and do not enforce artifact ownership for every output. Undeclared
 runtime paths remain an audit failure, and universal pre-write ownership enforcement is unverified.
 
 ## Registry schema

@@ -34,9 +34,6 @@ def private(tmp_path, monkeypatch):
     for key, value in fixture["companion"].env.items():
         if key.startswith("GIT_"):
             monkeypatch.setenv(key, value)
-    api = load("schedule_storage_test", ROOT / "guards/tools/storage_contract.py")
-    monkeypatch.setattr(lifecycle, "authorize", lambda path: api.authorize_artifact_write(
-        ROOT, Path(path).parent, Path(path).name, artifact_id="registry", visibility_map=fixture["receipt"]))
     monkeypatch.setenv("SCHEDULE_REMINDER_CONFIG", str(fixture["companion"].root))
     return fixture
 
@@ -104,22 +101,10 @@ def test_registry_and_data_overrides_remain_independent(private, monkeypatch, tm
     assert not lifecycle.doctor()["ready"]
 
 
-@pytest.mark.parametrize("failure", ["public-push", "ignored"])
-def test_initialized_private_root_cannot_hide_wrong_publication_or_ignored_registry(private, failure):
-    repo = private["companion"]
-    if failure == "public-push":
-        repo.git("config", "remote.origin.pushurl", "https://github.com/example-owner/synthetic-public.git")
-    else:
-        (repo.root / ".gitignore").write_text("registry.json\n")
-    with pytest.raises((ValueError, RuntimeError)):
-        lifecycle.initialize(repo.root)
-    assert not (repo.root / "registry.json").exists()
-
-
-def test_missing_pinned_schema_dependency_fails_closed(tmp_path, monkeypatch):
-    monkeypatch.setattr(private_data, "SOURCE", tmp_path)
-    with pytest.raises(ValueError, match="pinned Guards"):
-        lifecycle.authorize(tmp_path / "registry.json")
+def test_initializer_refuses_the_public_source_tree(private):
+    with pytest.raises(ValueError, match="public source"):
+        lifecycle.initialize(ROOT / "synthetic-config")
+    assert not (ROOT / "synthetic-config").exists()
 
 
 def test_ready_registry_doctor_is_configuration_only_and_does_not_write(private):
@@ -130,3 +115,11 @@ def test_ready_registry_doctor_is_configuration_only_and_does_not_write(private)
     assert result["ready"] and result["scope"] == "configuration-only"
     assert result["runtime_ready"] is None and not result["external_delivery_verified"]
     assert path.read_bytes() == before and not (path.parent / "data").exists()
+
+
+def test_runtime_record_can_be_rewritten_and_appended(private):
+    target = private["companion"].root / "pending" / "record.json"
+    for mode in ("w", "a"):
+        with private_data.open_for_write(target, mode, encoding="utf-8") as stream:
+            stream.write("synthetic-record;")
+    assert target.read_text(encoding="utf-8") == "synthetic-record;" * 2

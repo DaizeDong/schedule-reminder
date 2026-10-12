@@ -261,13 +261,14 @@ def test_order_outside_a_repository_reaches_review(monkeypatch, tmp_path_factory
 
 def test_dispatch_gives_an_order_without_a_repository_its_own_artifact_workspace(tmp_path_factory):
     import dispatch
-    plain = tmp_path_factory.mktemp("plain-request")
-    for requested in (None, str(plain)):
-        workspace, evidence = dispatch._order_workspace(requested, "dispatch:synthetic-key")
-        assert evidence == "artifacts"
-        assert Path(workspace).is_dir() and Path(workspace) != Path.home()
-        assert Path(workspace).resolve().is_relative_to(Path(agent_task.runs_root()).resolve())
+    workspace, evidence = dispatch._order_workspace(None, "dispatch:synthetic-key")
+    assert evidence == "artifacts"
+    assert Path(workspace).is_dir() and Path(workspace) != Path.home()
+    assert Path(workspace).resolve().is_relative_to(Path(agent_task.runs_root()).resolve())
     assert dispatch._order_workspace(None, "dispatch:synthetic-key")[0] == workspace
+    assert dispatch._order_workspace(str(Path.home()), "dispatch:synthetic-key") == (workspace, "artifacts")
+    plain = tmp_path_factory.mktemp("plain-request")
+    assert dispatch._order_workspace(str(plain), "k") == (str(plain), "artifacts")
     repository = tmp_path_factory.getbasetemp()
     (repository / "synthetic-repo" / ".git").mkdir(parents=True)
     assert dispatch._order_workspace(str(repository / "synthetic-repo"), "k") == (

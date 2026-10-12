@@ -2,7 +2,7 @@
 """Pollers see a throttled, latching view of work-order ownership.
 
 llmcall (a running model call) and llmcall.process (a verification command) ask their token every
-fraction of a second. Answering from the store costs a PRIVATE proof per ask, so the runner hands
+fraction of a second. Answering from the store costs a database read per ask, so the runner hands
 them a PolledCancellation: the exact answer is reused for an interval and latched once set. The
 runner's own decision points keep the exact OperationCancellation.
 """

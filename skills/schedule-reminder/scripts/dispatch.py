@@ -168,13 +168,18 @@ def _thread_key(title):
 
 
 def _order_workspace(requested, key):
-    """Git evidence only for a requested Git workspace; every other order gets its own artifact
-    workspace. The default workspace (the home directory) is neither a repository nor an artifact
-    root, so an order sent there failed its initial baseline about a second after launch."""
+    """A requested Git workspace keeps Git evidence; a requested ordinary folder keeps artifact
+    evidence in place. Only an order with no usable folder gets its own artifact workspace: the
+    default (the home directory) is neither a repository nor an artifact root, so an order sent
+    there failed its initial baseline about a second after launch."""
     if requested:
-        workspace, _ = agent_task.resolve_workspace(requested)
-        if agent_task.is_git_workspace(workspace):
-            return workspace, None
+        workspace, note = agent_task.resolve_workspace(requested)
+        if note is None:
+            if agent_task.is_git_workspace(workspace):
+                return workspace, None
+            if os.path.abspath(workspace) not in (os.path.abspath(os.path.expanduser('~')),
+                                                  os.path.abspath(os.sep)):
+                return workspace, 'artifacts'
     return agent_task.order_workspace(key), 'artifacts'
 
 
