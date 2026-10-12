@@ -31,8 +31,10 @@ def config_root():
         root = resolver.resolve_companion_root('schedule-reminder')
     except RuntimeError as error:
         raise ValueError('Schedule companion discovery failed: '+str(error)) from error
-    # An absent path keeps uninitialized reads inert; writes still require PRIVATE proof.
-    return assert_writable_path(root or Path.home()/'.schedule-reminder-config').resolve()
+    # Nothing found: the answer is the sibling convention path, which is never created here.
+    # Reads of it stay inert (an uninitialized tool); every write still requires PRIVATE proof,
+    # so a write fails until the companion exists. This module never names a home-directory path.
+    return assert_writable_path(root or SOURCE.parent/'schedule-reminder-config').resolve()
 
 
 def data_dir():

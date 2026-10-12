@@ -61,7 +61,7 @@ def test_missing_companion_reads_empty_and_writes_fail_before_creation(defaults)
     (defaults["companion"] / ".git/config").unlink()
     (defaults["companion"] / ".git").rmdir()
     defaults["companion"].rmdir()
-    missing = defaults["home"] / ".schedule-reminder-config"
+    missing = defaults["companion"]
     assert private_data.config_root() == missing
     assert store.list_items()["items"] == []
     assert ingest.load_registry() == {}
