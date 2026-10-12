@@ -1,4 +1,4 @@
-# Capability installation and readiness
+# Capability installation and health
 
 `scripts/install.ps1 -Capabilities store,remind -Plan` prints a JSON plan without effects.
 The four groups are `store`, `remind`, `ingest`, and `work`. Omitted selection chooses
@@ -12,13 +12,14 @@ before files, tasks, or links are created. Remove `-Plan` to install the selecti
 | ingest | AgentCenterIngestTick | PT10M | store, relay, llmcall |
 | work | AgentCenterWorkTick | PT2M | store, relay, llmcall |
 
-All scheduled actions run `scheduler_worker.py` with explicit capability, database and registry
-arguments. Installation checks the selected interpreter and imports, creates only selected tasks,
-and separately reads back executable, arguments, working directory, enabled task and trigger,
-interval, and absence of an end boundary or repetition duration. Matching tasks are reused.
-Successful registration does not imply readiness. Installation exits nonzero until all selected
-capabilities have measured readiness. `-NoTask` with omitted selection installs store only;
-`-NoJunction` skips the optional skill junction.
+Each scheduled action runs its real entrypoint: `reminder.py --db <database> tick`,
+`ingest_tick.py` or `agent_tick.py`. The ingest and work entrypoints read `SCHEDULE_DB_PATH` and
+`AGENT_CENTER_CONFIG` from the user environment. Installation creates only selected tasks and
+separately reads back executable, arguments, working directory, enabled task and trigger, interval,
+and absence of an end boundary or repetition duration. Matching tasks are reused. Installation
+exits zero when the database passes its health check and, for a scheduled capability, the relay
+registry file exists. `-NoTask` with omitted selection installs store only; `-NoJunction` skips the
+optional skill junction.
 
 ## Private runtime storage
 
@@ -35,8 +36,8 @@ Initialize or additively upgrade the chosen database with `reminder.py init`; re
 entrypoints do not run migrations. `PRAGMA user_version` follows `store.SCHEMA_USER_VERSION`.
 Back up an existing database before an explicit upgrade. List reads may return empty for absent
 storage; work-feed and health report unavailable, while creation preflight requires initialized
-storage. DATABASE, cursors, inbound records, work records, action and notification receipts, digest records
-and readiness evidence belong in the PRIVATE companion and remain under version control.
+storage. DATABASE, cursors, inbound records, work records, action and notification receipts and digest
+records belong in the PRIVATE companion and remain under version control.
 Create database backups with SQLite's backup API or a cold checkpointed snapshot inside PRIVATE
 storage; do not copy a live WAL database as an ordinary single file.
 
@@ -48,38 +49,24 @@ owner-issued work UUID directory there. Prepared command notification files temp
 The `.console.json` declarations also include digest; that declaration does not add a fourth
 scheduled task to the capability installer.
 
-## Health and delivery evidence
+## Health and delivery
 
 `reminder.py health` exits zero when it produces its `api_version`, `schema_version`, `ok:true`,
-`health` envelope. Read `health.readiness.ready` for the selected capability verdict. Selection
-comes from `SCHEDULE_CAPABILITIES` or `health --capabilities` with the same default and empty rules.
-Each group remains present with selected, status, and reasons. Store, relay and llmcall dependencies
-are reported separately. Health sends nothing and writes no runtime state. An active WAL prevents
-the immutable store probe from measuring readiness; retry after the writer closes.
+`health` envelope. It runs SQLite `quick_check` on an immutable read of the database and reports
+`relay_ok` when the relay registry file exists (or `SCHEDULE_RELAY_CMD` is set). It starts no
+process, sends nothing and writes no runtime state. An active WAL prevents the immutable store
+probe; retry after the writer closes. Task Scheduler's own last run time and last result are the
+record of whether the scheduled ticks ran.
 
-After successful reminder delivery, the scheduler worker writes `readiness.json` next to the
-PRIVATE database. The configured stream's normal relay path requests and validates Discord
-message IDs. A legacy custom relay can still return a boolean, but this provides no readiness
-evidence. A receipt-aware `SCHEDULE_RELAY_CMD` returns a JSON object with nonempty `kind` and
-`receipt_id`, `delivered:true`, and integer `exit_code:0`. A nonzero process or worker exception
-cannot publish success. Empty work ticks do not refresh a prior delivery receipt.
+Reminder delivery calls the sibling `relay` module in the tick's own process, on
+`SCHEDULE_RELAY_STREAM` (default `reminders`). The configured stream's normal relay path requests
+and validates Discord message IDs; a stream without a webhook or channel falls back to the Big
+Brother DM and returns a plain boolean. `SCHEDULE_RELAY_CMD` replaces the relay with a command that
+receives the text as its last argument; a receipt-aware command prints a JSON object with
+`delivered:true` and integer `exit_code:0`, and a nonzero exit counts as a failed delivery.
 
-Evidence uses schema version 1 and a tasks object keyed by capability. Each task and its dispatch
-repeat task name, interpreter, action arguments, working directory, interval seconds, adapter
-SHA256 and config SHA256. The record has RFC3339 `last_success`; dispatch has RFC3339
-`completed_at` plus the receipt fields. Both timestamps must be at most three task intervals old
-and at most sixty seconds in the future, inclusive. Health recomputes identity and still requires
-actual task readback. `SCHEDULE_READINESS_EVIDENCE` optionally overrides the read location only;
-workers always write the normal PRIVATE evidence path. Users do not need to manufacture evidence.
-
-`synthetic-local` evidence can verify the local receipt path but leaves external readiness false.
-Ingest and work run their adapters but currently return explicitly unmeasured because their own
-confirmed-delivery evidence is not implemented. Selecting either keeps overall readiness false.
-They cannot borrow a reminder receipt.
-
-Business-event notification receipts are a separate contract from `readiness.json`. They bind
-the event, producer, target and payload and retain uncertain sends for reconciliation. A replayed
-business receipt alone does not refresh worker readiness. See [notification receipts](notification-receipts.md).
+Business-event notification receipts bind the event, producer, target and payload and retain
+uncertain sends for reconciliation. See [notification receipts](notification-receipts.md).
 
 ## Inbound work and model policy
 

@@ -203,11 +203,6 @@
     "exit_code": 1
   },
   "adapter_text": "print(\"synthetic adapter\")\n",
-  "changed_config": {
-    "schema_version": 1,
-    "streams": {},
-    "revision": 2
-  },
   "invalid_capability": "unknown-synthetic",
   "unknown_remote": "https://github.com/example-owner/unknown-data.git",
   "user": "SYNTHETIC\\user1"

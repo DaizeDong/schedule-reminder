@@ -30,7 +30,7 @@ Usage:
   reminder.py due [--now ISO] [--lead SECONDS]
   reminder.py tick [--now ISO] [--lead SECONDS] [--dry-run]
   reminder.py events --id ID
-  reminder.py health [--check-task]
+  reminder.py health
 """
 from __future__ import annotations
 
@@ -248,7 +248,7 @@ def cmd_events(a):
 
 
 def cmd_health(a):
-    return _emit({"health": store.health(db_path=a.db, check_task=a.check_task, capabilities=a.capabilities)})
+    return _emit({"health": store.health(db_path=a.db)})
 
 
 def cmd_work_feed(a):
@@ -399,8 +399,6 @@ def build_parser():
     s = sub.add_parser("events"); s.set_defaults(fn=cmd_events); s.add_argument("--id", required=True)
 
     s = sub.add_parser("health"); s.set_defaults(fn=cmd_health)
-    s.add_argument("--check-task", dest="check_task", action="store_true")
-    s.add_argument("--capabilities", default=None)
 
     return p
 

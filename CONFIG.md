@@ -70,15 +70,15 @@ python tools/verify_config.py --json
 ```
 
 Initialization creates only `registry.json`, never overwrites an existing file and never creates
-tasks, a database, readiness receipts or live messages. Repeating it preserves credentials and
+tasks, a database or live messages. Repeating it preserves credentials and
 unknown fields byte for byte. `--out` affects this invocation only. The doctor's `ready` field
 has `scope: configuration-only`; it leaves `runtime_ready` unknown. Use
 `--capabilities ingest,work` to check the additional registry requirements.
 
 Database installation remains `reminder.py init`. It is the explicit additive schema-upgrade
-operation; back up an existing database first. `reminder.py health` reports measured capability
-readiness without migrating the database. Scheduled task registration and recent delivery
-receipts have their own requirements in [deployment](skills/schedule-reminder/reference/deployment.md).
+operation; back up an existing database first. `reminder.py health` checks the database and
+registry presence without migrating the database. Scheduled task registration is described in
+[deployment](skills/schedule-reminder/reference/deployment.md).
 
 ## Recovery and retention
 

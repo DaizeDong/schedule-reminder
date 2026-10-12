@@ -4,9 +4,8 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
-import pytest
 import store
-import capabilities
+import subprocess
 import reminder
 import agent_run
 import agent_task
@@ -23,25 +22,24 @@ def test_uninitialized_health_does_not_create_database(tmp_path, capsys):
     assert not path.parent.exists()
 
 
-def test_empty_selection_has_no_ready_capabilities(tmp_path, monkeypatch):
-    monkeypatch.setenv('SCHEDULE_CAPABILITIES', '')
-    report = store.health(db_path=str(tmp_path/'missing.sqlite3'))
-    readiness = report['readiness']
-    assert not readiness['ready']
-    assert set(readiness['capabilities']) == {'store', 'remind', 'ingest', 'work'}
-    assert all(not row['selected'] and row['status'] == 'not_selected' and row['reasons']
-               for row in readiness['capabilities'].values())
-
-
-@pytest.mark.parametrize('version_delta', [-1, 0, 1])
-def test_store_readiness_requires_the_current_schema(tmp_path, version_delta):
-    store.init_db()
-    health = store.health()
-    health['schema_user_version'] = store.SCHEMA_USER_VERSION + version_delta
-    result = capabilities.readiness(health, selection='store')
-    assert result['ready'] is (version_delta == 0)
-    assert result['capabilities']['store']['status'] == (
-        'ready' if version_delta == 0 else 'unavailable')
+def test_health_is_quick_check_plus_registry_presence(tmp_path, monkeypatch):
+    """health reads the database and checks the relay registry file; it starts no process."""
+    def forbidden(*args, **kwargs):
+        raise AssertionError('health must not start a process (no schtasks, no import probe)')
+    monkeypatch.setattr(subprocess, 'run', forbidden)
+    monkeypatch.setattr(subprocess, 'Popen', forbidden)
+    monkeypatch.delenv('SCHEDULE_RELAY_CMD', raising=False)
+    database = tmp_path/'db.sqlite3'
+    store.init_db(str(database))
+    registry = tmp_path/'registry.json'
+    monkeypatch.setenv('AGENT_CENTER_CONFIG', str(registry))
+    report = store.health(db_path=str(database))
+    assert report['db_ok'] and report['integrity_ok'] and report['wal_ok']
+    assert report['schema_user_version'] == store.SCHEMA_USER_VERSION
+    assert report['relay_ok'] is False and any('registry' in w for w in report['warnings'])
+    assert 'readiness' not in report and 'task_ok' not in report
+    registry.write_text('{}', encoding='utf-8')
+    assert store.health(db_path=str(database))['relay_ok'] is True
 
 
 def test_model_call_does_not_override_installed_policy(monkeypatch):

@@ -43,9 +43,9 @@ python reminder.py [--db PATH] [--actor NAME] <verb> [args...]
 | `block` | mark blocked | `--id`, `--blocker-id`, `--reason` | `{item}` |
 | `snooze` | suppress reminders until T | `--id`, `--until` | `{item}` |
 | `due` | read items due now (read-only) | `--now`, `--lead` | `{items[], now}` |
-| `tick` | dispatch due reminders (scheduler) | `--now`, `--lead`, `--dry-run` | `{dispatched[], retried[], blocked[], skipped[], now}` |
+| `tick` | dispatch due reminders (scheduler) | `--now`, `--lead`, `--dry-run` | `{dispatched[], retried[], blocked[], skipped[], now, lapsed[], undelivered[]}` |
 | `events` | audit trail of an item | `--id` | `{events[]}` |
-| `health` | self-check | `--check-task`, `--capabilities` | `{health{...}}` |
+| `health` | self-check | (none) | `{health{...}}` |
 | `work-feed` | read-only work/action projection | `--limit` (1-10000), `--event-limit` (0-1000) | `{schemaVersion:1, available, items[], events[], sources[], coverage, queue}` |
 | `work-action` | accept an offered action | bounded JSON stdin, below | `{schemaVersion:1, status, action, wakeup, dispatch?}` |
 | `work-action-stop` | persist a stop request | bounded JSON stdin, below | action receipt |
@@ -196,4 +196,4 @@ change.
 
 `transition` and `done` accept optional `--ext JSON`. State and metadata commit together; errors roll both back. Calls without `--ext` retain same-state no-op behavior. Unknown ext fields remain preserved.
 
-Exhausted delivery is excluded from later ticks until rearmed, independently of an ordinary task's blocked state. Explicit `snooze` resets retry bookkeeping, and moving an idempotent reminder's due time forward rearms exhausted delivery. A dry-run tick makes no persistent item, event or watchdog changes. These are repaired recovery rules, not evidence that earlier versions implemented them. See [operations.md](operations.md).
+Exhausted delivery is excluded from later ticks until rearmed, independently of an ordinary task's blocked state. Explicit `snooze` resets retry bookkeeping, and moving an idempotent reminder's due time forward rearms exhausted delivery. A dry-run tick makes no persistent item or event changes. These are repaired recovery rules, not evidence that earlier versions implemented them. See [operations.md](operations.md).

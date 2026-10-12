@@ -116,7 +116,7 @@ the todo's business state unchanged. Work-feed is persisted observation, not a l
 
 For notifications tied to a durable business event, use the [notification receipt contract](notification-receipts.md).
 Keep its event identity stable across retries and preserve uncertain outcomes for reconciliation.
-This contract is separate from worker readiness and from legacy due-reminder transport retries.
+This contract is separate from due-reminder transport retries.
 
 ## Versioning promise
 

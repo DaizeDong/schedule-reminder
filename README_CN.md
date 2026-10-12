@@ -52,7 +52,7 @@ pwsh -File skills/schedule-reminder/scripts/install.ps1 -Capabilities store,remi
 pwsh -File skills/schedule-reminder/scripts/install.ps1 -Capabilities store,remind
 ```
 
-默认选择 store 和 remind；空选择不执行安装，ingest 和 work 可单独选用。安装器只有在所选能力的就绪证据齐全时才返回成功，任务注册成功不等于已就绪。`health` 能正常输出 JSON 时仍返回成功，具体状态请查看 `health.readiness.ready`。PRIVATE 存储、任务回读及尚未测量的 ingest/work 就绪边界见[部署说明](skills/schedule-reminder/reference/deployment.md)。
+默认选择 store 和 remind；空选择不执行安装，ingest 和 work 可单独选用。每个任务直接运行真实入口脚本，注册后回读核对；数据库健康且 relay registry 存在时安装器返回成功。`health` 只做数据库 `quick_check` 并检查 registry 是否存在。PRIVATE 存储与任务回读见[部署说明](skills/schedule-reminder/reference/deployment.md)。
 
 ## 配置
 

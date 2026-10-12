@@ -22,11 +22,11 @@ Model calls use the installed llmcall interface: `llmcall.call(prompt, mode="age
 
 ## Reminder delivery
 
-Delivery uses notify.deliver. When a configured relay script is absent, the standalone Big Brother fallback remains available. Its legacy boolean success can acknowledge delivery but supplies no external readiness receipt.
+Delivery uses notify.deliver, which calls the sibling relay module in the tick's own process (no child process per reminder). A stream without a webhook or channel falls back to the Big Brother DM, whose boolean success acknowledges delivery without a message ID. `SCHEDULE_RELAY_CMD` replaces the relay with a command for tests or a custom notifier.
 
 Failed sends use bounded backoff. At the retry limit, delivery stops until explicitly rearmed. `snooze --until <timestamp>` resets delivery retries; moving an idempotent reminder's due time forward also rearms an exhausted delivery. An ordinary task blocked on a dependency remains eligible for reminders.
 
-`tick --dry-run` previews due work without sending, changing items or audit events, or replacing the worker's watchdog timestamp and tick count. The preview requires an initialized database.
+`tick --dry-run` previews due work without sending or changing items or audit events. A real tick also writes nothing when nothing is due: it scans on a read-only connection and opens a write connection only to claim a due reminder or close a lapsed one. It keeps no heartbeat row; Task Scheduler records each run. The preview requires an initialized database.
 
 ## Evidence
 

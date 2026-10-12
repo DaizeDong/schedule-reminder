@@ -58,10 +58,10 @@ pwsh -File skills/schedule-reminder/scripts/install.ps1 -Capabilities store,remi
 ```
 
 The default selection is store plus remind. Empty selection is a no-op; ingest and work are
-optional. Installation returns nonzero until selected readiness is measured, even after successful
-task registration. `health` still returns a successful JSON report when readiness is incomplete;
-inspect `health.readiness.ready`. See [deployment](skills/schedule-reminder/reference/deployment.md)
-for PRIVATE storage, task readback, worker receipts, and the unmeasured ingest/work boundary.
+optional. Each task runs its real entrypoint and is read back after registration; installation
+succeeds when the database is healthy and the relay registry exists. `health` is a database
+`quick_check` plus registry presence. See [deployment](skills/schedule-reminder/reference/deployment.md)
+for PRIVATE storage and task readback.
 
 ## Config
 
@@ -147,9 +147,8 @@ the checkout is not provided; no Scheduler task is run by them.
 
 <a id="synthetic-verification"></a>
 `verify_expired_email_active.py --data-dir <PRIVATE-directory>` generates disposable synthetic
-records in the private companion and refuses a source-contained database. It does not prove live
-worker readiness. Historical counts do not establish current runtime or installed readiness;
-use the execution report for the exact source revision.
+records in the private companion and refuses a source-contained database. It does not exercise
+the live scheduled tasks; use the execution report for the exact source revision.
 
 ## Limitations
 

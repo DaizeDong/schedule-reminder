@@ -64,6 +64,21 @@ All notable changes to this project are documented here (Keep a Changelog style)
 - An inbound record has one lock, its processing lock; staging, status updates and the manual
   rearm no longer take a second per-record lock. An idle tick does not import the dispatch and
   command layers.
+- Reminder delivery calls the sibling relay in the tick's own process. `notify.deliver` compared
+  `SCHEDULE_RELAY_PY` with its own directory by `abspath`, which does not resolve the skill
+  junction, so every reminder started a `python relay.py send` child (1 to 2 s) and lost the
+  Discord message-ID receipt. `SCHEDULE_RELAY_CMD` remains the only override (tests use it);
+  schedule-reminder no longer reads `SCHEDULE_RELAY_PY`, and text `notify()` also stays in process.
+- The reminder tick scans on a read-only connection and opens a write connection only when it
+  claims a due reminder or closes a lapsed one, so the usual tick (nothing due) takes no writer
+  lock. The lapsed sweep scans on the tick's connection instead of opening and checking a second.
+- `reminder.py health` is a database `quick_check` plus relay registry presence. It no longer runs
+  `schtasks /Query` per capability or reads readiness evidence, and starts no process.
+- `install.ps1` registers each task with its real entrypoint (`reminder.py --db <db> tick`,
+  `ingest_tick.py`, `agent_tick.py`) and exits zero once the database is healthy and the relay
+  registry exists. It previously exited nonzero forever, waiting for readiness evidence.
+- `store.admitted_connection` is now the same function as `_connect`; a write connection checks
+  its database path and sidecars once instead of up to three times.
 
 ### Removed
 - The process-tree stop fallback (`process_tree.py`, `taskkill /T` and the `verified-tree-kill`
@@ -80,6 +95,15 @@ All notable changes to this project are documented here (Keep a Changelog style)
   now required), the reaction pass's second `poll_stream` call, the dispatch `reminder.py`
   subprocess bridge (`_rem`) and the paginated CLI census validation it needed
   (`agent_task.query_items`). Legacy cursor and inbox files in DATA are left in place.
+- The readiness machinery that could never report ready: `scheduler_worker.py` (no registered
+  task ran it), `capabilities.py` (its plan and task readback moved into `installer.py`), the
+  `data/readiness.json` evidence and its example, `publish_delivery`, the import probe, the tick's
+  `delivery_receipts`, `health --check-task`/`--capabilities`, `health.readiness`/`task_ok` and
+  `SCHEDULE_READINESS_EVIDENCE`.
+- The tick's `meta.last_tick_at`/`tick_count` heartbeat writes (nothing read them; Task Scheduler
+  records each run) and the `heldByOther` diagnostic query. Existing meta rows are left in place.
+- The standalone Big Brother branch in `notify` (relay ships beside it and already falls back to
+  the Big Brother DM).
 
 ### Fixed
 - A Discord or mail dispatched order without a Git workspace no longer fails about a second after

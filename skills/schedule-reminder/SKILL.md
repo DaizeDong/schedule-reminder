@@ -43,7 +43,7 @@ scheduled task. Completion requires execution and review evidence; see the same 
 The OS task is only a heartbeat; `tick` reconciles the local table, so a slept/off machine catches
 up **all** missed reminders on the next run (idempotent, at-least-once + dedupe).
 
-## Installation and measured readiness
+## Installation and health
 
 Initialize a PRIVATE versioned companion and set `SCHEDULE_REMINDER_CONFIG` to its root before writes.
 `SCHEDULE_REMINDER_DATA_DIR` optionally selects DATA inside another PRIVATE repository.
@@ -53,18 +53,13 @@ initialized database. Writes fail until the PRIVATE database is explicitly initi
 
 `scripts/install.ps1 -Capabilities store,remind -Plan` emits four capability rows without effects.
 Omitting selection chooses store plus remind; explicit empty selection is a no-op. Ingest and work
-are optional, with their own tasks and llmcall dependency. The installer fails when selected
-readiness is incomplete, including after successful task registration.
+are optional, with their own tasks and llmcall dependency. Each task runs its real entrypoint
+and is read back after registration. The installer succeeds when the database is healthy and the
+relay registry exists.
 
-`health` keeps its report-success JSON and exit zero. Inspect `health.readiness.ready` for readiness.
-Selection uses `SCHEDULE_CAPABILITIES` or `health --capabilities`. Readiness requires PRIVATE store,
-actual task readback, imports under the selected interpreter, and recent identity-bound worker
-receipts. A path, static file, process exit, or synthetic receipt cannot prove external delivery.
-The reminder worker writes normal private evidence after a confirmed relay delivery; health only
-reads it. Selected ingest/work remain unmeasured until their own success evidence is available.
-See `reference/deployment.md` for the task and evidence contract. [CONFIG.md](../../CONFIG.md)
-defines registry initialization and the local doctor; configuration READY does not replace
-measured capability health.
+`health` keeps its report-success JSON and exit zero: a database `quick_check` plus whether the
+relay registry is present. It starts no process. See `reference/deployment.md` for the task contract.
+[CONFIG.md](../../CONFIG.md) defines registry initialization and the local doctor.
 
 ## Command cheat-sheet
 

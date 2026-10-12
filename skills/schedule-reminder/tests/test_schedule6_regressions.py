@@ -5,7 +5,6 @@ import io
 import json
 from datetime import timedelta
 from pathlib import Path
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -16,7 +15,6 @@ import dispatch
 import inbound
 import ingest
 import ingest_tick
-import notify
 import reminder
 import store
 from make_fixtures import schedule6_cases
@@ -214,26 +212,43 @@ def test_preview_preserves_metadata_items_and_events(tmp_path):
     assert result["dispatched"] == [item["id"]]
 
 
-def test_real_tick_advances_watchdog_and_deduplicates_delivery(tmp_path):
+def test_real_tick_deduplicates_delivery_and_writes_no_heartbeat(tmp_path):
     db = database(tmp_path)
     item = store.add_item(F["title"], due_at=F["now"], db_path=db)
     calls = []
     for _ in range(2):
         store.tick(db_path=db, now=F["now"], notify_fn=lambda value: calls.append(value["id"]) or True)
     assert calls == [item["id"]]
-    assert dict(metadata(db))["tick_count"] == "2"
+    assert not {"tick_count", "last_tick_at"} & set(dict(metadata(db)))
+
+
+def test_idle_tick_opens_no_write_connection(tmp_path, monkeypatch):
+    """A tick with nothing due (and nothing lapsed) only reads; a claim opens the writer."""
+    db = database(tmp_path)
+    store.add_item(F["title"], due_at="2999-01-01T00:00:00Z", db_path=db)
+    opened = []
+    real = store._connect
+    monkeypatch.setattr(store, "_connect",
+                        lambda *a, **kw: opened.append(kw.get("readonly", False)) or real(*a, **kw))
+    report = store.tick(db_path=db, now=F["now"], notify_fn=lambda value: True)
+    assert report["dispatched"] == [] and opened == [True]
+    store.add_item(F["title"], due_at=F["now"], db_path=db)
+    opened.clear()
+    assert len(store.tick(db_path=db, now=F["now"], notify_fn=lambda value: True)["dispatched"]) == 1
+    assert opened == [True, False]
 
 
 @pytest.mark.parametrize("outcome", [False, True])
-def test_standalone_delivery_preserves_bool_fallback_without_readiness(tmp_path, monkeypatch, outcome):
-    calls = []
+def test_relay_bool_fallback_is_honoured_by_the_tick(tmp_path, monkeypatch, outcome):
+    """relay.deliver returns a bare bool when the stream has no webhook/channel (Big Brother DM)."""
+    import relay
     monkeypatch.delenv("SCHEDULE_RELAY_CMD", raising=False)
-    monkeypatch.delenv("SCHEDULE_RELAY_PY", raising=False)
-    monkeypatch.setattr(notify, "_HERE", str(tmp_path / "standalone"))
-    monkeypatch.setitem(sys.modules, "bigbrother", SimpleNamespace(send_dm=lambda text: calls.append(text) or outcome))
-    result = notify.deliver(F["title"])
-    assert result is outcome and calls == [F["title"]]
+    monkeypatch.setattr(relay, "load_registry", lambda: {})
+    calls = []
+    monkeypatch.setattr(relay, "relay", lambda stream, text, username=None: calls.append(text) or outcome)
     db = database(tmp_path)
-    store.add_item(F["title"], due_at=F["now"], db_path=db)
-    report = store.tick(db_path=db, now=F["now"], notify_fn=lambda value: result)
-    assert report["delivery_receipts"] == []
+    item = store.add_item(F["title"], due_at=F["now"], db_path=db)
+    report = store.tick(db_path=db, now=F["now"])
+    assert len(calls) == 1 and F["title"] in calls[0]
+    assert (report["dispatched"] == [item["id"]]) is outcome
+    assert (report["retried"] == [item["id"]]) is (not outcome)

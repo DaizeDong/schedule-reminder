@@ -1,9 +1,10 @@
 """Notification routing and delivery receipts.
 
-Explicit SCHEDULE_RELAY_CMD takes precedence. Otherwise the configured relay
-sends to SCHEDULE_RELAY_STREAM (default reminders). A missing relay script uses
-the standalone Big Brother sender. Legacy boolean delivery never proves external
-readiness; a downstream receipt is required for that capability.
+Delivery always goes through the sibling relay module in this process, to
+SCHEDULE_RELAY_STREAM (default reminders). relay itself falls back to the Big
+Brother DM when the stream or registry is missing. SCHEDULE_RELAY_CMD is the one
+override: a command that receives the text as its last argument. Tests use it so
+no tick reaches real Discord.
 
 The transport modules resolve their own credentials. This module does not log them.
 """
@@ -15,22 +16,21 @@ import shlex
 import subprocess
 import sys
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-
-
-def _default_relay_path():
-    return os.environ.get("SCHEDULE_RELAY_PY", os.path.join(_HERE, "relay.py"))
-
 
 def _default_stream():
     return os.environ.get("SCHEDULE_RELAY_STREAM", "reminders")
 
 
+def _override():
+    """Return the SCHEDULE_RELAY_CMD argv, or None when delivery stays in process."""
+    command = os.environ.get("SCHEDULE_RELAY_CMD")
+    return shlex.split(command, posix=(os.name != "nt")) if command else None
+
+
 def _run(argv):
-    # encoding="utf-8": text=True otherwise decodes the child's stdout with the locale codepage
-    # (GBK on a zh-CN box); harmless here since only the return code is used, but keep it consistent.
-    r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
-    return r.returncode == 0
+    # encoding="utf-8": text=True otherwise decodes the child's stdout with the locale codepage.
+    return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=30)
 
 
 def notify_event(event, text, **delivery_options):
@@ -41,27 +41,18 @@ def notify_event(event, text, **delivery_options):
 
 def notify_occurrence(run_id, text, *, phase='reminder', condition='due',
                       db_path=None, retry_failed=False):
-    """Opt-in occurrence bridge preserving command overrides and standalone routing."""
+    """Durable occurrence delivery: in-process relay unless SCHEDULE_RELAY_CMD overrides it."""
     import notification_client as client
     stream = _default_stream()
-    command = os.environ.get('SCHEDULE_RELAY_CMD')
-    if command:
-        options = {'command': client.command_policy(shlex.split(command, posix=(os.name != 'nt')))}
-    elif os.path.isfile(_default_relay_path()):
-        options = client.transport_options([sys.executable, _default_relay_path(), 'send',
-                                            '--stream', stream, '--text'], stream)
-    else:
-        options = {'command': client.command_policy([sys.executable, os.path.join(_HERE, 'bigbrother.py')])}
+    command = _override()
+    options = ({'command': client.command_policy(command)} if command
+               else {'fallback': 'big_brother'})
     return client.submit('schedule-reminder', run_id, phase, condition, stream, text,
                          language='preserve', db_path=db_path, retry_failed=retry_failed, **options)
 
 
 def notify(text, *, run_id=None, phase='reminder', condition='due', retry_failed=False):
-    """Return boolean delivery, using durable receipts when an occurrence ID is supplied.
-
-    Text-only callers retain their established transport until their owner supplies a stable
-    occurrence identity. Business-event receipts do not establish external readiness.
-    """
+    """Return boolean delivery, using durable receipts when an occurrence ID is supplied."""
     try:
         if run_id is not None:
             import notification_client as client
@@ -73,49 +64,23 @@ def notify(text, *, run_id=None, phase='reminder', condition='due', retry_failed
         if retry_failed:
             sys.stderr.write('notify: retry requires a stable occurrence ID\n')
             return False
-        cmd_env = os.environ.get("SCHEDULE_RELAY_CMD")
-        if cmd_env:  # explicit override / test seam, always wins
-            return _run(shlex.split(cmd_env, posix=(os.name != "nt")) + [text])
-
-        relay_py = _default_relay_path()
-        if os.path.isfile(relay_py):  # Agent Center channel (the 2026-07-01 decision)
-            return _run([sys.executable, relay_py, "send",
-                         "--stream", _default_stream(), "--text", text])
-
-        # Standalone install without relay.py: deliver via the native Big Brother DM so a reminder
-        # is never dropped. (Replaces the old shell-out to the legacy DM notifier script.)
-        return _standalone(text)
+        command = _override()
+        if command:
+            return _run(command + [text]).returncode == 0
+        import relay
+        return bool(relay.relay(_default_stream(), text))
     except Exception as e:  # delivery failures are signalled by return value, not exceptions
         sys.stderr.write("notify: %s\n" % e)
         return False
 
 
-def _standalone(text):
-    """Legacy fallback confirms delivery only; it produces no readiness receipt."""
-    if _HERE not in sys.path:
-        sys.path.insert(0, _HERE)
-    import bigbrother
-    return bool(bigbrother.send_dm(text))
-
-
 def deliver(text):
-    """Return a downstream receipt when available, retaining legacy bool delivery.
-
-    A successful legacy process has no receipt and cannot establish readiness.
-    """
-    command = os.environ.get('SCHEDULE_RELAY_CMD')
+    """Deliver one reminder and return relay's receipt dict (or a bool from relay's fallback)."""
+    command = _override()
     if not command:
-        relay_path = _default_relay_path()
-        if not os.path.isfile(relay_path):
-            return _standalone(text)
-        if os.path.abspath(relay_path) == os.path.join(_HERE, 'relay.py'):
-            import relay
-            return relay.deliver(_default_stream(), text)
-        argv = [sys.executable, _default_relay_path(), 'send', '--stream', _default_stream(), '--text', text]
-    else:
-        argv = shlex.split(command, posix=(os.name != 'nt')) + [text]
-    result = subprocess.run(argv,
-                            capture_output=True, text=True, encoding='utf-8', timeout=30)
+        import relay
+        return relay.deliver(_default_stream(), text)
+    result = _run(command + [text])
     if result.returncode:
         return False
     try:

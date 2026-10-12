@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 """Guards for the notification egress (the 2026-07-01 Agent Center decision).
 
-Reminders must land in the Agent Center **#reminders channel** via this repo's `relay.py`, not in
-the Big Brother DM. The agent-center-hub `push.py` exploration was ARCHIVED and never adopted --
-`relay.py` is the single egress -- but the tick's `notify.py` was never migrated and kept posting
-to the DM. This locks the routing in.
+Reminders land in the Agent Center #reminders channel through this repo's relay module, called in
+the same process. No python child is started per reminder, and the relay's message-ID receipt
+reaches the tick.
 
-Precedence (first that exists wins):
-  1. SCHEDULE_RELAY_CMD  -- explicit override AND the test seam (must keep winning, or every
-     tick test in test_contract.py would start pushing to real Discord).
-  2. relay.py send --stream reminders
-  3. bigbrother.send_dm  -- the native Big Brother DM, only when relay.py is absent (standalone
-     install). Replaces the retired shell-out to the legacy DM notifier script.
+SCHEDULE_RELAY_CMD is the one override and the test seam: it must keep winning, or every tick
+test in test_contract.py would push to real Discord.
 
 Run: pytest -q
 """
@@ -23,91 +18,78 @@ SCRIPTS = os.path.join(os.path.dirname(HERE), "scripts")
 sys.path.insert(0, SCRIPTS)
 
 import notify as notify_mod      # noqa: E402
-import bigbrother as bb_mod      # noqa: E402
+import relay as relay_mod        # noqa: E402
+
+RECEIPT = {"kind": "discord-message", "receipt_id": "100", "delivered": True, "exit_code": 0}
 
 
-def _capture(monkeypatch, rc=0):
-    """Record the argv notify() would execute instead of running it."""
+def _no_children(monkeypatch):
+    """Fail if notify starts any process; clear the routing environment."""
+    def forbidden(*args, **kwargs):
+        raise AssertionError("notify must not start a child process without SCHEDULE_RELAY_CMD")
+    monkeypatch.setattr(notify_mod.subprocess, "run", forbidden)
+    for var in ("SCHEDULE_RELAY_CMD", "SCHEDULE_RELAY_PY", "SCHEDULE_RELAY_STREAM"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_deliver_calls_relay_in_process_and_keeps_the_receipt(monkeypatch):
+    _no_children(monkeypatch)
+    seen = []
+    monkeypatch.setattr(relay_mod, "deliver", lambda stream, text: seen.append((stream, text)) or RECEIPT)
+    assert notify_mod.deliver("hi") == RECEIPT
+    assert seen == [("reminders", "hi")]
+
+
+def test_relay_path_variable_no_longer_spawns_a_child(monkeypatch, tmp_path):
+    """Regression: SCHEDULE_RELAY_PY pointing at this relay through a junction used to fail an
+    abspath comparison, start `python relay.py send` and drop the receipt."""
+    _no_children(monkeypatch)
+    monkeypatch.setenv("SCHEDULE_RELAY_PY", str(tmp_path / "linked" / "relay.py"))
+    monkeypatch.setattr(relay_mod, "deliver", lambda stream, text: RECEIPT)
+    assert notify_mod.deliver("hi") == RECEIPT
+
+
+def test_text_notify_goes_to_relay_reminders_channel(monkeypatch):
+    _no_children(monkeypatch)
+    seen = []
+    monkeypatch.setattr(relay_mod, "relay", lambda stream, text: seen.append((stream, text)) or True)
+    assert notify_mod.notify("hi") is True
+    assert seen == [("reminders", "hi")]
+
+
+def test_stream_is_configurable(monkeypatch):
+    _no_children(monkeypatch)
+    monkeypatch.setenv("SCHEDULE_RELAY_STREAM", "infra")
+    seen = []
+    monkeypatch.setattr(relay_mod, "deliver", lambda stream, text: seen.append(stream) or RECEIPT)
+    notify_mod.deliver("hi")
+    assert seen == ["infra"]
+
+
+def test_relay_cmd_override_still_wins(monkeypatch):
     seen = {}
 
     class _R:
-        returncode = rc
+        returncode = 0
+        stdout = ""
 
     def fake_run(argv, **kwargs):
         seen["argv"] = argv
         return _R()
 
     monkeypatch.setattr(notify_mod.subprocess, "run", fake_run)
-    for var in ("SCHEDULE_RELAY_CMD", "SCHEDULE_RELAY_PY", "SCHEDULE_RELAY_STREAM"):
-        monkeypatch.delenv(var, raising=False)
-    return seen
-
-
-def _stub_dm(monkeypatch, result=True):
-    """Record calls to the native Big Brother DM instead of hitting Discord."""
-    dm = {}
-    monkeypatch.setattr(bb_mod, "send_dm", lambda text: (dm.update(text=text), result)[1])
-    return dm
-
-
-def test_default_goes_to_relay_reminders_channel(monkeypatch):
-    """The default egress is the Agent Center #reminders channel, NOT the DM."""
-    seen = _capture(monkeypatch)
-    monkeypatch.setattr(notify_mod.os.path, "isfile", lambda p: p.endswith("relay.py"))
-    assert notify_mod.notify("hi") is True
-    argv = seen["argv"]
-    assert any(a.endswith("relay.py") for a in argv), "must route through relay.py"
-    assert "send" in argv and "--stream" in argv
-    assert argv[argv.index("--stream") + 1] == "reminders"
-    assert argv[argv.index("--text") + 1] == "hi"
-
-
-def test_default_is_not_the_big_brother_dm(monkeypatch):
-    """Regression: the DM must not be chosen while relay.py exists (reminders go to the channel)."""
-    _capture(monkeypatch)
-    dm = _stub_dm(monkeypatch)
-    monkeypatch.setattr(notify_mod.os.path, "isfile", lambda p: True)  # relay.py exists
-    notify_mod.notify("hi")
-    assert dm == {}, "the native DM must not fire while relay.py is available"
-
-
-def test_relay_cmd_override_still_wins(monkeypatch):
-    """The test seam must keep top priority — otherwise the tick tests hit real Discord."""
-    seen = _capture(monkeypatch)
     monkeypatch.setenv("SCHEDULE_RELAY_CMD", "python stub.py")
-    monkeypatch.setattr(notify_mod.os.path, "isfile", lambda p: True)
+    monkeypatch.setattr(relay_mod, "relay", lambda *a: (_ for _ in ()).throw(AssertionError("relay used")))
     assert notify_mod.notify("hi") is True
     assert seen["argv"] == ["python", "stub.py", "hi"]
+    assert notify_mod.deliver("hi") is True
 
 
-def test_stream_is_configurable(monkeypatch):
-    seen = _capture(monkeypatch)
-    monkeypatch.setenv("SCHEDULE_RELAY_STREAM", "infra")
-    monkeypatch.setattr(notify_mod.os.path, "isfile", lambda p: p.endswith("relay.py"))
-    notify_mod.notify("hi")
-    argv = seen["argv"]
-    assert argv[argv.index("--stream") + 1] == "infra"
-
-
-def test_falls_back_to_native_dm_when_relay_missing(monkeypatch):
-    """Standalone install (no relay.py): the reminder still gets delivered via the native DM."""
-    _capture(monkeypatch)
-    dm = _stub_dm(monkeypatch, result=True)
-    monkeypatch.setattr(notify_mod.os.path, "isfile", lambda p: False)  # no relay.py
-    assert notify_mod.notify("hi") is True
-    assert dm.get("text") == "hi", "must fall back to bigbrother.send_dm"
-
-
-def test_returns_false_when_nothing_delivers(monkeypatch):
-    """No relay.py and the DM fails -> False, never raises."""
-    _capture(monkeypatch)
-    _stub_dm(monkeypatch, result=False)
-    monkeypatch.setattr(notify_mod.os.path, "isfile", lambda p: False)
+def test_text_notify_failure_returns_false_never_raises(monkeypatch):
+    _no_children(monkeypatch)
+    def boom(stream, text):
+        raise OSError("synthetic transport failure")
+    monkeypatch.setattr(relay_mod, "relay", boom)
     assert notify_mod.notify("hi") is False
-
-
-def test_delivery_failure_returns_false_never_raises(monkeypatch):
-    seen = _capture(monkeypatch, rc=1)
-    monkeypatch.setattr(notify_mod.os.path, "isfile", lambda p: p.endswith("relay.py"))
+    monkeypatch.setattr(relay_mod, "relay", lambda stream, text: False)
     assert notify_mod.notify("hi") is False
-    assert seen["argv"]  # it did try

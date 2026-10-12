@@ -9,7 +9,6 @@
     "registry.json",
     "routes.json",
     "data/db.sqlite3*",
-    "data/readiness.json",
     "state/**",
     "data/state/**",
     "agent-runs/**",
@@ -56,19 +55,6 @@
       "retention_rule": {
         "class": "core",
         "rule": "Retain current state and required audit history. Remove sidecars only through SQLite or after a verified cold shutdown."
-      }
-    },
-    {
-      "artifact_id": "readiness",
-      "path_pattern": "data/readiness.json",
-      "purpose": "Most recent worker identity and measured delivery receipts.",
-      "schema": "scripts/capabilities.py readiness schema version 1.",
-      "producer": "scheduler_worker.py after confirmed delivery.",
-      "consumer_or_final_deliverable": "reminder.py health and installation readiness.",
-      "rebuild_or_restore": "A real successful worker delivery regenerates evidence; copied or synthetic receipts cannot establish external readiness.",
-      "retention_rule": {
-        "class": "core",
-        "rule": "Retain the latest measured evidence; freshness is evaluated by health, independently of storage retention."
       }
     },
     {

@@ -42,7 +42,7 @@ TWO TRANSPORTS, ONE EGRESS
     point of a single egress is that adding a capability here retires a fork out there.
 
 ROBUSTNESS
-    Unknown stream / missing registry  -> fall back to Big Brother DM (via notify.py) so a message is
+    Unknown stream / missing registry  -> fall back to Big Brother DM (via bigbrother.py) so a message is
     never silently lost; a one-line warning goes to stderr (never the webhook URL).
     A bot send has NO such fallback and returns False: it is addressed at one specific channel, and
     silently rerouting "the answer to what you just typed in #here" into a DM is worse than a

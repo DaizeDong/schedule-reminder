@@ -15,7 +15,7 @@ new release declaration.
 - A read-only work feed, manual completion receipts and explicitly reviewed Task Console links.
 - Business-event notification receipts that preserve uncertain delivery for reconciliation.
 - Serial work execution with full requests, verification and stop ownership.
-- Installation plans, registered-task readback and identity-bound readiness evidence.
+- Installation plans and registered-task readback.
 - An explicit settings contract, blank registry initializer and read-only configuration doctor.
   Database initialization remains an explicit separate operation; see [CONFIG.md](CONFIG.md).
 
@@ -26,7 +26,6 @@ new release declaration.
 - Complete shared guard integration and fresh independent source reviews.
 - Validate native workers and installation separately from source inspection. Configuration-only
   offline checks do not establish worker readiness, delivery, restoration or publication.
-- Keep report success, synthetic delivery and verified external readiness distinct.
 - Verify installed llmcall process containment, cleanup receipts and model-family metadata before
   claiming executable work readiness; missing typed evidence leaves work unresolved.
 

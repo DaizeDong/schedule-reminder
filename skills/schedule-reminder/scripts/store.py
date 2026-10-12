@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 import uuid as _uuid
@@ -174,7 +175,10 @@ def default_db_path():
 
 
 def _connect(db_path=None, *, readonly=False, create=False, immutable=False):
-    """Open a connection in autocommit mode (isolation_level=None) so WE control BEGIN IMMEDIATE."""
+    """Open a connection in autocommit mode (isolation_level=None) so WE control BEGIN IMMEDIATE.
+
+    A write connection checks the database path and its sidecars once (no alias, outside the
+    public tree). Read-only connections cannot write anything and skip that walk."""
     path = db_path or default_db_path()
     if not readonly:
         try:
@@ -192,13 +196,9 @@ def _connect(db_path=None, *, readonly=False, create=False, immutable=False):
     try:
         if create:
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        if not readonly:
-            private_data.assert_sqlite_paths(path)
         conn = sqlite3.connect(target, uri=readonly, isolation_level=None, timeout=10.0)
     except PermissionError as error:
         raise SkillError('ERR_PERMISSION', str(error)) from error
-    except ValueError as error:
-        raise SkillError('ERR_DATA_POLICY', str(error)) from error
     conn.row_factory = sqlite3.Row
     # Connection-level pragmas (busy_timeout is NOT persistent, must be set per connection).
     conn.execute("PRAGMA busy_timeout = 10000")
@@ -208,17 +208,8 @@ def _connect(db_path=None, *, readonly=False, create=False, immutable=False):
     return conn
 
 
-def admitted_connection(db_path=None, *, readonly=False):
-    """Open existing PRIVATE storage without creating it or migrating its schema."""
-    path = db_path or default_db_path()
-    try:
-        private_data.assert_sqlite_paths(path)
-        private_data.check_destination(path)
-    except PermissionError as error:
-        raise SkillError("ERR_PERMISSION", str(error)) from error
-    except ValueError as error:
-        raise SkillError("ERR_DATA_POLICY", str(error)) from error
-    return _connect(path, readonly=readonly)
+# Public name for sibling modules: opening existing PRIVATE storage is just _connect.
+admitted_connection = _connect
 
 
 def _busy_retry(fn):
@@ -645,7 +636,7 @@ def creation_preflight(title, *, db_path=None, **fields):
     if not os.path.isfile(path):
         raise SkillError('ERR_NOT_INITIALIZED', 'initialize the owner before creation preflight')
     proposed = creation_guard.candidate(title, **fields)
-    conn = admitted_connection(path, readonly=True)
+    conn = _connect(path, readonly=True)
     try:
         return creation_guard.inspect(conn, proposed)
     finally:
@@ -664,7 +655,7 @@ def _dispatch_note_identity(item_id, note, request_key):
 def dispatch_note_receipt(item_id, note, request_key, *, db_path=None):
     """Recover an exact follow-up receipt without appending or reopening its target."""
     identity = _dispatch_note_identity(item_id, note, request_key)
-    conn = admitted_connection(db_path, readonly=True)
+    conn = _connect(db_path, readonly=True)
     try:
         conn.execute('BEGIN')
         seen = conn.execute('SELECT value FROM meta WHERE key=?',
@@ -687,7 +678,7 @@ def creation_receipt_item(source, idempotency_key, *, db_path=None):
     if any(not isinstance(value, str) or not value.strip() for value in (source, idempotency_key)):
         raise SkillError('ERR_BAD_INPUT', 'source and idempotency_key must be nonempty strings')
     key = 'creation:' + creation_guard._digest([source, idempotency_key])
-    conn = admitted_connection(db_path, readonly=True)
+    conn = _connect(db_path, readonly=True)
     try:
         conn.execute('BEGIN')
         row = conn.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()
@@ -1225,20 +1216,15 @@ def _next_due(due_dt, recurrence, after_dt, exdate=None):
 # tick, due dispatch reconciliation (at-least-once + idempotent dedupe + back-off retry)
 # =================================================================================================
 def _default_notify(item):
-    """Bridge to receipt-aware notify.deliver; bool fallbacks do not prove readiness."""
-    try:
-        from notify import deliver as notify  # type: ignore
-    except Exception:
-        import importlib.util
-        here = os.path.dirname(os.path.abspath(__file__))
-        spec = importlib.util.spec_from_file_location("notify", os.path.join(here, "notify.py"))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # type: ignore
-        notify = mod.deliver
+    """Deliver through notify.deliver, which calls the sibling relay in this process."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from notify import deliver  # type: ignore
     title = item.get("title", "(no title)")
     due = item.get("due_at", "")
     text = "[reminder] %s%s" % (title, ("  (due %s)" % due if due else ""))
-    return notify(text)
+    return deliver(text)
 
 
 
@@ -1277,25 +1263,30 @@ def _release_notification_claim(conn, snapshot):
 def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor="tick"):
     """Reconcile due items: claim -> notify (outside tx) -> mark notified | back-off retry.
 
+    The candidate scan runs on a read-only connection. A write connection opens only when a row
+    is actually claimed (or the lapsed sweep has something to close), so the usual tick, with
+    nothing due, takes no writer lock at all.
+
     Concurrency-safe claim (cross-process): the claim UPDATE is exclusive on `claimed_at` (only an
     unclaimed-or-stale row may be grabbed), and the SELECT skips freshly-claimed rows. Two ticks
-    overlapping (manual tick vs the PT5M heartbeat, or a tick running >5 min) therefore never both
-    dispatch the same item — the in-process RLock alone cannot serialise separate tick processes.
-    Stale claims (older than _CLAIM_TTL, left by a crashed tick) are reclaimed so nothing wedges.
+    overlapping (manual tick vs the PT5M task, or a tick running >5 min) therefore never both
+    dispatch the same item. Stale claims (older than _CLAIM_TTL, left by a crashed tick) are
+    reclaimed so nothing wedges.
 
     Alarm-aware: an item fires when due_at - max(global lead, per-alarm lead) <= now (§4.5).
     Recurring: on successful fire a recurrence (RRULE) item rolls to its next future occurrence and
     re-arms (notified_at cleared) instead of being permanently marked notified (§2.4).
     """
+    from datetime import timedelta
     now_s = resolve_now(now)
     now_dt = parse_dt(now_s)
     notify_fn = notify_fn or _default_notify
-    conn = _connect(db_path, readonly=dry_run)
-    dispatched, retried, blocked, skipped, receipts = [], [], [], [], []
+    reader = _connect(db_path, readonly=True)
+    conn = None
+    dispatched, retried, blocked, skipped = [], [], [], []
     try:
-        from datetime import timedelta
         stale = to_rfc3339(now_dt - timedelta(seconds=_CLAIM_TTL))
-        rows = conn.execute(
+        rows = reader.execute(
             _NOTIFICATION_SELECT + "WHERE due_at IS NOT NULL "
             "AND state NOT IN ('done','cancelled') "
             "AND notified_at IS NULL AND COALESCE(retry_count,0) < ? "
@@ -1304,22 +1295,6 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
             "AND (claimed_at IS NULL OR claimed_at <= ?) ORDER BY due_at ASC",
             (_NOTIFY_MAX_RETRIES, now_s, now_s, stale),
         ).fetchall()
-
-        # 被别人握着的那些,在**查询阶段**就被上面那条 `claimed_at <= stale` 排除掉了,
-        # 所以它们根本走不到下面的 CAS,也就永远不会进 `skipped`。
-        # ⚠ CAS 旁边那句注释写的是「输给 CAS -> skipped」, 那只对一个很窄的竞态成立
-        # (查询时还没被认领、查询与 UPDATE 之间被别人抢走)。常见的那条路上,
-        # 一个正在被另一次 tick 处理的提醒**在输出里完全不可见**:
-        # 它既不在 dispatched 也不在 skipped,只能从 undelivered 里间接看出来。
-        # 「有 3 条被别人握着」和「有 3 条谁都没管」需要的反应完全不同。
-        held = [r["id"] for r in conn.execute(
-            "SELECT id FROM items WHERE due_at IS NOT NULL "
-            "AND state NOT IN ('done','cancelled') "
-            "AND notified_at IS NULL AND COALESCE(retry_count,0) < ? "
-            "AND (next_retry_at IS NULL OR next_retry_at <= ?) "
-            "AND (wait_until IS NULL OR wait_until <= ?) "
-            "AND claimed_at IS NOT NULL AND claimed_at > ? ORDER BY due_at ASC",
-            (_NOTIFY_MAX_RETRIES, now_s, now_s, stale)).fetchall()]
 
         for row in rows:
             row = dict(row)
@@ -1333,6 +1308,8 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
                 dispatched.append(item_id)
                 continue
 
+            if conn is None:
+                conn = _connect(db_path)
             # The SELECT is only a candidate list. Recheck the full row and its
             # audit revision while holding the database write transaction.
             with _Tx(conn):
@@ -1386,34 +1363,23 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
                             )
                         _append_event(conn, item_id, actor, "notified", payload=payload)
                 dispatched.append(item_id)
-                if isinstance(delivered, dict) and delivered.get("receipt_id") and delivered.get("kind"):
-                    receipts.append(delivered)
             else:
                 _record_notify_failure(conn, item_id, now_s, "notify returned falsey",
                                        blocked, retried, actor, claim)
 
-        # A preview cannot replace the real worker heartbeat.
-        if not dry_run:
-            with _Tx(conn):
-                conn.execute("INSERT INTO meta(key,value) VALUES('last_tick_at',?) "
-                             "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (now_s,))
-                conn.execute(
-                    "INSERT INTO meta(key,value) VALUES('tick_count','1') "
-                    "ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)")
         # The sweep rides the tick rather than getting its own schedule: a separate task is a
         # fourth thing to register, monitor and back up, and this one has nothing to do that
-        # the tick is not already awake for.
-        swept = sweep_lapsed(now=now_s, dry_run=dry_run, db_path=db_path, actor=actor)
+        # the tick is not already awake for. It scans on the tick's read connection.
+        swept = sweep_lapsed(now=now_s, dry_run=dry_run, db_path=db_path, actor=actor,
+                             connection=reader)
         return {"dispatched": dispatched, "retried": retried, "blocked": blocked,
-                "delivery_receipts": receipts,
                 "skipped": skipped,
-                # 被另一次 tick 握着的条目。新增键,不动 skipped 的语义:
-                # skipped 一直是「走到认领这一步才输掉」,而这是「压根没被选中」。
-                "heldByOther": held,
                 "now": now_s,
                 "lapsed": swept["lapsed"], "undelivered": swept["undelivered"]}
     finally:
-        conn.close()
+        reader.close()
+        if conn is not None:
+            conn.close()
 
 
 # --- lapsed sweep ---------------------------------------------------------------------------
@@ -1423,19 +1389,24 @@ def tick(*, now=None, lead=0, dry_run=False, notify_fn=None, db_path=None, actor
 _LAPSE_GRACE_DAYS = int(os.environ.get("SCHEDULE_LAPSE_GRACE_DAYS", "7"))
 
 
-def sweep_lapsed(*, now=None, grace_days=None, dry_run=False, db_path=None, actor="sweep"):
+def sweep_lapsed(*, now=None, grace_days=None, dry_run=False, db_path=None, actor="sweep",
+                 connection=None):
     """Cancel delivered one-shot reminders after the configured grace period.
-    
-    Undelivered, doing, blocked and recurring items remain open. Undelivered items are reported separately. Eligibility is rechecked inside the transaction; dry-run reports without mutating."""
+
+    Undelivered, doing, blocked and recurring items remain open. Undelivered items are reported
+    separately. The scan uses `connection` when given (the tick passes its read connection) and a
+    write connection opens only when a row is actually closed. Eligibility is rechecked inside the
+    transaction; dry-run reports without mutating."""
     from datetime import timedelta
 
     grace = _LAPSE_GRACE_DAYS if grace_days is None else int(grace_days)
     now_s = resolve_now(now)
     cutoff = to_rfc3339(parse_dt(now_s) - timedelta(days=grace))
-    conn = _connect(db_path, readonly=dry_run)
+    reader = connection or _connect(db_path, readonly=True)
+    conn = None
     lapsed, undelivered = [], []
     try:
-        rows = conn.execute(
+        rows = reader.execute(
             "SELECT id, title, due_at, notified_at FROM items "
             "WHERE state = 'pending' AND due_at IS NOT NULL AND due_at < ? "
             "AND (recurrence IS NULL OR recurrence = '') ORDER BY due_at ASC",
@@ -1449,6 +1420,8 @@ def sweep_lapsed(*, now=None, grace_days=None, dry_run=False, db_path=None, acto
                 lapsed.append({"id": r["id"], "title": r["title"], "due_at": r["due_at"]})
                 continue
             try:
+                if conn is None:
+                    conn = _connect(db_path)
                 with _Tx(conn):
                     fresh = _get_raw(conn, r["id"])
                     if not (fresh and fresh["state"] == "pending" and fresh["due_at"]
@@ -1469,7 +1442,10 @@ def sweep_lapsed(*, now=None, grace_days=None, dry_run=False, db_path=None, acto
                 undelivered.append({"id": r["id"], "title": r["title"], "due_at": r["due_at"],
                                     "error": str(e)})
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
+        if connection is None:
+            reader.close()
     return {"lapsed": lapsed, "undelivered": undelivered,
             "grace_days": grace, "cutoff": cutoff, "dry_run": bool(dry_run)}
 
@@ -1527,7 +1503,7 @@ def _ver_tuple(s):
     return tuple(int(x) for x in s.split("."))
 
 
-def health(*, db_path=None, check_task=False, capabilities=None):
+def health(*, db_path=None):
     path = db_path or default_db_path()
     out = {
         "api_version": API_VERSION,
@@ -1538,7 +1514,7 @@ def health(*, db_path=None, check_task=False, capabilities=None):
         "recommended_sqlite": RECOMMENDED_SQLITE,
         "db_path": path,
         "db_ok": False, "wal_ok": False, "integrity_ok": False,
-        "relay_ok": False, "task_ok": None,
+        "relay_ok": False,
         "warnings": [],
     }
     try:
@@ -1570,19 +1546,16 @@ def health(*, db_path=None, check_task=False, capabilities=None):
             "install pysqlite3-binary or a newer Python for full safety."
             % (sqlite3.sqlite_version, RECOMMENDED_SQLITE))
 
-    # relay reachability = the egress (relay.py) is present, no token echo
-    relay_py = os.environ.get("SCHEDULE_RELAY_PY",
-                              os.path.join(os.path.dirname(os.path.abspath(__file__)), "relay.py"))
-    relay_cmd = os.environ.get("SCHEDULE_RELAY_CMD")
-    out["relay_ok"] = bool(relay_cmd) or os.path.isfile(relay_py)
-    if not out["relay_ok"]:
-        out["warnings"].append("relay not found: relay.py missing and no SCHEDULE_RELAY_CMD set")
-
-    from capabilities import readiness
-    out["readiness"] = readiness(out, capabilities)
-    if check_task:
-        out["task_ok"] = all(row['status'] == 'ready' for name, row in out['readiness']['capabilities'].items()
-                             if row['selected'] and name != 'store')
+    # Delivery needs the relay registry (or an explicit SCHEDULE_RELAY_CMD). No network, no
+    # token echo, no Task Scheduler query: Task Scheduler keeps its own LastRunTime/LastTaskResult.
+    try:
+        registry = private_data.registry_path()
+        out["relay_ok"] = bool(os.environ.get("SCHEDULE_RELAY_CMD")) or registry.is_file()
+    except (OSError, ValueError) as error:
+        registry, out["relay_ok"] = None, False
+        out["warnings"].append("relay registry unresolved: %s" % error)
+    if not out["relay_ok"] and registry is not None:
+        out["warnings"].append("relay registry not found: %s" % registry)
     return out
 
 
@@ -1641,7 +1614,7 @@ def _migrate_work_evidence(conn):
 
 
 def work_operation(item_id, *, db_path=None):
-    conn = admitted_connection(db_path, readonly=True)
+    conn = _connect(db_path, readonly=True)
     try:
         return _operation(conn, item_id)
     finally:
@@ -1649,7 +1622,7 @@ def work_operation(item_id, *, db_path=None):
 
 
 def work_reservations(*, db_path=None):
-    conn = admitted_connection(db_path, readonly=True)
+    conn = _connect(db_path, readonly=True)
     try:
         return [dict(row) for row in conn.execute(
             "SELECT * FROM agent_operations WHERE released_at IS NULL")]

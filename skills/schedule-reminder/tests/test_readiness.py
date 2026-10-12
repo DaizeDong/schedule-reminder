@@ -1,6 +1,5 @@
-"""Capability acceptance uses generated records, real workers, and offline platform adapters."""
+"""Installer plans, task readback and end-to-end ingest use generated records and offline adapters."""
 from copy import deepcopy
-from datetime import datetime, timedelta
 import importlib
 import json
 import os
@@ -13,14 +12,11 @@ import xml.etree.ElementTree as ET
 import pytest
 import agent_run
 import agent_task
-import capabilities as cap
 import dispatch
 import ingest
 import ingest_tick
 import installer
 import private_data
-import relay
-import scheduler_worker
 import store
 
 FIX = json.loads((Path(__file__).parent/'capability_cases.json').read_text(encoding='utf-8'))
@@ -33,10 +29,7 @@ def configured(tmp_path, monkeypatch, selection='store,remind'):
     store.init_db(str(database))
     monkeypatch.setenv('SCHEDULE_DB_PATH', str(database))
     monkeypatch.setenv('SCHEDULE_CAPABILITIES', selection)
-    plan = cap.plan(selection, str(database), config=str(config))
-    rows = {r['task']['name']: r for name, r in plan['capabilities'].items() if name in cap.TASKS and r['selected']}
-    monkeypatch.setattr(cap, 'read_task_xml', lambda name: installer.task_xml(rows[name], FIX['user']))
-    return database, config, plan
+    return database, config, installer.plan(selection, str(database), config=str(config))
 
 
 def snapshot(root):
@@ -47,9 +40,9 @@ def snapshot(root):
 def test_plan_default_empty_unsupported_without_effects(tmp_path, monkeypatch):
     monkeypatch.delenv('SCHEDULE_CAPABILITIES', raising=False)
     before = snapshot(tmp_path)
-    planned = cap.plan()
+    planned = installer.plan()
     assert [k for k, r in planned['capabilities'].items() if r['selected']] == ['store', 'remind']
-    assert set(planned['capabilities']) == set(cap.GROUPS)
+    assert set(planned['capabilities']) == set(installer.GROUPS)
     assert installer.install('')[0] == 0
     with pytest.raises(ValueError, match='unsupported'):
         installer.install(FIX['invalid_capability'])
@@ -76,15 +69,22 @@ def test_public_powershell_plan_selection_without_effects(tmp_path, monkeypatch,
         assert {name for name, row in report['capabilities'].items() if row['selected']} == expected
 
 
-@pytest.mark.parametrize('group,seconds', [('remind', 300), ('ingest', 600), ('work', 120)])
-def test_plan_dependencies_and_correct_task(group, seconds):
-    plan = cap.plan(group)
+@pytest.mark.parametrize('group,seconds,entry', [('remind', 300, 'reminder.py'),
+                                                 ('ingest', 600, 'ingest_tick.py'),
+                                                 ('work', 120, 'agent_tick.py')])
+def test_plan_registers_the_real_entrypoint(group, seconds, entry):
+    plan = installer.plan(group)
     row = plan['capabilities'][group]
-    assert row['selected'] and row['runtime'] and row['adapter']
+    assert row['selected'] and row['runtime'] and Path(row['entrypoint']).name == entry
+    assert Path(row['entrypoint']).is_file()
+    arguments = installer._arguments(row['task']['arguments'])
+    assert Path(arguments[0]).name == entry and 'scheduler_worker' not in row['task']['arguments']
+    if group == 'remind':
+        assert arguments[1:] == ['--db', plan['dependencies']['store']['db_path'], 'tick']
     assert row['task']['interval_seconds'] == seconds
     assert plan['dependencies']['store']['required'] and plan['dependencies']['relay']['required']
     assert plan['dependencies']['llmcall']['required'] == (group != 'remind')
-    assert cap.verify_task(installer.task_xml(row, FIX['user']), row)[0]
+    assert installer.verify_task(installer.task_xml(row, FIX['user']), row)[0]
 
 
 @pytest.mark.parametrize('element,value', [
@@ -94,7 +94,7 @@ def test_plan_dependencies_and_correct_task(group, seconds):
     ('./Triggers/TimeTrigger/Repetition/Duration', 'P1D'), ('./Triggers/TimeTrigger/EndBoundary', FIX['now']),
 ])
 def test_task_readback_rejects_action_and_schedule_drift(element, value):
-    row = cap.plan('remind')['capabilities']['remind']
+    row = installer.plan('remind')['capabilities']['remind']
     root = ET.fromstring(installer.task_xml(row, FIX['user']))
     for node in root.iter():
         node.tag = node.tag.rsplit('}', 1)[-1]
@@ -103,14 +103,14 @@ def test_task_readback_rejects_action_and_schedule_drift(element, value):
     if node is None:
         node = ET.SubElement(root.find(parent), name)
     node.text = value
-    assert not cap.verify_task(ET.tostring(root, encoding='unicode'), row)[0]
+    assert not installer.verify_task(ET.tostring(root, encoding='unicode'), row)[0]
 
 
 def test_registration_success_requires_separate_readback(tmp_path, monkeypatch):
     database, config, plan = configured(tmp_path, monkeypatch)
     row = plan['capabilities']['remind']
     calls = []
-    monkeypatch.setattr(cap, 'read_task_xml', lambda name: '<Task/>')
+    monkeypatch.setattr(installer, 'read_task_xml', lambda name: '<Task/>')
     original = subprocess.run
     def run(argv, **kwargs):
         if argv[0] == 'schtasks':
@@ -121,114 +121,20 @@ def test_registration_success_requires_separate_readback(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match='readback'):
         installer.register(row, tmp_path)
     assert len(calls) == 1
-    monkeypatch.setattr(cap, 'read_task_xml', lambda name: installer.task_xml(row, FIX['user']))
+    monkeypatch.setattr(installer, 'read_task_xml', lambda name: installer.task_xml(row, FIX['user']))
     assert installer.register(row, tmp_path)['registered'] is False
     assert len(calls) == 1
 
 
-def test_selected_import_probe_uses_actual_runtime_and_adapter(monkeypatch):
-    for group in cap.TASKS:
-        row = cap.plan(group)['capabilities'][group]
-        assert cap.probe_runtime(row)
-        row['runtime'] = str(Path(row['runtime']).with_name('missing-python'))
-        with pytest.raises(OSError):
-            cap.probe_runtime(row)
-
-
-def test_installer_does_not_call_report_success_readiness(tmp_path, monkeypatch):
+def test_install_succeeds_on_a_healthy_store_and_present_registry(tmp_path, monkeypatch):
+    """Install used to exit nonzero forever, waiting for readiness evidence nothing produced."""
     database, config, _ = configured(tmp_path, monkeypatch)
-    code, result = installer.install('store,remind', str(database), config=str(config))
-    assert code != 0
-    assert result['health']['readiness']['capabilities']['remind']['status'] == 'unmeasured'
+    code, result = installer.install('store,remind', str(database), config=str(config), no_task=True)
+    assert code == 0 and result['health']['integrity_ok'] and result['relay_registry'] is True
+    assert 'readiness' not in result['health']
+    config.unlink()
+    assert installer.install('store,remind', str(database), config=str(config), no_task=True)[0] == 1
     assert installer.install('store', str(database))[0] == 0
-
-
-def wire_delivery(monkeypatch, response=None, fail=False):
-    delivered = []
-    class Response:
-        status = 200
-        def __enter__(self): return self
-        def __exit__(self, *args): pass
-        def read(self):
-            return json.dumps(response if response is not None else {'id': FIX['message_id']}).encode()
-    def send(request, **kwargs):
-        delivered.append(request.full_url)
-        if fail:
-            raise OSError('synthetic transport failure')
-        return Response()
-    monkeypatch.setattr(relay.urllib.request, 'urlopen', send)
-    return delivered
-
-
-def test_actual_reminder_worker_publishes_normal_evidence_health_reads_only(tmp_path, monkeypatch):
-    database, config, plan = configured(tmp_path, monkeypatch)
-    delivered = wire_delivery(monkeypatch)
-    store.add_item(title=FIX['title'], due_at=FIX['now'], db_path=str(database))
-    monkeypatch.setenv('SCHEDULE_NOW', FIX['now'])
-    assert scheduler_worker.run('remind', str(database), str(config))['status'] == 'completed'
-    assert len(delivered) == 1 and 'wait=true' in delivered[0]
-    record = json.loads((tmp_path/'readiness.json').read_text())['tasks']['remind']
-    assert cap.valid_evidence(record, cap.task_identity(plan['capabilities']['remind'], config))[0]
-    before = snapshot(tmp_path)
-    measured = store.health(db_path=str(database))
-    assert measured['readiness']['ready']
-    assert snapshot(tmp_path) == before and len(delivered) == 1
-
-
-@pytest.mark.parametrize('failure', ['exception', 'no_receipt'])
-def test_failed_worker_never_publishes_delivered_success(tmp_path, monkeypatch, failure):
-    database, config, _ = configured(tmp_path, monkeypatch)
-    wire_delivery(monkeypatch, response={}, fail=failure == 'exception')
-    store.add_item(title=FIX['title'], due_at=FIX['now'], db_path=str(database))
-    monkeypatch.setenv('SCHEDULE_NOW', FIX['now'])
-    result = scheduler_worker.run('remind', str(database), str(config))
-    assert result['status'] == 'partial' and result['retried']
-    assert not (tmp_path/'readiness.json').exists()
-
-
-@pytest.mark.parametrize('age,valid', [(900, True), (900.001, False), (-60, True), (-60.001, False)])
-def test_evidence_time_boundaries(tmp_path, age, valid):
-    config = tmp_path/'registry.json'
-    config.write_text(json.dumps(FIX['registry']))
-    row = cap.plan('remind', config=str(config))['capabilities']['remind']
-    identity = cap.task_identity(row, config)
-    now = datetime.fromisoformat(FIX['now'])
-    stamp = (now-timedelta(seconds=age)).isoformat()
-    record = {**identity, 'last_success': stamp,
-              'dispatch': {**identity, **FIX['external_receipt'], 'completed_at': stamp}}
-    assert cap.valid_evidence(record, identity, now)[0] is valid
-
-
-@pytest.mark.parametrize('field', cap.IDENTITY)
-def test_evidence_binds_each_worker_and_dispatch_identity(tmp_path, field):
-    config = tmp_path/'registry.json'
-    config.write_text(json.dumps(FIX['registry']))
-    identity = cap.task_identity(cap.plan('remind', config=str(config))['capabilities']['remind'], config)
-    record = {**identity, 'last_success': FIX['now'],
-              'dispatch': {**identity, **FIX['external_receipt'], 'completed_at': FIX['now']}}
-    now = datetime.fromisoformat(FIX['now'])
-    for container in (record, record['dispatch']):
-        before = container[field]
-        container[field] = None
-        assert not cap.valid_evidence(record, identity, now)[0]
-        container[field] = before
-
-
-def test_config_change_and_remind_receipt_do_not_promote_other_workers(tmp_path, monkeypatch):
-    database, config, _ = configured(tmp_path, monkeypatch, 'store,remind,ingest,work')
-    cap.publish_delivery('remind', FIX['external_receipt'], database, config)
-    rows = store.health(db_path=str(database))['readiness']['capabilities']
-    assert rows['remind']['status'] == 'ready'
-    assert all(rows[name]['selected'] and rows[name]['status'] == 'unmeasured' for name in ('ingest', 'work'))
-    config.write_text(json.dumps(FIX['changed_config']))
-    assert store.health(db_path=str(database))['readiness']['capabilities']['remind']['status'] == 'partial'
-
-
-def test_synthetic_delivery_cannot_establish_external_readiness(tmp_path, monkeypatch):
-    database, config, _ = configured(tmp_path, monkeypatch)
-    cap.publish_delivery('remind', FIX['receipt'], database, config)
-    report = store.health(db_path=str(database))['readiness']
-    assert not report['ready'] and not report['capabilities']['remind']['external_ready']
 
 
 def test_linked_private_repo_and_explicit_db_precedence(tmp_path, monkeypatch):
@@ -288,22 +194,6 @@ def test_missing_llmcall_and_runner_environment_are_preserved(monkeypatch):
         agent_run._llm(FIX['request'], None, 'agent')
     with pytest.raises(ModuleNotFoundError):
         dispatch.call_chain(FIX['request'])
-
-
-@pytest.mark.parametrize('value', [[], None, False])
-def test_malformed_evidence_still_produces_incomplete_health(tmp_path, monkeypatch, value):
-    database, _, _ = configured(tmp_path, monkeypatch)
-    (tmp_path/'readiness.json').write_text(json.dumps(value))
-    report = store.health(db_path=str(database))['readiness']
-    assert not report['ready']
-    assert report['capabilities']['remind']['status'] == 'unmeasured'
-
-
-def test_boolean_exit_code_cannot_publish_success(tmp_path, monkeypatch):
-    database, config, _ = configured(tmp_path, monkeypatch)
-    receipt = {**FIX['receipt'], 'exit_code': False}
-    assert not cap.publish_delivery('remind', receipt, database, config)
-    assert not (tmp_path/'readiness.json').exists()
 
 
 def test_dispatch_uses_result_text_and_installed_policy(monkeypatch):

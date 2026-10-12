@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Plan or install selected capabilities and require measured readiness.
+  Plan or install selected capabilities: database, scheduled tasks with readback, health.
 .PARAMETER Capabilities
   Comma-separated store,remind,ingest,work. Omitted means store,remind; empty is a no-op.
 .PARAMETER Plan

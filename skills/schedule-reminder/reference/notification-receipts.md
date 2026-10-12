@@ -72,15 +72,14 @@ identity or invalid event is an explicitly unpersisted refusal. Dry runs are unp
 not send. If a producer exception prevents a definitive result, the client returns `reconcile`,
 `persisted: null`, and the derived event ID. It does not claim that a durable send marker is absent.
 
-`notify.notify_occurrence(run_id, content, ...)` preserves the reminder command override, selected
-stream and standalone routing. `notify.notify(content, run_id=...)` provides a boolean wrapper;
-only `sent` returns true. Existing `notify.notify(content)` callers keep their legacy transport
-until their owner supplies a stable occurrence identity. Their behavior does not change merely
+`notify.notify_occurrence(run_id, content, ...)` delivers through the in-process relay on the
+selected stream, or through `SCHEDULE_RELAY_CMD` when that override is set. `notify.notify(content, run_id=...)` provides a boolean wrapper;
+only `sent` returns true. Existing `notify.notify(content)` callers get the boolean in-process
+relay send until their owner supplies a stable occurrence identity. Their behavior does not change merely
 because a task-level run ID appears in the environment.
 
 `relay.send` remains boolean. The separate `relay.deliver` and `notify.deliver` APIs retain their
-Discord message-ID receipts and readiness semantics. A business-event `sent` receipt is delivery
-confirmation only; it is not proof of external readiness. Legacy text delivery remains available.
+Discord message-ID receipts. Legacy text delivery remains available.
 
 ## UTF-8 command boundary
 

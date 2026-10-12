@@ -596,8 +596,9 @@ def test_message_id_delivery_contract_still_confirms_external_receipt(sandbox, m
 def test_legacy_notify_does_not_infer_occurrence_from_task_environment(sandbox, monkeypatch):
     import notify
     monkeypatch.setenv("TASK_RUN_ID", CASE["event"]["run_id"])
+    monkeypatch.delenv("SCHEDULE_RELAY_CMD", raising=False)
     sent = []
-    monkeypatch.setattr(notify, "_run", lambda argv: sent.append(argv) or True)
+    monkeypatch.setattr(relay, "relay", lambda stream, text: sent.append(text) or True)
     assert notify.notify(CASE["content"]) is True
     assert len(sent) == 1
     assert receipts.get_receipt(event().event_id) is None

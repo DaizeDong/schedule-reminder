@@ -17,9 +17,8 @@ import store  # noqa: E402
 # ---------- 1. the heartbeat must repeat forever ----------
 
 def _install_xml():
-    import capabilities
     import installer
-    return installer.task_xml(capabilities.plan("remind")["capabilities"]["remind"])
+    return installer.task_xml(installer.plan("remind")["capabilities"]["remind"])
 
 
 def test_heartbeat_repetition_is_unbounded():

@@ -305,7 +305,6 @@ def cases():
         'failed_receipt': {'kind': 'synthetic-local', 'receipt_id': 'synthetic-failure-31',
                            'delivered': False, 'exit_code': 1},
         'adapter_text': 'print("synthetic adapter")\n',
-        'changed_config': {'schema_version': 1, 'streams': {}, 'revision': 2},
         'invalid_capability': 'unknown-synthetic',
         'unknown_remote': 'https://github.com/example-owner/unknown-data.git',
         'user': 'SYNTHETIC\\user1',
@@ -345,7 +344,6 @@ def main():
     example_root = Path(args.out) if args.out else Path(__file__).resolve().parents[1]
     for filename, value in {
         'examples.json': public_example(),
-        'readiness.json.example': {'schema_version': 1, 'tasks': {}},
         'db.sqlite3.example': {'format': 'SQLite', 'schema_user_version': 6,
                                'tables': ['items', 'events', 'meta', 'agent_operations',
                                           'notification_receipts', 'work_actions', 'work_action_stops'],
