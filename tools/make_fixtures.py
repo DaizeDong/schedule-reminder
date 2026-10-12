@@ -852,11 +852,17 @@ def test_initialized_sibling_precedes_legacy_home_companion(defaults):
     assert private_data.registry_path() == defaults["companion"] / "registry.json"
 
 
-def test_legacy_home_companion_is_discovered_without_inferred_creation(defaults):
+def test_legacy_home_companion_is_never_discovered(defaults):
+    # A private repository at ~/.schedule-reminder-config is not a companion location: with no
+    # selector and no sibling, the answer is the uncreated sibling path, never the home dotfile.
     (defaults["companion"] / ".companion").unlink()
+    (defaults["companion"] / ".git/config").unlink()
+    (defaults["companion"] / ".git").rmdir()
+    defaults["companion"].rmdir()
     legacy = defaults["private_repository"](defaults["home"] / ".schedule-reminder-config")
-    assert private_data.config_root() == legacy
-    assert not (defaults["companion"] / "data").exists()
+    assert private_data.config_root() == defaults["companion"]
+    assert private_data.config_root() != legacy
+    assert not defaults["companion"].exists()
 
 
 def test_unproven_sibling_refuses_when_no_companion_is_initialized(defaults):

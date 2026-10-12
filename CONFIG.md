@@ -12,8 +12,8 @@ Keep the two selections consistent unless separate locations are deliberate and 
 
 For the companion root, the order is `SCHEDULE_REMINDER_CONFIG`, then `AGENT_CENTER_CONFIG`
 (its parent when it names a JSON file), then the pinned Guards convention:
-`SCHEDULE_REMINDER_CONFIG_DIR`, sibling `schedule-reminder-config`,
-`~/.schedule-reminder-config`, and `~/.schedule-reminder-data`. Explicit CONFIG and
+`SCHEDULE_REMINDER_CONFIG_DIR`, then sibling `schedule-reminder-config`; there is no
+home-directory location. Explicit CONFIG and
 AGENT_CENTER selections remain selected when missing. A DATA override is excluded from
 registry discovery. `SCHEDULE_REMINDER_DATA_DIR` selects runtime DATA directly; otherwise DATA
 is `<companion>/data`. `SCHEDULE_DB_PATH` overrides the default `<data>/db.sqlite3`, and
@@ -36,12 +36,19 @@ may be absent for existing registries; if present it must be `1`.
 | --- | --- |
 | `streams` | Nonempty object keyed by nonempty stream names; used by relay and inbound discovery |
 | `streams.<name>.webhook` | HTTPS URL for webhook delivery, or use the bot channel fields below |
-| `streams.<name>.channel_id` | Decimal string; bot delivery also requires `reader.bot_token` |
+| `streams.<name>.channel_id` | Decimal string; bot delivery also requires a bot token (below) |
 | `streams.<name>.inbound`, `.listen` | Optional booleans controlling inbound discovery and handling |
-| `reader.bot_token` | Nonempty string for bot delivery and ingest/work |
+| `reader.bot_token_ref` | `cv://<record>/<credential>` reference to the bot token, resolved at use through the credvault Python library; required (or the inline form) for bot delivery and ingest/work |
+| `reader.bot_token` | Inline token for an install without a credential vault; never together with `bot_token_ref` |
 | `guild_id` | Decimal string required for ingest/work |
 | `big_brother.user_id` | Decimal string identifying the owner, required before ingest/work can poll inbound messages or reactions |
 | `commands`, other `big_brother` and policy fields | Optional existing interfaces in [Agent Center](skills/schedule-reminder/reference/agent-center.md) |
+
+`AGENT_CENTER_BOT_TOKEN` in the process environment overrides both registry fields (an explicit
+injection for a machine without a vault key). A reference that cannot be resolved is reported with
+its cause and never falls back to an inline copy; see the Bot token entry in
+[Agent Center](skills/schedule-reminder/reference/agent-center.md). The doctor checks the field
+shapes only and never opens the vault.
 
 Credential values belong only in the PRIVATE companion. The initializer creates blank values;
 it does not fabricate destinations, call Discord, or declare an empty registry ready. The doctor
