@@ -124,7 +124,9 @@ def test_near_match_done_token_cannot_complete(monkeypatch, tmp_path):
 EXPLAINED_DONE = ["DONE\n\nThe workspace holds the requested file with the expected date.\n\n"
                   "The verify command reads it back and would fail on any other content.",
                   "\n  done.\r\nThe request is satisfied and nothing outside it changed.",
-                  "DONE\n- file present\n- check can fail"]
+                  "DONE\n- file present\n- check can fail",
+                  "DONE。probe.txt 已创建，内容正好是 ok。验证命令逐字节比对。",
+                  "Done. The file exists and the check can fail."]
 # Two answers, or none: each keeps the draft instead of completing the order.
 AMBIGUOUS = ["DONE\n\nCONTINUE: the date is written in the wrong format.",
              "DONE\ncontinue: one more file is missing",
@@ -133,7 +135,9 @@ AMBIGUOUS = ["DONE\n\nCONTINUE: the date is written in the wrong format.",
              "Looks complete.\nDONE",
              "**DONE**\nAll good.",
              "DONE\nDONE",
-             "CONTINUE\nthe date is wrong"]
+             "CONTINUE\nthe date is wrong",
+             "DONE. CONTINUE: one file is missing",
+             "DONE but the second file is missing."]
 
 
 @pytest.mark.parametrize("text", EXPLAINED_DONE)

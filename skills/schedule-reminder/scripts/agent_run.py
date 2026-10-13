@@ -206,7 +206,9 @@ def identity(result):
 
 
 _CONTINUE_VERDICT = re.compile(r"CONTINUE:\s*\S[\s\S]*", re.I)
-_DONE_LINE = re.compile(r"DONE[.!。！]?", re.I)
+# DONE alone, or DONE closed by a full stop or exclamation mark and followed by its explanation on
+# the same line ("DONE。probe.txt was created ..."). A comma or colon after DONE is still two answers.
+_DONE_LINE = re.compile(r"DONE(?:[.!。！](?!\s*CONTINUE\b).*)?", re.I)
 _VERDICT_LINE = re.compile(r"(DONE[.!。！]?|CONTINUE\s*:.*)", re.I)
 
 
@@ -217,8 +219,8 @@ def review_verdict(text):
     missing>. The verdict is read from the first non-empty line, and what follows it is the
     reviewer's explanation (a live reviewer answered "DONE" plus two paragraphs and the order
     ended review_unavailable). CONTINUE keeps its old reading: the answer opens with "CONTINUE:"
-    and a reason. A DONE line must be the bare token (one trailing full stop or exclamation mark
-    allowed) and no later line may itself read as a verdict; "DONE, but ...", "DONE: ...", a
+    and a reason. A DONE line is the bare token, or the token closed by a full stop or
+    exclamation mark with its explanation after it, and no later line may itself read as a verdict; "DONE, but ...", "DONE: ...", a
     verdict after a preamble, or DONE followed by a CONTINUE line are two answers or none, and
     give None, which keeps the draft for the owner instead of completing the order."""
     decision = (text or "").strip()
