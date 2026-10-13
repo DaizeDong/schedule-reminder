@@ -43,36 +43,22 @@ def sqlite_path_race_cases():
     ]
 
 
-def runtime_storage_case(root, run, *, versioned=True):
-    """Build native Git metadata and fresh synthetic visibility without live accounts."""
-    from datetime import datetime, timezone
+def companion_case(root, run):
+    """A synthetic Git companion with an isolated environment; no live accounts or configuration."""
     import os
     root = Path(root)
     home, repository = root/'home', root/'repository'
-    (home/'.pii-guard').mkdir(parents=True)
+    home.mkdir(parents=True)
     repository.mkdir()
     environment = {key: os.environ[key] for key in ('SystemRoot', 'WINDIR', 'COMSPEC', 'PATHEXT', 'PATH')
                    if key in os.environ}
     environment.update(HOME=str(home), USERPROFILE=str(home), PROGRAMDATA=str(home/'programdata'),
-                       GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_CONFIG_NOSYSTEM='1',
-                       GIT_AUTHOR_NAME='Synthetic User', GIT_COMMITTER_NAME='Synthetic User',
-                       GIT_AUTHOR_EMAIL='user1@example.com', GIT_COMMITTER_EMAIL='user1@example.com')
-    def git(*arguments, input=None):
+                       GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_CONFIG_NOSYSTEM='1')
+    def git(*arguments):
         return run(['git', '-C', str(repository), *arguments], env=environment,
-                   input=input, capture_output=True, text=True, encoding='utf-8', check=True).stdout.strip()
+                   capture_output=True, text=True, encoding='utf-8', check=True).stdout.strip()
     git('init', '-q')
-    git('remote', 'add', 'origin', cases()['private_remote'])
-    (repository/'.gitignore').write_text('ignored/\n*.lock\n', encoding='utf-8')
-    if versioned:
-        git('add', '.gitignore')
-        tree = git('write-tree')
-        commit = git('commit-tree', tree, input='Generated synthetic storage fixture\n')
-        git('update-ref', 'HEAD', commit)
-    (home/'.pii-guard/visibility.json').write_text(json.dumps({
-        '_refreshed': datetime.now(timezone.utc).isoformat(), **cases()['visibility']}), encoding='utf-8')
-    return {'repository': repository, 'environment': environment, 'record': cases()['adapter_text'],
-            'git': git, 'ignored_record_rule': 'record.json\n',
-            'changed_commit_message': 'Generated synthetic next revision\n'}
+    return {'repository': repository, 'environment': environment, 'git': git}
 
 
 def creation_case(source='synthetic-a', request='request-a'):
@@ -282,7 +268,6 @@ def cases():
         },
         'private_remote': 'https://github.com/example-owner/private-data.git',
         'public_remote': 'https://github.com/example-owner/public-data.git',
-        'visibility': {'example-owner/private-data': 'PRIVATE', 'example-owner/public-data': 'PUBLIC'},
         'message_id': 'synthetic-message-31', 'stream': 'synthetic-stream',
         'request': 'Write the synthetic result file.', 'title': 'Review synthetic fixture',
         'now': '2031-04-12T14:00:00+00:00',

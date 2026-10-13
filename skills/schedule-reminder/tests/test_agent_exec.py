@@ -442,7 +442,7 @@ class _Harness:
         assert agent_task.claim("wo-1")
         assert agent_task.begin_spawn("wo-1", 1)
         assert agent_task.start_runner("wo-1", 1, 123, 456)
-        monkeypatch.setattr(agent_task, "run_dir", lambda it, create=False: str(tmp_path))
+        monkeypatch.setattr(agent_task, "run_dir", lambda it: str(tmp_path))
         monkeypatch.setattr(agent_task, "append_event", lambda *a, **k: None)
         finish = agent_task.finish
         def finish_order(i, ok, note="", **kwargs):

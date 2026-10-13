@@ -25,7 +25,7 @@ def main(argv=None):
         print("READY" if result["ready"] else "NOT READY")
         for problem in result["problems"]:
             print("- " + problem)
-        print("Configuration only; use reminder.py health for measured capability readiness.")
+        print("Configuration only; use reminder.py health for database and relay-registry checks.")
     return 0 if result["ready"] else 1
 
 

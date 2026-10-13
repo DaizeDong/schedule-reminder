@@ -642,7 +642,8 @@ def test_runner_has_no_implicit_total_deadline(pool, monkeypatch, tmp_path, real
     store.update_item(iid, ext={agent_task.EXT_WORKSPACE: str(tmp_path)})
     agent_task.claim(iid)
     agent_task.begin_spawn(iid, 1)
-    d = Path(agent_task.run_dir(agent_task.get(iid), create=True))
+    d = Path(agent_task.run_dir(agent_task.get(iid)))
+    d.mkdir(parents=True)
     (d / "request.txt").write_text("SYNTHETIC_REQUEST", encoding="utf-8")
     monkeypatch.setattr(agent_task, "proc_identity", lambda pid: (True, 456))
     def approach(*args, **kwargs):

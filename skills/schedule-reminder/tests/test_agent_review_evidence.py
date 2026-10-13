@@ -88,8 +88,9 @@ def _round(monkeypatch, tmp_path, actor, reviewer, configure=None):
     monkeypatch.setattr(llmcall, "call", call)
     if configure:
         configure(harness)
-    result = agent_run._run_approach(store.get_item(item_id), "synthetic", "synthetic request", str(tmp_path),
-                                     0, False, generation=1)
+    item = store.get_item(item_id)
+    result = agent_run._run_approach(item, "synthetic", "synthetic request", str(tmp_path), 0, False,
+                                     generation=1, mode=agent_run.evidence_mode(item, str(tmp_path)))
     return result, harness, calls
 
 
@@ -235,7 +236,7 @@ def test_order_outside_a_repository_reaches_review(monkeypatch, tmp_path_factory
     import llmcall
     workspace = tmp_path_factory.mktemp("plain-workspace")
     (workspace / "notes.txt").write_text("synthetic note\n", encoding="utf-8")
-    assert not agent_run.is_repo(str(workspace))
+    assert not agent_task.is_git_workspace(str(workspace))
     store.init_db()
     item = store.add_item("Synthetic plain-folder task", source=agent_task.WORK_SOURCE,
                           ext={agent_task.EXT_STATE: "queued"})
@@ -253,8 +254,9 @@ def test_order_outside_a_repository_reaches_review(monkeypatch, tmp_path_factory
             return _result("agent")
         return _result("judge")
     monkeypatch.setattr(llmcall, "call", call)
-    result = agent_run._run_approach(store.get_item(item_id), "synthetic", "synthetic request", str(workspace),
-                                     0, False, generation=1)
+    item = store.get_item(item_id)
+    result = agent_run._run_approach(item, "synthetic", "synthetic request", str(workspace), 0, False,
+                                     generation=1, mode=agent_run.evidence_mode(item, str(workspace)))
     assert result["outcome"] == "done", result
     assert calls == ["agent", "judge"]
 

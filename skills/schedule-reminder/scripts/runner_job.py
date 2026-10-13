@@ -335,16 +335,14 @@ class RunnerJob:
     def terminate(self):
         """Record members and breakaways, then terminate every member. Raises on failure."""
         self.members = sorted(self.jobs.pids(self.handle))
-        snapshot = getattr(self.jobs, "snapshot", None)
-        if snapshot is not None:
-            try:
-                self.broke_away = self._breakaways(snapshot())
-                self.breakaway_check = "checked"
-            except Exception as error:
-                # The check never blocks the kill, but "could not check" must stay distinguishable
-                # from "found none": the receipt and the stop reply carry this state.
-                self.broke_away = []
-                self.breakaway_check = ("failed: %s: %s" % (type(error).__name__, error))[:300]
+        try:
+            self.broke_away = self._breakaways(self.jobs.snapshot())
+            self.breakaway_check = "checked"
+        except Exception as error:
+            # The check never blocks the kill, but "could not check" must stay distinguishable
+            # from "found none": the receipt and the stop reply carry this state.
+            self.broke_away = []
+            self.breakaway_check = ("failed: %s: %s" % (type(error).__name__, error))[:300]
         self.jobs.terminate(self.handle)
         return True
 

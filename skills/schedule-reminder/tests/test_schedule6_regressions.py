@@ -212,14 +212,13 @@ def test_preview_preserves_metadata_items_and_events(tmp_path):
     assert result["dispatched"] == [item["id"]]
 
 
-def test_real_tick_deduplicates_delivery_and_writes_no_heartbeat(tmp_path):
+def test_real_tick_deduplicates_delivery(tmp_path):
     db = database(tmp_path)
     item = store.add_item(F["title"], due_at=F["now"], db_path=db)
     calls = []
     for _ in range(2):
         store.tick(db_path=db, now=F["now"], notify_fn=lambda value: calls.append(value["id"]) or True)
     assert calls == [item["id"]]
-    assert not {"tick_count", "last_tick_at"} & set(dict(metadata(db)))
 
 
 def test_idle_tick_opens_no_write_connection(tmp_path, monkeypatch):

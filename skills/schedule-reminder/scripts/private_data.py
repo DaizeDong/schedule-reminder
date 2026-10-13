@@ -8,6 +8,7 @@ the Guards hooks and CI, not on every runtime write.
 """
 from pathlib import Path
 from contextlib import contextmanager
+import functools
 import ntpath
 import os
 import stat
@@ -22,15 +23,8 @@ def config_root():
     if selected:
         path = assert_writable_path(selected).resolve()
         return path.parent if path.suffix.lower() == '.json' else path
-    resolver = _shared_resolver()
-    # A DATA override selects output storage, not the registry/inbox companion.
-    resolver.os = SimpleNamespace(**{
-        **vars(os),
-        'environ': {name: value for name, value in os.environ.items()
-                    if name != 'SCHEDULE_REMINDER_DATA_DIR'},
-    })
     try:
-        root = resolver.resolve_companion_root('schedule-reminder')
+        root = _shared_resolver(SOURCE/'guards/tools/datadir.py').resolve_companion_root('schedule-reminder')
     except RuntimeError as error:
         raise ValueError('Schedule companion discovery failed: '+str(error)) from error
     # Nothing found: the answer is the sibling convention path, which is never created here.
@@ -48,10 +42,10 @@ def registry_path():
     return assert_writable_path(os.environ.get('AGENT_CENTER_CONFIG') or config_root()/'registry.json').resolve()
 
 
-def _shared_resolver():
-    """Load portable discovery from this consumer's pinned Guards dependency."""
+@functools.lru_cache(maxsize=None)
+def _shared_resolver(path):
+    """Load portable discovery from this consumer's pinned Guards dependency, once per process."""
     import importlib.util
-    path = SOURCE/'guards/tools/datadir.py'
     assert_writable_path(path)
     if not path.is_file():
         raise ValueError('Guards dependency is missing; initialize the reviewed submodule')
@@ -63,6 +57,11 @@ def _shared_resolver():
         raise ValueError('Guards companion discovery API is unavailable') from error
     if not callable(getattr(module, 'resolve_companion_root', None)):
         raise ValueError('Guards dependency lacks the supported companion discovery API')
+    # A DATA override selects output storage, not the registry/inbox companion, so the resolver
+    # sees the live environment without SCHEDULE_REMINDER_DATA_DIR.
+    module.os = SimpleNamespace(**{**vars(os), 'environ': SimpleNamespace(
+        get=lambda name, default=None: (default if name == 'SCHEDULE_REMINDER_DATA_DIR'
+                                        else os.environ.get(name, default)))})
     return module
 
 
@@ -133,16 +132,15 @@ def prepare_parent(destination):
     """Check the destination and create its parent directory."""
     path = check_destination(destination)
     path.parent.mkdir(parents=True, exist_ok=True)
-    assert_writable_path(destination)
     return path
 
 
 def open_for_write(destination, mode="w", *args, **kwargs):
-    """Check the destination and validate the opened inode before truncation."""
+    """The single write entry point: check the destination, create its parent, and validate the
+    opened inode before truncation. Callers do not check the path again beforehand."""
     if not mode or mode[0] not in "wax":
         raise ValueError("runtime writer requires w, a, or x mode")
-    prepare_parent(destination)
-    path = assert_writable_path(destination)
+    path = prepare_parent(destination)
     flags = os.O_RDWR if "+" in mode else os.O_WRONLY
     flags |= os.O_CREAT | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     if mode[0] == "a":
@@ -157,7 +155,6 @@ def open_for_write(destination, mode="w", *args, **kwargs):
         if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
                 or not os.path.samestat(opened, current)):
             raise ValueError("runtime DATA inode changed or has another hardlink")
-        assert_writable_path(path)
         stream = os.fdopen(descriptor, mode, *args, **kwargs)
         if mode[0] == "w":
             stream.truncate(0)

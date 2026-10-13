@@ -27,7 +27,9 @@ public source tree, inside Git metadata, or reached through a filesystem alias. 
 safety is enforced at commit time by the Guards hooks and CI.
 Current defaults use root-level `state/`, `agent-runs/` and `digest.json`; the sole
 reminder database is `data/db.sqlite3`. The contract also declares known leaves for
-retained `data/state/`, `data/agent-runs/` and `data/digest.json` selections. Explicit
+retained `data/state/`, `data/agent-runs/` and `data/digest.json` selections. A dispatched
+order with no usable requested folder gets its own artifact workspace under
+`agent-runs/workspaces/`; the contract owns that container, not its outputs. Explicit
 overrides need their own reviewed path families. An entry
 does not create a directory or change the installed consumer's selected path. See
 [deployment](../skills/schedule-reminder/reference/deployment.md) for initialization

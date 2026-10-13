@@ -79,7 +79,6 @@ def test_plan_registers_the_real_entrypoint(group, seconds, entry):
     assert Path(row['entrypoint']).is_file()
     arguments = installer._arguments(row['task']['arguments'])
     assert arguments[0] == '-B' and Path(arguments[1]).name == entry
-    assert 'scheduler_worker' not in row['task']['arguments']
     if group == 'remind':
         assert arguments[2:] == ['--db', plan['dependencies']['store']['db_path'], 'tick']
     assert row['task']['interval_seconds'] == seconds
@@ -132,7 +131,6 @@ def test_install_succeeds_on_a_healthy_store_and_present_registry(tmp_path, monk
     database, config, _ = configured(tmp_path, monkeypatch)
     code, result = installer.install('store,remind', str(database), config=str(config), no_task=True)
     assert code == 0 and result['health']['integrity_ok'] and result['relay_registry'] is True
-    assert 'readiness' not in result['health']
     config.unlink()
     assert installer.install('store,remind', str(database), config=str(config), no_task=True)[0] == 1
     assert installer.install('store', str(database))[0] == 0

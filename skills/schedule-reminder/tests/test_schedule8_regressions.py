@@ -155,8 +155,7 @@ class Schedule8Regressions(unittest.TestCase):
             fdopen=broken_stream, close=lambda fd: state.update(closed=state["closed"]+1),
             path=SimpleNamespace(samestat=lambda left, right: left is right))
         private = inert_module("skills/schedule-reminder/scripts/private_data.py",
-            os=fake_os, prepare_parent=lambda path: None,
-            assert_writable_path=lambda value: path)
+            os=fake_os, prepare_parent=lambda value: path)
         with self.assertRaises(OSError):
             private.open_for_write("synthetic-record", "w")
         self.assertEqual(state["value"], original)

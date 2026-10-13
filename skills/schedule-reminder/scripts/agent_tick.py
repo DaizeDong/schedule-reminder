@@ -227,7 +227,7 @@ def _launch_locked(item, generation, post_reports):
         agent_task.finish(item["id"], False, "workspace missing: %s" % workspace, generation=generation)
         agent_task.release(item["id"], generation)
         return False
-    d = agent_task.run_dir(item, create=True)
+    d = agent_task.run_dir(item)
     # A pythonw parent would give the child no usable stdout; a real file handle does. Prefer the
     # console interpreter anyway, since a detached child has no window to show either way.
     exe = sys.executable or "python"

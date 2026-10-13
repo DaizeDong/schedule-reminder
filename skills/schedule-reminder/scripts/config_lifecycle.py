@@ -9,11 +9,6 @@ import bot_credential
 import private_data
 
 
-def authorize(path):
-    """Path checks only: outside the public source tree and below an existing companion."""
-    return private_data.check_destination(path)
-
-
 def template():
     """Blank setup values cannot qualify as configured delivery."""
     return {"schema_version": 1, "guild_id": "", "reader": {"bot_token": ""}, "streams": {}}
@@ -69,7 +64,7 @@ def validate(registry, capabilities="store,remind"):
 def initialize(root):
     root = private_data.assert_writable_path(root)
     path = root / "registry.json"
-    authorize(path)
+    private_data.check_destination(path)
     if path.exists():
         # Existing configuration, credentials and unknown fields remain untouched.
         return path, False
@@ -83,7 +78,7 @@ def doctor(path=None, capabilities="store,remind"):
     path = Path(path) if path else private_data.registry_path()
     errors = []
     try:
-        authorize(path)
+        private_data.check_destination(path)
     except (OSError, ValueError, RuntimeError) as error:
         errors.append("storage: " + str(error))
     try:

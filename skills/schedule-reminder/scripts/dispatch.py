@@ -31,8 +31,7 @@ for _s in (sys.stdout, sys.stderr):
 
 import inbound
 import store
-# Pool mutations are attributed to this actor in the item event log, as the reminder.py CLI did
-# with --actor when dispatch still called it as a subprocess.
+# Actor recorded in the item event log for pool mutations made by dispatch.
 ACTOR = "agent-center-dispatch"
 
 # kind: pool = email-monitor task pool | reminder = any active reminder | generic = create/ack only

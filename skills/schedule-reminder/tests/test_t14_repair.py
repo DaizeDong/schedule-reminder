@@ -46,7 +46,8 @@ def work(tmp_path, monkeypatch, real_process):
     store.init_db()
     item = store.add_item("SYNTHETIC_WORK", source=agent_task.WORK_SOURCE,
         ext={agent_task.EXT_STATE: "queued", agent_task.EXT_WORKSPACE: str(workspace)})
-    Path(agent_task.run_dir(item, create=True), "request.txt").write_text(
+    Path(agent_task.run_dir(item)).mkdir(parents=True)
+    Path(agent_task.run_dir(item), "request.txt").write_text(
         "Create fix.txt and preserve all existing user files.", encoding="utf-8")
     assert agent_task.claim(item["id"])
     assert agent_task.begin_spawn(item["id"], 1)
@@ -230,7 +231,8 @@ def test_missing_baseline_after_action_checkpoint_is_not_recaptured(work, monkey
     calls = []
     monkeypatch.setattr(agent_run, "_llm", lambda p, t, mode, **kw: calls.append(mode) or reply(mode))
     try:
-        agent_run._run_approach(store.get_item(iid), "synthetic", "synthetic request", str(workspace), 0, False, generation=1)
+        agent_run._run_approach(store.get_item(iid), "synthetic", "synthetic request", str(workspace), 0, False, generation=1,
+                                mode=agent_run.evidence_mode(store.get_item(iid), str(workspace)))
     except RuntimeError:
         pass
     assert calls == [], "re-entry cannot invent an initial baseline after side effects"
@@ -310,7 +312,7 @@ def test_baseline_is_immutable_and_readable_by_a_fresh_interpreter(work, monkeyp
     monkeypatch.setattr(agent_run, "STALL_ROUNDS", 1)
     assert agent_task.start_runner(iid, 1, 123, 456)
     assert agent_run._run_approach(store.get_item(iid), "synthetic", "request", str(workspace), 0, False,
-                                   generation=1)["outcome"] == "stalled"
+                                   generation=1, mode=agent_run.evidence_mode(store.get_item(iid), str(workspace)))["outcome"] == "stalled"
     original = agent_task.operation(iid)
     assert not agent_task.save_baseline(iid, 1, "changed", "changed", str(workspace))
     scripts = str(Path(agent_run.__file__).parent)

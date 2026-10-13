@@ -118,10 +118,6 @@
   },
   "private_remote": "https://github.com/example-owner/private-data.git",
   "public_remote": "https://github.com/example-owner/public-data.git",
-  "visibility": {
-    "example-owner/private-data": "PRIVATE",
-    "example-owner/public-data": "PUBLIC"
-  },
   "message_id": "synthetic-message-31",
   "stream": "synthetic-stream",
   "request": "Write the synthetic result file.",

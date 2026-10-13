@@ -28,7 +28,7 @@ def _no_children(monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("notify must not start a child process without SCHEDULE_RELAY_CMD")
     monkeypatch.setattr(notify_mod.subprocess, "run", forbidden)
-    for var in ("SCHEDULE_RELAY_CMD", "SCHEDULE_RELAY_PY", "SCHEDULE_RELAY_STREAM"):
+    for var in ("SCHEDULE_RELAY_CMD", "SCHEDULE_RELAY_STREAM"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -38,15 +38,6 @@ def test_deliver_calls_relay_in_process_and_keeps_the_receipt(monkeypatch):
     monkeypatch.setattr(relay_mod, "deliver", lambda stream, text: seen.append((stream, text)) or RECEIPT)
     assert notify_mod.deliver("hi") == RECEIPT
     assert seen == [("reminders", "hi")]
-
-
-def test_relay_path_variable_no_longer_spawns_a_child(monkeypatch, tmp_path):
-    """Regression: SCHEDULE_RELAY_PY pointing at this relay through a junction used to fail an
-    abspath comparison, start `python relay.py send` and drop the receipt."""
-    _no_children(monkeypatch)
-    monkeypatch.setenv("SCHEDULE_RELAY_PY", str(tmp_path / "linked" / "relay.py"))
-    monkeypatch.setattr(relay_mod, "deliver", lambda stream, text: RECEIPT)
-    assert notify_mod.deliver("hi") == RECEIPT
 
 
 def test_text_notify_goes_to_relay_reminders_channel(monkeypatch):

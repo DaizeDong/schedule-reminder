@@ -9,15 +9,15 @@ relay:
      is recorded separately from receipt; model plans and action identities survive retries.
 
 ONE TIME BUDGET
-    The task registration may kill a tick at 4 minutes (ExecutionTimeLimit PT4M), so a tick plans
-    for TASK_LIMIT_S and finishes inside it instead of racing the kill. The poll starts no new
+    A tick plans for a self-imposed TASK_LIMIT_S that fits inside the 5-minute task interval, so it
+    finishes before the next tick is due (the registration sets no kill limit). The poll starts no new
     channel after INTAKE_S, and the poll's start channel rotates every five minutes so the same tail
     channels are not always the ones skipped. Intake of pending records has its own INTAKE_S window
     measured from when dispatch starts, so a slow poll never starves staged work, but no record
     starts with less than MIN_DISPATCH_S left of the whole tick; the planner
     call gets at most PLANNER_S and never more than what is left before RESERVE_S; a command
-    handler is clamped the same way. A kill in the middle of a model call would throw the plan away
-    and pay for it again on the next tick.
+    handler is clamped the same way. A tick that overran the interval would make Task Scheduler
+    skip the next one (MultipleInstancesPolicy IgnoreNew).
 
 RETRIES
     A dispatch that did not finish (a failed action, an undelivered confirmation, no usable plan)
@@ -51,7 +51,7 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 _LOG = None
-TASK_LIMIT_S = 240   # the PT4M ExecutionTimeLimit a registration may impose
+TASK_LIMIT_S = 240   # self-imposed budget, inside the 5-minute task interval
 INTAKE_S = 60        # no new channel poll or pending record is started after this
 PLANNER_S = 120      # the most one planner call may take
 RESERVE_S = 30       # kept back for executing a plan, confirming and recording the outcome
@@ -66,7 +66,6 @@ def _log(msg):
     line = "%s %s" % (stamp, msg)
     print(line, file=sys.stderr)
     path = _LOG or str(private_data.config_root()/"state"/"ingest_tick.log")
-    private_data.prepare_parent(path)
     with private_data.open_for_write(path, "a", encoding="utf-8") as f:
         f.write(line + "\n")
 

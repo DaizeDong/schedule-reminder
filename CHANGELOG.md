@@ -15,6 +15,19 @@ All notable changes to this project are documented here (Keep a Changelog style)
   the work-feed workspace prefetch thread and the proof tests went with it.
 
 ### Changed
+- One write now checks its destination once. `private_data.open_for_write` is the single entry
+  point (check, create the parent, then verify the opened inode); the repeat path walks inside it
+  and the caller-side `prepare_parent` / `run_dir(create=True)` before it are gone, and `run_dir`
+  no longer takes `create`. The Guards discovery module is loaded once per process instead of on
+  every write. A replace target that is not the opened file (digest.json, request.txt) keeps its
+  own check.
+- `storage.contract.json` matches the writers: the enqueue temporary is `request.txt.<uuid>.tmp`,
+  and the per-order artifact workspace under `agent-runs/workspaces/` is declared as a container.
+- The ingest tick's 240 s budget is described as a self-imposed budget inside the 5-minute
+  interval; the registration sets no execution time limit.
+- Removed leftovers: `agent_run.is_repo`, `config_lifecycle.authorize`, the `_run_approach` mode
+  fallback, the optional breakaway snapshot, the test fakes for `git -C` and `gh repo view`, the
+  synthetic visibility file, and tests that only asserted deleted behaviour was absent.
 - The ingest tick no longer lets a slow poll starve staged replies: pending records get their own
   intake window measured from when dispatch starts, and the poll's start channel rotates every five
   minutes so the channels at the end of the list are not the ones skipped on every tick.

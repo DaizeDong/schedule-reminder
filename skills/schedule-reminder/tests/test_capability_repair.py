@@ -37,7 +37,6 @@ def test_health_is_quick_check_plus_registry_presence(tmp_path, monkeypatch):
     assert report['db_ok'] and report['integrity_ok'] and report['wal_ok']
     assert report['schema_user_version'] == store.SCHEMA_USER_VERSION
     assert report['relay_ok'] is False and any('registry' in w for w in report['warnings'])
-    assert 'readiness' not in report and 'task_ok' not in report
     registry.write_text('{}', encoding='utf-8')
     assert store.health(db_path=str(database))['relay_ok'] is True
 

@@ -638,8 +638,21 @@
       }
     },
     {
+      "artifact_id": "agent-runs-order-workspace",
+      "path_pattern": "agent-runs/workspaces/*",
+      "purpose": "Dedicated artifact workspace for one dispatched order, keyed by its action identity; ownership covers the container only.",
+      "schema": "scripts/agent_task.py order_workspace, used by scripts/dispatch.py for an order with no usable requested folder.",
+      "producer": "Inbound dispatch of a work order.",
+      "consumer_or_final_deliverable": "The order's agent execution and artifact evidence; child outputs are arbitrary action-workspace outputs and remain gaps until classified.",
+      "rebuild_or_restore": "Recreated empty when the same action identity is dispatched again; outputs are not reproducible.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep while the matching work order is active or unresolved. Container ownership does not authorize deletion of, or establish ownership for, child outputs."
+      }
+    },
+    {
       "artifact_id": "agent-runs-request-txt-tmp",
-      "path_pattern": "agent-runs/*/request.txt.tmp",
+      "path_pattern": "agent-runs/*/request.txt.*.tmp",
       "purpose": "Per-work enqueue coordination or unpublished request bytes.",
       "schema": "scripts/agent_task.py enqueue request publication.",
       "producer": "The owning queue writer.",
@@ -899,8 +912,21 @@
       }
     },
     {
+      "artifact_id": "data-agent-runs-order-workspace",
+      "path_pattern": "data/agent-runs/workspaces/*",
+      "purpose": "Dedicated artifact workspace for one dispatched order, keyed by its action identity; ownership covers the container only.",
+      "schema": "scripts/agent_task.py order_workspace, used by scripts/dispatch.py for an order with no usable requested folder.",
+      "producer": "Inbound dispatch of a work order.",
+      "consumer_or_final_deliverable": "The order's agent execution and artifact evidence; child outputs are arbitrary action-workspace outputs and remain gaps until classified.",
+      "rebuild_or_restore": "Recreated empty when the same action identity is dispatched again; outputs are not reproducible.",
+      "retention_rule": {
+        "class": "core",
+        "rule": "Keep while the matching work order is active or unresolved. Container ownership does not authorize deletion of, or establish ownership for, child outputs."
+      }
+    },
+    {
       "artifact_id": "data-agent-runs-request-txt-tmp",
-      "path_pattern": "data/agent-runs/*/request.txt.tmp",
+      "path_pattern": "data/agent-runs/*/request.txt.*.tmp",
       "purpose": "Per-work enqueue coordination or unpublished request bytes.",
       "schema": "scripts/agent_task.py enqueue request publication.",
       "producer": "The owning queue writer.",

@@ -140,18 +140,14 @@ def runs_root():
     return os.environ.get("AGENT_CENTER_RUNS") or str(private_data.config_root()/"agent-runs")
 
 
-def run_dir(item, create=False):
-    name = _ext(item).get(EXT_DIR) or item["id"]
-    p = os.path.join(runs_root(), name)
-    if create:
-        private_data.check_destination(p)
-        os.makedirs(p, exist_ok=True)
-    return p
+def run_dir(item):
+    """An order's run directory. Writers create it through private_data.open_for_write."""
+    return os.path.join(runs_root(), _ext(item).get(EXT_DIR) or item["id"])
 
 
 def append_event(item, kind, **fields):
     """Persist an event; a missing or unwritable PRIVATE record is an explicit failure."""
-    d = run_dir(item, create=True)
+    d = run_dir(item)
     rec = {"ts": _utcnow(), "event": kind, **fields}
     with private_data.open_for_write(os.path.join(d, "events.jsonl"), "a", encoding="utf-8", newline="\n") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -244,7 +240,7 @@ def _persist_request(item, request):
 
     No lock: one item has one request sha (checked before this), so two racing writers write
     identical bytes, and each writes its own temporary file before the atomic replace."""
-    directory = run_dir(item, create=True)
+    directory = run_dir(item)
     path = os.path.join(directory, "request.txt")
     if os.path.exists(path):
         with open(path, encoding="utf-8") as stream:

@@ -421,10 +421,6 @@ def _git(workspace, *args, allow=(0,)):
     return result.returncode, result.stdout
 
 
-def is_repo(workspace):
-    return agent_task.is_git_workspace(workspace)
-
-
 def reported_changes(claimed):
     return sorted({str(c).strip() for c in (claimed or []) if str(c).strip()})
 
@@ -432,7 +428,7 @@ def reported_changes(claimed):
 def detect_changes(workspace, claimed):
     """Git mode: keep self-reported filenames separate from independently captured evidence."""
     reported = reported_changes(claimed)
-    if is_repo(workspace):
+    if agent_task.is_git_workspace(workspace):
         try:
             _rc, out = _git(workspace, "status", "--porcelain")
         except GitInspectionError as error:
@@ -530,7 +526,8 @@ def run_verify(cmd, workspace):
     try:
         if sys.platform == "win32":
             directory = private_data.data_dir()/"verify"
-            private_data.prepare_parent(directory/"probe.ps1")
+            private_data.check_destination(directory)
+            directory.mkdir(parents=True, exist_ok=True)
             fd, script = tempfile.mkstemp(prefix="agent_verify_", suffix=".ps1", dir=directory)
             os.close(fd)
             with private_data.open_for_write(script, "w", encoding="utf-8-sig", newline="\r\n") as f:
@@ -617,7 +614,6 @@ def review_prompt(request, summary, changed, changed_via, cmd, rc, out, *, diff=
 
 # --------------------------------------------------------------------------- the run
 def _write(path, text):
-    private_data.prepare_parent(path)
     with private_data.open_for_write(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(text if isinstance(text, str) else str(text))
 
@@ -630,7 +626,7 @@ def evidence_mode(item, workspace):
     (older orders) is judged by its workspace: `git diff` outside a repository exits 129, so a
     non-repository workspace that was sent to capture_diff could never reach review."""
     mode = ((item or {}).get("ext") or {}).get("x_agent_exec_evidence")
-    return mode or ("git" if is_repo(workspace) else "artifacts")
+    return mode or ("git" if agent_task.is_git_workspace(workspace) else "artifacts")
 
 
 def _capture_evidence(workspace, mode):
@@ -709,9 +705,8 @@ def _execute_order(item, generation, stream, workspace, post_reports):
                       exec_state_value="stalled", generation=generation)
     return 1
 
-def _run_approach(item, stream, request, workspace, approach, post_reports, *, generation, mode=None):
+def _run_approach(item, stream, request, workspace, approach, post_reports, *, generation, mode):
     item_id = item["id"]
-    mode = mode or evidence_mode(item, workspace)
     token = _OPERATION.set((item_id, generation))
     try:
         return _run_approach_owned(item, stream, request, workspace, approach,
@@ -736,7 +731,7 @@ def _run_approach_owned(item, stream, request, workspace, approach, post_reports
     if not op or not agent_task.owns(item_id, generation):
         return {"outcome": "cancelled"}
     before = _initial_baseline(item_id, generation, workspace, mode)
-    adir = os.path.join(agent_task.run_dir(item, create=True), op["attempt_id"], "a%d" % approach)
+    adir = os.path.join(agent_task.run_dir(item), op["attempt_id"], "a%d" % approach)
     sigs, last_failure, rnd = [], None, 0
 
     def stop(outcome, note):
