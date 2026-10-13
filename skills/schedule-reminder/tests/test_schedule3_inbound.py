@@ -219,7 +219,7 @@ def test_tick_bounds_the_planner_by_its_time_budget(inbox,monkeypatch):
 
 def test_tick_takes_no_new_record_after_the_intake_budget(inbox,monkeypatch):
     _,calls=_tick_world(inbox,monkeypatch,True)
-    clock=iter([0.0]+[ingest_tick.INTAKE_S+1.0]*10)
+    clock=iter([0.0,0.0]+[ingest_tick.INTAKE_S+1.0]*10)  # tick start, dispatch start, then past the window
     monkeypatch.setattr(ingest_tick.time,'monotonic',lambda:next(clock))
     ingest_tick.run(post=False)
     assert calls==[] and len(inbound.pending(ingest.state_dir()))==1

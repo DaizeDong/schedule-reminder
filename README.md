@@ -103,7 +103,7 @@ SQLite (WAL) single file        <- private storage, downstream NEVER touches it
     reminder.py [--actor NAME] <verb>   <- versioned CLI contract (api_version 1.0.0)
     reminder_linked_items.py           <- read-only, reviewed Task Console linkage
 [Windows task: PT5M heartbeat] -> reminder.py tick -> reconcile due -> Discord relay (out)
-[Windows task: PT10M ingest]   -> ingest_tick -> poll every readable channel -> a registered
+[Windows task: PT5M ingest]   -> ingest_tick -> poll every readable channel -> a registered
                                   command handler, else dispatch (LLM judge)              (in)
 ```
 

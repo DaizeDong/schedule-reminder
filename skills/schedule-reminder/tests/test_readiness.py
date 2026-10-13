@@ -70,7 +70,7 @@ def test_public_powershell_plan_selection_without_effects(tmp_path, monkeypatch,
 
 
 @pytest.mark.parametrize('group,seconds,entry', [('remind', 300, 'reminder.py'),
-                                                 ('ingest', 600, 'ingest_tick.py'),
+                                                 ('ingest', 300, 'ingest_tick.py'),
                                                  ('work', 120, 'agent_tick.py')])
 def test_plan_registers_the_real_entrypoint(group, seconds, entry):
     plan = installer.plan(group)
@@ -78,9 +78,10 @@ def test_plan_registers_the_real_entrypoint(group, seconds, entry):
     assert row['selected'] and row['runtime'] and Path(row['entrypoint']).name == entry
     assert Path(row['entrypoint']).is_file()
     arguments = installer._arguments(row['task']['arguments'])
-    assert Path(arguments[0]).name == entry and 'scheduler_worker' not in row['task']['arguments']
+    assert arguments[0] == '-B' and Path(arguments[1]).name == entry
+    assert 'scheduler_worker' not in row['task']['arguments']
     if group == 'remind':
-        assert arguments[1:] == ['--db', plan['dependencies']['store']['db_path'], 'tick']
+        assert arguments[2:] == ['--db', plan['dependencies']['store']['db_path'], 'tick']
     assert row['task']['interval_seconds'] == seconds
     assert plan['dependencies']['store']['required'] and plan['dependencies']['relay']['required']
     assert plan['dependencies']['llmcall']['required'] == (group != 'remind')

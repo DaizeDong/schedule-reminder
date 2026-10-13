@@ -239,7 +239,7 @@ judgment chain, and a claimed message never reaches a model.
   registered streams and the channel id for discovered ones. First contact with a channel **arms** the cursor (records latest
   id, processes nothing): back-processing a newly discovered channel would replay its whole visible
   history through the judgment chain and could enqueue real work from months-old messages.
-- **Schedule**: Windows task **AgentCenterIngestTick** (PT10M) runs `ingest_tick.py`; it supersedes
+- **Schedule**: Windows task **AgentCenterIngestTick** (PT5M) runs `ingest_tick.py`; it supersedes
   the retired ad-hoc `AgentCenterMailTick` (mail-only loop).
 - **Owner only, fail closed.** A text reply counts only when its author is
   `registry.big_brother.user_id`, the same person the reaction path has always required. If no owner
@@ -385,7 +385,7 @@ calls, command execution and database changes. It is not a dry run. See
   cleanup. Unreleased or uncertain reservations keep the serial slot even when the item has a
   terminal outcome.
 - **Recovery requires a separate review.** Inspect `agent_task.py status`, establish that the
-  relevant process tree is gone, and retain that audit in the PRIVATE companion. `recover-cleanup`
+  runner's job has no live processes left, and retain that audit in the PRIVATE companion. `recover-cleanup`
   requires the exact terminal generation plus a nonempty `note` and `evidence_sha256` in the JSON
   file. It validates those fields, rechecks recorded runner/launcher identities and compares the
   reservation before release. The digest records the operator's audit; the command does not

@@ -104,8 +104,8 @@ database. The command receives that snapshot, so an edit to the original file ca
 payload after preparation. The fingerprint retains the original file's identity. The receipt's
 `payload_artifact` records `notification-payloads/<random-id>.txt` relative to the database directory.
 Cleanup removes the snapshot before process invocation or when `llmcall.process` explicitly
-confirms that the process tree has stopped. A lost process response or unconfirmed cleanup retains
+confirms that the notifier's job is empty (`cleanup_confirmed`). A lost process response or unconfirmed cleanup retains
 the snapshot and leaves delivery uncertain; retries do not invoke the command again. An abrupt
-producer termination can also leave a private snapshot. Reconcile the retained artifact and prove
-the process tree has stopped before removing it. Missing PRIVATE admission prevents snapshot
+producer termination can also leave a private snapshot. Reconcile the retained artifact and confirm
+the notifier's job is empty before removing it. Missing PRIVATE admission prevents snapshot
 creation and sending.

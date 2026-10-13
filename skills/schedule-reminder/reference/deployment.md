@@ -9,10 +9,10 @@ before files, tasks, or links are created. Remove `-Plan` to install the selecti
 |---|---|---|---|
 | store | none | none | PRIVATE initialized store |
 | remind | ScheduleReminderTick | PT5M | store, relay |
-| ingest | AgentCenterIngestTick | PT10M | store, relay, llmcall |
+| ingest | AgentCenterIngestTick | PT5M | store, relay, llmcall |
 | work | AgentCenterWorkTick | PT2M | store, relay, llmcall |
 
-Each scheduled action runs its real entrypoint: `reminder.py --db <database> tick`,
+Each scheduled action runs its real entrypoint under `pythonw.exe -B`: `reminder.py --db <database> tick`,
 `ingest_tick.py` or `agent_tick.py`. The ingest and work entrypoints read `SCHEDULE_DB_PATH` and
 `AGENT_CENTER_CONFIG` from the user environment. Installation creates only selected tasks and
 separately reads back executable, arguments, working directory, enabled task and trigger, interval,

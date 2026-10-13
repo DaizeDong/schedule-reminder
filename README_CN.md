@@ -56,7 +56,7 @@ pwsh -File skills/schedule-reminder/scripts/install.ps1 -Capabilities store,remi
 
 ## 配置
 
-将 `SCHEDULE_REMINDER_CONFIG` 指向选定的 PRIVATE 伴生仓。切换配置时，同步调整根目录及已设置的 `AGENT_CENTER_CONFIG` 文件覆盖值。[CONFIG.md](CONFIG.md) 说明 registry 格式、配置与 DATA 的独立覆盖规则、初始化和恢复。`tools/init_config.py` 保留已有配置；`tools/verify_config.py --json` 只检查本地配置。数据库仍由 `reminder.py init` 初始化，运行能力是否就绪要看 `health.readiness.ready`。
+将 `SCHEDULE_REMINDER_CONFIG` 指向选定的 PRIVATE 伴生仓。切换配置时，同步调整根目录及已设置的 `AGENT_CENTER_CONFIG` 文件覆盖值。[CONFIG.md](CONFIG.md) 说明 registry 格式、配置与 DATA 的独立覆盖规则、初始化和恢复。`tools/init_config.py` 保留已有配置；`tools/verify_config.py --json` 只检查本地配置。数据库仍由 `reminder.py init` 初始化；`health` 只检查存储和 registry 是否存在，不判定配置好的运行能力是否就绪。
 
 ## 快速开始
 
@@ -92,7 +92,7 @@ SQLite (WAL) 单文件             <- 私有存储，下游绝不直接碰
     reminder.py [--actor NAME] <verb>   <- 版本化 CLI 契约 (api_version 1.0.0)
     reminder_linked_items.py           <- 已审查的 Task Console 只读关联接口
 [Windows 任务: PT5M 心跳]  -> reminder.py tick -> 对账到期项 -> Discord relay (出)
-[Windows 任务: PT10M 入站] -> ingest_tick -> 轮询每个可读频道 -> 命中已注册命令则交给它的
+[Windows 任务: PT5M 入站] -> ingest_tick -> 轮询每个可读频道 -> 命中已注册命令则交给它的
                               处理器，否则交给 dispatch(LLM 判断)                  (入)
 ```
 

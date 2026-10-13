@@ -563,6 +563,11 @@ def ack_done(channel_id, msg_id, token):
     return ok
 
 
+def _poll_start(count):
+    """Index of the channel a sweep starts from; advances every five minutes."""
+    return int(time.time() // 300) % count
+
+
 def poll(reg=None, token=None, log=None, deadline=None):
     """One sweep of every channel: {"text": {stream: n}, "reactions": {stream: n}}.
 
@@ -583,7 +588,13 @@ def poll(reg=None, token=None, log=None, deadline=None):
         raise RuntimeError("no owner: set registry.big_brother.user_id; inbound replies are "
                            "owner-only because they can start real work")
     text, reactions = {}, {}
-    for stream, ch in channels(reg, token, log=log):
+    order = channels(reg, token, log=log)
+    if order:
+        # Rotate the start channel every 5 minutes, so a budget spent early never starves the
+        # same tail channels tick after tick.
+        start = _poll_start(len(order))
+        order = order[start:] + order[:start]
+    for stream, ch in order:
         if deadline is not None and time.monotonic() > deadline:
             if log:
                 log("ingest: poll budget spent; the remaining channels wait for the next tick")

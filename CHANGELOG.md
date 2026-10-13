@@ -15,6 +15,11 @@ All notable changes to this project are documented here (Keep a Changelog style)
   the work-feed workspace prefetch thread and the proof tests went with it.
 
 ### Changed
+- The ingest tick no longer lets a slow poll starve staged replies: pending records get their own
+  intake window measured from when dispatch starts, and the poll's start channel rotates every five
+  minutes so the channels at the end of the list are not the ones skipped on every tick.
+- The installer registers the ingest tick at PT5M (was PT10M) and runs every task under
+  `pythonw.exe -B`, matching the live registrations.
 - Agent Center work orders launch immediately: enqueue and a runner that releases the serial slot
   each start a detached `agent_tick.py`, so an order no longer waits up to two minutes (measured
   27 to 165 s) for the scheduled poll. The PT2M AgentCenterWorkTick stays as the backstop and

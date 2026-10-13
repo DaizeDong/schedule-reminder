@@ -10,8 +10,10 @@ relay:
 
 ONE TIME BUDGET
     The task registration may kill a tick at 4 minutes (ExecutionTimeLimit PT4M), so a tick plans
-    for TASK_LIMIT_S and finishes inside it instead of racing the kill. The poll and the intake of
-    pending records start no new work after INTAKE_S (the rest wait for the next tick); the planner
+    for TASK_LIMIT_S and finishes inside it instead of racing the kill. The poll starts no new
+    channel after INTAKE_S, and the poll's start channel rotates every five minutes so the same tail
+    channels are not always the ones skipped. Intake of pending records has its own INTAKE_S window
+    measured from when dispatch starts, so a slow poll never starves staged work; the planner
     call gets at most PLANNER_S and never more than what is left before RESERVE_S; a command
     handler is clamped the same way. A kill in the middle of a model call would throw the plan away
     and pay for it again on the next tick.
@@ -94,8 +96,11 @@ def run(only_stream=None, post=True):
             # Staged work still dispatches; only the Discord acknowledgement needs the bot.
             _log("tick: bot token unavailable: %s: %s" % (type(error).__name__, error))
             token = None
+    # Dispatch gets its own intake window measured from when it starts, so a slow poll can never
+    # starve records that are already staged.
+    dispatch_start = time.monotonic()
     for index, record in enumerate(work):
-        if time.monotonic() - start > INTAKE_S:
+        if time.monotonic() - dispatch_start > INTAKE_S:
             _log("tick: time budget spent; %d pending record(s) wait for the next tick"
                  % (len(work) - index))
             break
@@ -104,7 +109,7 @@ def run(only_stream=None, post=True):
             with inbound.processing(record, ingest.state_dir()) as current:
                 if not current or current["status"] != "pending":
                     continue
-                budget = TASK_LIMIT_S - RESERVE_S - (time.monotonic() - start)
+                budget = max(1, TASK_LIMIT_S - RESERVE_S - (time.monotonic() - start))
                 channel = current["channel_id"]
                 message_id = current["message_id"]
                 if token and current["kind"] == "text" and not current["attempts"]:

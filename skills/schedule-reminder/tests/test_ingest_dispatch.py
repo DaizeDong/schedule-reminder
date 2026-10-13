@@ -454,6 +454,7 @@ def test_one_sweep_reads_each_channel_once_for_text_and_reactions(tmp_path, monk
     monkeypatch.setattr(ingest, "_fetch", fetch)
     monkeypatch.setattr(ingest, "channels",
                         lambda reg, token, log=None: enumerations.append(1) or [("mail", "1"), ("infra", "2")])
+    monkeypatch.setattr(ingest, "_poll_start", lambda count: 0)
     reg = {"big_brother": {"user_id": "OWNER"}}
     result = ingest.poll(reg, "TOK")
     assert enumerations == [1], "channels are enumerated once per sweep"
@@ -488,3 +489,28 @@ def test_arm_reactions_baselines_existing(tmp_path, monkeypatch):
     ingest.arm_reactions(reg, "tok")
     # after arming, a poll finds nothing new (existing reaction already baselined as seen)
     assert ingest.poll_reactions_stream("mail", "ch", "tok", "OWNER") == []
+
+
+def test_poll_start_channel_rotates_across_ticks(tmp_path, monkeypatch):
+    """A sweep cut short by its deadline must not skip the same tail channels every tick."""
+    import time as real_time
+    from types import SimpleNamespace
+    monkeypatch.setattr(ingest, "_STATE_DIR", str(tmp_path))
+    fetches = []
+    def fetch(ch, tok, after=None, limit=50):
+        fetches.append(ch)
+        return []
+    monkeypatch.setattr(ingest, "_fetch", fetch)
+    monkeypatch.setattr(ingest, "channels",
+                        lambda reg, token, log=None: [("a", "1"), ("b", "2"), ("c", "3")])
+    reg = {"big_brother": {"user_id": "OWNER"}}
+    firsts = []
+    for now in (0, 300, 600, 900):
+        monkeypatch.setattr(ingest, "time",
+                            SimpleNamespace(time=lambda now=now: now, monotonic=real_time.monotonic))
+        fetches.clear()
+        ingest.poll(reg, "TOK")
+        order = list(dict.fromkeys(fetches))  # first read of each channel, in sweep order
+        assert sorted(order) == ["1", "2", "3"]
+        firsts.append(order[0])
+    assert firsts == ["1", "2", "3", "1"]

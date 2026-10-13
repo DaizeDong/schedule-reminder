@@ -263,3 +263,19 @@ def test_relay_bool_fallback_is_honoured_by_the_tick(tmp_path, monkeypatch, outc
     assert len(calls) == 1 and F["title"] in calls[0]
     assert (report["dispatched"] == [item["id"]]) is outcome
     assert (report["retried"] == [item["id"]]) is (not outcome)
+
+
+def test_slow_poll_does_not_starve_staged_records(tmp_path, monkeypatch):
+    """A poll that spends the whole intake window must not stop already staged work."""
+    case = command_inbox(tmp_path, monkeypatch, True)
+    clock = [1000.0]
+    monkeypatch.setattr(ingest_tick, "time",
+                        SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda seconds: None))
+    def slow_poll(**kwargs):
+        clock[0] += ingest_tick.INTAKE_S + 30
+        return {}
+    monkeypatch.setattr(ingest, "poll", slow_poll)
+    result = ingest_tick.run(post=False)
+    assert len(case.calls) == 1
+    assert result["handled"][F["stream"]] == "ok"
+    assert read_record(case)["status"] == "completed"

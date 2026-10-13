@@ -2,7 +2,9 @@
 
 Each selected scheduled capability registers its real entrypoint: `reminder.py --db DB tick`,
 `ingest_tick.py` or `agent_tick.py`. The ingest and work entrypoints read SCHEDULE_DB_PATH and
-AGENT_CENTER_CONFIG from the user environment, as the live registrations do.
+AGENT_CENTER_CONFIG from the user environment, as the live registrations do. Like those, a task
+runs windowless under `pythonw.exe -B` (the pythonw beside the default interpreter, when present)
+so no console flashes and no bytecode is written into the checkout.
 """
 import argparse
 from datetime import datetime, timezone
@@ -20,7 +22,7 @@ import store
 
 HERE = Path(__file__).resolve().parent
 GROUPS = ('store', 'remind', 'ingest', 'work')
-TASKS = {'remind': ('ScheduleReminderTick', 300), 'ingest': ('AgentCenterIngestTick', 600),
+TASKS = {'remind': ('ScheduleReminderTick', 300), 'ingest': ('AgentCenterIngestTick', 300),
          'work': ('AgentCenterWorkTick', 120)}
 ENTRYPOINTS = {'remind': 'reminder.py', 'ingest': 'ingest_tick.py', 'work': 'agent_tick.py'}
 
@@ -35,17 +37,25 @@ def select(value=None):
     return set(names)
 
 
+def _windowless(executable):
+    """pythonw.exe next to a python.exe, so a scheduled tick opens no console window."""
+    path = Path(executable)
+    if path.name.lower() == 'python.exe' and path.with_name('pythonw.exe').is_file():
+        return str(path.with_name('pythonw.exe'))
+    return executable
+
+
 def plan(selection=None, db_path=None, python=None, config=None):
     selected = select(selection)
     db = str(Path(db_path or os.environ.get('SCHEDULE_DB_PATH') or private_data.data_dir()/'db.sqlite3').expanduser().resolve())
-    interpreter = str(Path(python or os.environ.get('SCHEDULE_PYTHON') or sys.executable).expanduser().resolve())
+    interpreter = str(Path(python or os.environ.get('SCHEDULE_PYTHON') or _windowless(sys.executable)).expanduser().resolve())
     registry = str(Path(config).expanduser().resolve() if config else private_data.registry_path())
     rows = {name: {'selected': name in selected, 'status': 'planned' if name in selected else 'not_selected'}
             for name in GROUPS}
     for name in selected.intersection(TASKS):
         task, interval = TASKS[name]
         entrypoint = str(HERE/ENTRYPOINTS[name])
-        argv = [entrypoint, '--db', db, 'tick'] if name == 'remind' else [entrypoint]
+        argv = ['-B'] + ([entrypoint, '--db', db, 'tick'] if name == 'remind' else [entrypoint])
         rows[name].update(runtime=interpreter, entrypoint=entrypoint,
                           task={'name': task, 'interval_seconds': interval,
                                 'interval': 'PT%dM' % (interval//60),
