@@ -334,6 +334,14 @@ def test_parse_tail_missing_is_empty_not_an_error():
     assert agent_run.parse_tail("") == {}
 
 
+def test_parse_tail_skips_a_codex_citation_line_with_a_windows_path():
+    text = ('已发回频道。\n\n'
+            ':codex-file-citation{path="D:\\work\\out.pdf" purpose="output"}\n\n'
+            '{"verify": "python -B check.py", "changed": ["out.pdf"], "summary": "已发回"}')
+    got = agent_run.parse_tail(text)
+    assert got["summary"] == "已发回" and got["verify"] == "python -B check.py"
+
+
 def test_parse_tail_accepts_a_null_verify():
     got = agent_run.parse_tail('{"verify": null, "summary": "无法用命令验证"}')
     assert got["verify"] is None and got["summary"]

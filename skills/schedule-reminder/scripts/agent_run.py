@@ -389,6 +389,12 @@ def _object_end(body, start, decoder):
     return position
 
 
+# A whole-line markdown directive such as Codex's :codex-file-citation{path="D:\work\out.pdf"}. Its
+# Windows path is not a valid JSON string, so the object scan below could not bound it and dropped
+# the real evidence object after it: a delivered order ended review_unavailable.
+_DIRECTIVE_LINE = re.compile(r"(?m)^[ \t]*:[A-Za-z][\w-]*\{[^\n]*\}[ \t]*$")
+
+
 def parse_tail(text):
     """Decode the final object without treating braces inside JSON strings as delimiters.
 
@@ -398,6 +404,7 @@ def parse_tail(text):
     if not text:
         return {}
     body = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
+    body = _DIRECTIVE_LINE.sub("", body)
     decoder = json.JSONDecoder()
     result, position = {}, 0
     while (start := body.find("{", position)) != -1:
