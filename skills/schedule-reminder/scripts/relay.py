@@ -202,7 +202,7 @@ def _send_command(content, prepared):
         elif prepared['payload'] == 'at-file':
             argv.append('@' + str(prepared['snapshot_file']))
         # An exception or unconfirmed cleanup may leave a child reading its @file payload.
-        # Retain the snapshot until an owner reconciles that process tree.
+        # Retain the snapshot until an owner reconciles that job.
         prepared['snapshot_cleanup_safe'] = False
         result = process.run(argv, '', prepared['timeout'], context=prepared['context'])
         prepared['snapshot_cleanup_safe'] = getattr(result, 'cleanup_confirmed', None) is True

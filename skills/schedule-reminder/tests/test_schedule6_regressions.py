@@ -279,3 +279,20 @@ def test_slow_poll_does_not_starve_staged_records(tmp_path, monkeypatch):
     assert len(case.calls) == 1
     assert result["handled"][F["stream"]] == "ok"
     assert read_record(case)["status"] == "completed"
+
+
+def test_poll_that_eats_the_tick_leaves_staged_records_pending(tmp_path, monkeypatch):
+    """No record starts with too little of the whole tick left; it waits instead of burning an attempt."""
+    case = command_inbox(tmp_path, monkeypatch, True)
+    clock = [1000.0]
+    monkeypatch.setattr(ingest_tick, "time",
+                        SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda seconds: None))
+    def slow_poll(**kwargs):
+        clock[0] += ingest_tick.TASK_LIMIT_S - ingest_tick.RESERVE_S - ingest_tick.MIN_DISPATCH_S + 5
+        return {}
+    monkeypatch.setattr(ingest, "poll", slow_poll)
+    ingest_tick.run(post=False)
+    assert case.calls == []
+    record = read_record(case)
+    assert record["status"] == "pending"
+    assert not record["attempts"]

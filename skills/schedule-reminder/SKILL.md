@@ -25,7 +25,7 @@ SQLite (WAL) single file          <- private storage, NEVER touched by downstrea
     reminder.py <verb>            <- versioned CLI contract (JSON always); call via subprocess
     reminder_linked_items.py      <- reviewed read-only Task Console linkage
 [Windows task: PT5M heartbeat] -> reminder.py tick -> reconcile due items -> Discord relay (out)
-[Windows task: PT10M ingest]   -> ingest_tick    -> poll every readable channel -> commands.py
+[Windows task: PT5M ingest]    -> ingest_tick    -> poll every readable channel -> commands.py
                                                     (deterministic) or dispatch (LLM judge)  (in)
 [Windows task: PT2M work]      -> agent_tick     -> reap the dead, launch one work order (do; also woken on enqueue and release)
 ```

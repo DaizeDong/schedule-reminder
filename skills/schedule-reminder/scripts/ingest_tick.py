@@ -13,7 +13,8 @@ ONE TIME BUDGET
     for TASK_LIMIT_S and finishes inside it instead of racing the kill. The poll starts no new
     channel after INTAKE_S, and the poll's start channel rotates every five minutes so the same tail
     channels are not always the ones skipped. Intake of pending records has its own INTAKE_S window
-    measured from when dispatch starts, so a slow poll never starves staged work; the planner
+    measured from when dispatch starts, so a slow poll never starves staged work, but no record
+    starts with less than MIN_DISPATCH_S left of the whole tick; the planner
     call gets at most PLANNER_S and never more than what is left before RESERVE_S; a command
     handler is clamped the same way. A kill in the middle of a model call would throw the plan away
     and pay for it again on the next tick.
@@ -54,6 +55,7 @@ TASK_LIMIT_S = 240   # the PT4M ExecutionTimeLimit a registration may impose
 INTAKE_S = 60        # no new channel poll or pending record is started after this
 PLANNER_S = 120      # the most one planner call may take
 RESERVE_S = 30       # kept back for executing a plan, confirming and recording the outcome
+MIN_DISPATCH_S = 30  # no pending record is started with less than this left before RESERVE_S
 
 
 def _log(msg):
@@ -100,7 +102,8 @@ def run(only_stream=None, post=True):
     # starve records that are already staged.
     dispatch_start = time.monotonic()
     for index, record in enumerate(work):
-        if time.monotonic() - dispatch_start > INTAKE_S:
+        if (time.monotonic() - dispatch_start > INTAKE_S
+                or TASK_LIMIT_S - RESERVE_S - (time.monotonic() - start) < MIN_DISPATCH_S):
             _log("tick: time budget spent; %d pending record(s) wait for the next tick"
                  % (len(work) - index))
             break
