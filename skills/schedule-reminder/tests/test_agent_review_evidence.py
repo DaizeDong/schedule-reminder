@@ -126,14 +126,17 @@ EXPLAINED_DONE = ["DONE\n\nThe workspace holds the requested file with the expec
                   "\n  done.\r\nThe request is satisfied and nothing outside it changed.",
                   "DONE\n- file present\n- check can fail",
                   "DONE。probe.txt 已创建，内容正好是 ok。验证命令逐字节比对。",
-                  "Done. The file exists and the check can fail."]
+                  "Done. The file exists and the check can fail.",
+                  "**DONE**\n\n1. **请求已满足。** 清单已发到频道并读回核对。",
+                  "__done.__ The file exists."]
 # Two answers, or none: each keeps the draft instead of completing the order.
 AMBIGUOUS = ["DONE\n\nCONTINUE: the date is written in the wrong format.",
              "DONE\ncontinue: one more file is missing",
              "DONE, but the verify command checks the wrong file.",
              "DONE: except the second file.",
              "Looks complete.\nDONE",
-             "**DONE**\nAll good.",
+             "**DONE**, but one file is missing.",
+             "**DONE**\n**CONTINUE**: one file is missing",
              "DONE\nDONE",
              "CONTINUE\nthe date is wrong",
              "DONE. CONTINUE: one file is missing",
@@ -146,6 +149,7 @@ def test_review_verdict_reads_the_first_line(text):
 
 
 @pytest.mark.parametrize("text", ["CONTINUE: the date is wrong",
+                                  "**CONTINUE**: the date is wrong",
                                   "CONTINUE:\nthe verify command checks the wrong file.\nDONE otherwise"])
 def test_review_verdict_continue_keeps_its_reading(text):
     assert agent_run.review_verdict(text) == "continue"

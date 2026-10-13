@@ -210,6 +210,13 @@ _CONTINUE_VERDICT = re.compile(r"CONTINUE:\s*\S[\s\S]*", re.I)
 # the same line ("DONE。probe.txt was created ..."). A comma or colon after DONE is still two answers.
 _DONE_LINE = re.compile(r"DONE(?:[.!。！](?!\s*CONTINUE\b).*)?", re.I)
 _VERDICT_LINE = re.compile(r"(DONE[.!。！]?|CONTINUE\s*:.*)", re.I)
+# Markdown emphasis around the token ("**DONE**", "**CONTINUE**: ...") is formatting, not a second
+# answer: a live reviewer answered "**DONE**" plus its reasons and the order ended review_unavailable.
+_EMPHASIS = re.compile(r"^([*_`]{1,3})(DONE|CONTINUE)([.!。！:]?)\1", re.I)
+
+
+def _plain(line):
+    return _EMPHASIS.sub(r"\2\3", line.strip())
 
 
 def review_verdict(text):
@@ -220,16 +227,16 @@ def review_verdict(text):
     reviewer's explanation (a live reviewer answered "DONE" plus two paragraphs and the order
     ended review_unavailable). CONTINUE keeps its old reading: the answer opens with "CONTINUE:"
     and a reason. A DONE line is the bare token, or the token closed by a full stop or
-    exclamation mark with its explanation after it, and no later line may itself read as a verdict; "DONE, but ...", "DONE: ...", a
+    exclamation mark with its explanation after it, and no later line may itself read as a verdict;
+    markdown emphasis around the token ("**DONE**") is ignored. "DONE, but ...", "DONE: ...", a
     verdict after a preamble, or DONE followed by a CONTINUE line are two answers or none, and
     give None, which keeps the draft for the owner instead of completing the order."""
-    decision = (text or "").strip()
-    if _CONTINUE_VERDICT.fullmatch(decision):
+    lines = [_plain(line) for line in (text or "").strip().splitlines()]
+    if _CONTINUE_VERDICT.fullmatch("\n".join(lines)):
         return "continue"
-    lines = decision.splitlines()
-    if not lines or not _DONE_LINE.fullmatch(lines[0].strip()):
+    if not lines or not _DONE_LINE.fullmatch(lines[0]):
         return None
-    if any(_VERDICT_LINE.fullmatch(line.strip()) for line in lines[1:]):
+    if any(_VERDICT_LINE.fullmatch(line) for line in lines[1:]):
         return None
     return "done"
 
