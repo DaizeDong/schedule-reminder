@@ -26,8 +26,8 @@ new release declaration.
 - Complete shared guard integration and fresh independent source reviews.
 - Validate native workers and installation separately from source inspection. Configuration-only
   offline checks do not establish worker readiness, delivery, restoration or publication.
-- Verify installed llmcall process containment, cleanup receipts and model-family metadata before
-  claiming executable work readiness; missing typed evidence leaves work unresolved.
+- Verify installed llmcall process containment and cleanup receipts before claiming executable
+  work readiness; missing typed evidence leaves work unresolved.
 
 ## Future work
 

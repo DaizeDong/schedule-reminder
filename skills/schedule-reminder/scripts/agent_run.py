@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Detached work-order runner: owned generation -> act -> verify -> independent review.
+"""Detached work-order runner: owned generation -> act -> verify -> decide.
 
 The workflow may run for hours; each child call is bounded and owned by llmcall.process.
-Unknown execution outcomes never trigger automatic replay. A reviewer needs actual model-family
-identity and real before/after evidence; missing evidence preserves the work as unavailable.
+Unknown execution outcomes never trigger automatic replay. The executor's own verification
+command, run by the system, is the only completion gate: a passing check, an explicit
+`verify: null` or a missing final contract completes the order on the executor's word, and a
+failing check starts the next round with its real output. No second model reviews the work.
 """
 import argparse
-import hashlib
 import json
 import os
 import re
 import sys
 import tempfile
 from dataclasses import asdict, dataclass, field, is_dataclass
-import subprocess
 import private_data
 from contextvars import ContextVar
 
@@ -31,11 +31,10 @@ for _s in (sys.stdout, sys.stderr):
 
 # Attempts vary the prompt. Provider, model and fallback remain llmcall policy.
 APPROACH_CHAINS = (("inspect evidence",), ("test a smaller hypothesis",), ("revisit assumptions",))
-# The phase budget is the WHOLE llmcall chain budget for one act or one review. It is not
-# provider routing: without it llmcall's short default (180s in 0.3.0) ends agent work mid-task,
-# which is the regression the installed runtime fixed on 2026-10-03 and this line keeps fixed.
+# The phase budget is the WHOLE llmcall chain budget for one act. It is not provider routing:
+# without it llmcall's short default (180s in 0.3.0) ends agent work mid-task, which is the
+# regression the installed runtime fixed on 2026-10-03 and this line keeps fixed.
 ACT_TIMEOUT = int(os.environ.get("AGENT_EXEC_ACT_TIMEOUT") or 1800)
-REVIEW_TIMEOUT = int(os.environ.get("AGENT_EXEC_REVIEW_TIMEOUT") or 420)
 VERIFY_TIMEOUT = int(os.environ.get("AGENT_EXEC_VERIFY_TIMEOUT") or 600)
 STALL_ROUNDS = int(os.environ.get("AGENT_EXEC_STALL_ROUNDS") or 3)
 MAX_APPROACHES = len(APPROACH_CHAINS)
@@ -74,20 +73,21 @@ def fence(text, limit=900):
 
 
 # --------------------------------------------------------------------------- llmcall
-def _llm(prompt, timeout, mode, *, actor_family=None):
+def _llm(prompt, timeout, mode):
     """Preserve installed routing; return execution evidence for the call.
 
-    llmcall `call()` takes only prompt/mode/timeout/avoid/log from this runner. The working
+    llmcall `call()` takes only prompt/mode/timeout/log from this runner. The working
     directory is the process cwd (`_execute_order` changes into the workspace before any call).
     Ownership is fenced by the child_start receipt `_observed_call` writes before the call. While
     the call runs, llmcall 0.3.1 and later poll `run_order`'s execution_scope token (a
     PolledCancellation) and stop the client tree once it is set; 0.3.0 ignores the token, so
     there the running call ends only at its budget.
     """
-    if mode not in ("judge", "research", "agent"):
+    # The runner makes one kind of model call: the executor's. Anything else is a mistake.
+    if mode != "agent":
         raise ValueError("invalid llmcall mode: %r" % mode)
     import llmcall
-    options = {"avoid": actor_family} if actor_family else {}
+    options = {}
     if timeout is not None:
         options["timeout"] = float(timeout)
     return execution_evidence(llmcall.call(prompt, mode=mode, log=lambda m: _log("llmcall: " + m),
@@ -205,49 +205,6 @@ def identity(result):
         "model_source", "policy_source", "execution_started", "outcome", "effects")}
 
 
-_CONTINUE_VERDICT = re.compile(r"CONTINUE:\s*\S[\s\S]*", re.I)
-# DONE alone, or DONE closed by a full stop or exclamation mark and followed by its explanation on
-# the same line ("DONE。probe.txt was created ..."). A comma or colon after DONE is still two answers.
-_DONE_LINE = re.compile(r"DONE(?:[.!。！](?!\s*CONTINUE\b).*)?", re.I)
-_VERDICT_LINE = re.compile(r"(DONE[.!。！]?|CONTINUE\s*:.*)", re.I)
-# Markdown emphasis around the token ("**DONE**", "**CONTINUE**: ...") is formatting, not a second
-# answer: a live reviewer answered "**DONE**" plus its reasons and the order ended review_unavailable.
-_EMPHASIS = re.compile(r"^([*_`]{1,3})(DONE|CONTINUE)([.!。！:]?)\1", re.I)
-
-
-def _plain(line):
-    return _EMPHASIS.sub(r"\2\3", line.strip())
-
-
-def review_verdict(text):
-    """Return "done", "continue" or None for the reviewer's answer.
-
-    review_prompt asks for an answer that STARTS with one word: DONE, or CONTINUE:<what is
-    missing>. The verdict is read from the first non-empty line, and what follows it is the
-    reviewer's explanation (a live reviewer answered "DONE" plus two paragraphs and the order
-    ended review_unavailable). CONTINUE keeps its old reading: the answer opens with "CONTINUE:"
-    and a reason. A DONE line is the bare token, or the token closed by a full stop or
-    exclamation mark with its explanation after it, and no later line may itself read as a verdict;
-    markdown emphasis around the token ("**DONE**") is ignored. "DONE, but ...", "DONE: ...", a
-    verdict after a preamble, or DONE followed by a CONTINUE line are two answers or none, and
-    give None, which keeps the draft for the owner instead of completing the order."""
-    lines = [_plain(line) for line in (text or "").strip().splitlines()]
-    if _CONTINUE_VERDICT.fullmatch("\n".join(lines)):
-        return "continue"
-    if not lines or not _DONE_LINE.fullmatch(lines[0]):
-        return None
-    if any(_VERDICT_LINE.fullmatch(line) for line in lines[1:]):
-        return None
-    return "done"
-
-
-def independent_review(actor, reviewer):
-    actor_model, actor_family = getattr(actor, "effective_model", None), getattr(actor, "model_family", None)
-    reviewer_model, reviewer_family = getattr(reviewer, "effective_model", None), getattr(reviewer, "model_family", None)
-    return bool(actor_model and actor_family and reviewer_model and reviewer_family
-                and actor_family != reviewer_family)
-
-
 class OperationCancellation:
     """Exact ownership check; a database failure revokes work.
 
@@ -296,10 +253,6 @@ class PolledCancellation:
 
 class CleanupUncertain(RuntimeError):
     """The shared owner could not establish cleanup; manual reconciliation is required."""
-
-
-class BaselineUnavailable(RuntimeError):
-    """An initial baseline cannot be reconstructed after execution has begun."""
 
 
 _OPERATION = ContextVar("reminder_operation", default=None)
@@ -391,100 +344,56 @@ def _object_end(body, start, decoder):
 
 # A whole-line markdown directive such as Codex's :codex-file-citation{path="D:\work\out.pdf"}. Its
 # Windows path is not a valid JSON string, so the object scan below could not bound it and dropped
-# the real evidence object after it: a delivered order ended review_unavailable.
+# the real contract object after it.
 _DIRECTIVE_LINE = re.compile(r"(?m)^[ \t]*:[A-Za-z][\w-]*\{[^\n]*\}[ \t]*$")
+_FENCES = re.compile(r"^```(?:json)?\s*|\s*```$")
+_OPEN_FENCE = re.compile(r"\s*```[\w-]*\s*$")
 
 
-def parse_tail(text):
-    """Decode the final object without treating braces inside JSON strings as delimiters.
+def _scan_tail(text):
+    """-> (last decoded object or {}, the text before the last object candidate).
 
     Advance past each decoded object so its nested objects cannot replace the outer contract.
-    A malformed later candidate invalidates any earlier example; the runner validates the fields.
-    """
-    if not text:
-        return {}
-    body = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
-    body = _DIRECTIVE_LINE.sub("", body)
+    A malformed later candidate invalidates any earlier example. The prose is everything before
+    the last candidate when nothing but whitespace follows it, otherwise the whole answer."""
+    body = _DIRECTIVE_LINE.sub("", _FENCES.sub("", (text or "").strip()))
     decoder = json.JSONDecoder()
-    result, position = {}, 0
+    result, position, last = {}, 0, None
     while (start := body.find("{", position)) != -1:
+        last = start
         try:
             obj, position = decoder.raw_decode(body, start)
         except json.JSONDecodeError:
             result, position = {}, _object_end(body, start, decoder)
             continue
         result = obj
-    return result
+    prose = body
+    if last is not None and not body[position:].strip():
+        prose = _OPEN_FENCE.sub("", body[:last])
+    return result, prose.strip()
 
 
-# --------------------------------------------------------------------------- the world
-class GitInspectionError(RuntimeError):
-    """Git could not supply complete change evidence."""
+def parse_tail(text):
+    """Decode the final object without treating braces inside JSON strings as delimiters.
+    The runner validates the fields."""
+    return _scan_tail(text)[0] if text else {}
 
 
-def _git(workspace, *args, allow=(0,)):
-    """A read-only git inspection. It has no side effects to journal, so it runs as a plain bounded
-    child of the runner (inside the runner's job) rather than as an observed execution."""
-    try:
-        result = subprocess.run(
-            ["git", "--no-optional-locks", *args], cwd=workspace, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=30,
-            **({"creationflags": 0x08000000} if sys.platform == "win32" else {}))
-    except (OSError, subprocess.SubprocessError) as error:
-        raise GitInspectionError("git inspection unavailable: %s" % type(error).__name__) from error
-    if result.returncode not in allow:
-        raise GitInspectionError("git inspection unavailable: " + (result.stderr or result.stdout)[:200])
-    return result.returncode, result.stdout
+SUMMARY_LIMIT = 600
 
 
-def reported_changes(claimed):
-    return sorted({str(c).strip() for c in (claimed or []) if str(c).strip()})
+def _bounded(text, limit=SUMMARY_LIMIT):
+    text = (text or "").strip()
+    return text[:limit].rstrip() + "..." if len(text) > limit else text
 
 
-def detect_changes(workspace, claimed):
-    """Git mode: keep self-reported filenames separate from independently captured evidence."""
-    reported = reported_changes(claimed)
-    if agent_task.is_git_workspace(workspace):
-        try:
-            _rc, out = _git(workspace, "status", "--porcelain")
-        except GitInspectionError as error:
-            return reported, "self-reported; " + str(error)
-        files = [ln[3:].strip().strip('"') for ln in out.splitlines() if len(ln) > 3]
-        return sorted(set(files)), "git"
-    return reported, "self-reported"
-
-
-def artifact_changes(before, after):
-    """Paths whose bytes differ between two artifact captures, including deleted ones."""
-    old, new = ({row["path"]: row["sha256"] for row in json.loads(text)["files"]} for text in (before, after))
-    return sorted({path for path in new if old.get(path) != new[path]} | (old.keys() - new.keys()))
-
-
-def capture_diff(workspace):
-    """Actual staged/unstaged diffs and untracked contents, including pre-existing changes.
-
-    Refuse incomplete evidence instead of declaring a self-reported file list a diff.
-    """
-    parts = ["STAGED\n" + _git(workspace, "diff", "--cached", "--binary", "--no-ext-diff")[1],
-             "UNSTAGED\n" + _git(workspace, "diff", "--binary", "--no-ext-diff")[1]]
-    rc, revision = _git(workspace, "rev-parse", "--verify", "--quiet", "HEAD", allow=(0, 1))
-    parts.insert(0, "HEAD " + (revision.strip() if rc == 0 else "unborn"))
-    names = _git(workspace, "ls-files", "--others", "--exclude-standard", "-z")[1]
-    for name in names.split("\0"):
-        if not name:
-            continue
-        path = os.path.realpath(os.path.join(workspace, name))
-        if os.path.commonpath([os.path.realpath(workspace), path]) != os.path.realpath(workspace):
-            raise RuntimeError("untracked path escapes workspace")
-        with open(path, "rb") as handle:
-            data = handle.read(1_000_001)
-        if len(data) > 1_000_000:
-            raise RuntimeError("untracked evidence exceeds review limit")
-        parts.append("UNTRACKED " + name + "\n" + data.decode("utf-8"))
-    evidence = "\n".join(parts)
-    if len(evidence) > 1_000_000:
-        raise RuntimeError("diff exceeds review limit")
-    return evidence
+def answer_summary(text, limit=SUMMARY_LIMIT):
+    """The executor's own answer as its summary: prose with any trailing JSON stripped, bounded.
+    An answer that is only a JSON object falls back to that object's own string summary."""
+    tail, prose = _scan_tail(text)
+    if not prose and isinstance(tail.get("summary"), str):
+        prose = tail["summary"]
+    return _bounded(prose, limit)
 
 
 # The check runs in POWERSHELL on Windows, not cmd. Measured, in that order of discovery:
@@ -603,31 +512,6 @@ def act_prompt(request, workspace, last_failure=None, fresh=False):
     return "\n".join(parts)
 
 
-def review_prompt(request, summary, changed, changed_via, cmd, rc, out, *, diff="",
-                  actor_identity=None, before=""):
-    return "\n".join([
-        "你在独立复核另一个 agent 刚刚完成的工作。你没有参与这项工作。",
-        "只回答一个词开头的结论: DONE 或 CONTINUE:<一句话说明还差什么>。",
-        "判 DONE 要严格,同时看两件事:",
-        "(1) 原始请求是否【确实被满足】。验证命令通过并不等于请求被满足 - 一条弱到无法失败的"
-        "验证命令,或者一条验证了别的东西的命令,都应该判 CONTINUE 并指出来。",
-        # Added after a live run: the agent was asked to remove a hardcoded default and also deleted
-        # an unrelated lookup table, changing behaviour well outside the request. The check it wrote
-        # passed, and a reviewer that only asked "was the request satisfied" said DONE. Scope is a
-        # second question and has to be asked as one.
-        "(2) 有没有【顺手改坏请求之外的东西】。删掉了请求没让删的功能、改变了无关行为、"
-        "为了让检查通过而绕开问题,都判 CONTINUE 并指出具体是哪一处。请求之外的东西应当保持原样。",
-        "", "原始请求:", (request or "").strip(),
-        "", "执行者的自述:", (summary or "(无)")[:1000],
-        "", "实际改动的文件(来源: %s):" % changed_via, ", ".join(changed[:40]) or "(无)",
-        "", "系统亲自执行的验证命令:", str(cmd),
-        "返回码: %s" % rc, "真实输出:", (out or "(无输出)"),
-        "", "实际执行者身份:", json.dumps(actor_identity or {}, ensure_ascii=False),
-        "", "首次执行前的不可变基线(含原 HEAD 和后来删除的未跟踪文件内容):", before,
-        "", "执行后真实 diff / 新文件内容(与首次基线比较):", diff,
-        "", "你的结论:"])
-
-
 # --------------------------------------------------------------------------- the run
 def _write(path, text):
     with private_data.open_for_write(path, "w", encoding="utf-8", newline="\n") as f:
@@ -635,46 +519,6 @@ def _write(path, text):
 
         f.flush()
         os.fsync(f.fileno())
-
-
-def evidence_mode(item, workspace):
-    """An order records its evidence mode at enqueue and it never changes. An order without one
-    (older orders) is judged by its workspace: `git diff` outside a repository exits 129, so a
-    non-repository workspace that was sent to capture_diff could never reach review."""
-    mode = ((item or {}).get("ext") or {}).get("x_agent_exec_evidence")
-    return mode or ("git" if agent_task.is_git_workspace(workspace) else "artifacts")
-
-
-def _capture_evidence(workspace, mode):
-    """Git evidence in git mode, bounded artifact evidence in artifacts mode."""
-    if mode == "artifacts":
-        from agent_artifacts import capture_artifacts, ArtifactEvidenceUnavailable
-        try:
-            return capture_artifacts(workspace)
-        except ArtifactEvidenceUnavailable as exc:
-            raise BaselineUnavailable(str(exc)) from exc
-    return capture_diff(workspace)
-
-
-def _initial_baseline(item_id, generation, workspace, mode):
-    op = agent_task.operation(item_id)
-    workspace = os.path.normcase(os.path.realpath(workspace))
-    if op["baseline"] is None:
-        if op["checkpoint"] != "running":
-            raise BaselineUnavailable("initial baseline missing after execution checkpoint")
-        try:
-            before = _capture_evidence(workspace, mode)
-        except (OSError, RuntimeError, UnicodeError) as exc:
-            raise BaselineUnavailable("initial baseline unavailable: " + str(exc)[:200]) from exc
-        digest = hashlib.sha256(before.encode("utf-8")).hexdigest()
-        if not agent_task.save_baseline(item_id, generation, before, digest, workspace):
-            raise BaselineUnavailable("initial baseline publication rejected")
-        op = agent_task.operation(item_id)
-    before = op["baseline"]
-    if (op["baseline_workspace"] != workspace or not isinstance(before, str) or
-            hashlib.sha256(before.encode("utf-8")).hexdigest() != op["baseline_sha256"]):
-        raise BaselineUnavailable("initial baseline evidence is corrupt or belongs to another workspace")
-    return before
 
 
 def run_order(item_id, post_reports=True, *, generation=None):
@@ -711,33 +555,45 @@ def _execute_order(item, generation, stream, workspace, post_reports):
         agent_task.finish(item_id, False, "workspace missing", generation=generation)
         return 1
     os.chdir(workspace)
-    mode = evidence_mode(item, workspace)
     for approach in range(MAX_APPROACHES):
         verdict = _run_approach(item, stream, request, workspace, approach, post_reports,
-                                generation=generation, mode=mode)
+                                generation=generation)
         if verdict["outcome"] != "stalled":
             return 0 if verdict["outcome"] == "done" else 1
     agent_task.finish(item_id, False, "no progress after %d approaches" % MAX_APPROACHES,
                       exec_state_value="stalled", generation=generation)
     return 1
 
-def _run_approach(item, stream, request, workspace, approach, post_reports, *, generation, mode):
+
+def _run_approach(item, stream, request, workspace, approach, post_reports, *, generation):
     item_id = item["id"]
     token = _OPERATION.set((item_id, generation))
     try:
         return _run_approach_owned(item, stream, request, workspace, approach,
-                                   post_reports, generation=generation, mode=mode)
-    except (CleanupUncertain, BaselineUnavailable) as exc:
-        outcome = "reconcile" if isinstance(exc, CleanupUncertain) else "review_unavailable"
-        updated = agent_task.finish(item_id, False, str(exc), exec_state_value=outcome,
+                                   post_reports, generation=generation)
+    except CleanupUncertain as exc:
+        updated = agent_task.finish(item_id, False, str(exc), exec_state_value="reconcile",
                                      generation=generation)
-        return {"outcome": outcome if updated else "cancelled"}
+        return {"outcome": "reconcile" if updated else "cancelled"}
     finally:
         _OPERATION.reset(token)
 
 
-def _run_approach_owned(item, stream, request, workspace, approach, post_reports, *, generation, mode):
-    """Known verification failures may continue; unknown execution/review results never replay.
+def contract(tail):
+    """-> (cmd, summary, changed) for a valid final contract, or None.
+
+    Valid: a `verify` key holding a nonempty command string or null, and a nonempty summary."""
+    cmd, summary = tail.get("verify"), tail.get("summary")
+    if ("verify" not in tail or not isinstance(summary, str) or not summary.strip()
+            or (cmd is not None and (not isinstance(cmd, str) or not cmd.strip()))):
+        return None
+    changed = tail.get("changed")
+    changed = sorted({str(c).strip() for c in changed if str(c).strip()}) if isinstance(changed, list) else []
+    return cmd, _bounded(summary), changed
+
+
+def _run_approach_owned(item, stream, request, workspace, approach, post_reports, *, generation):
+    """Known verification failures may continue; unknown execution results never replay.
 
     Ownership is checked once here. After that every step that commits anything (checkpoint,
     child receipt, finish) is a generation-fenced store write whose False return ends the round
@@ -746,7 +602,6 @@ def _run_approach_owned(item, stream, request, workspace, approach, post_reports
     op = agent_task.operation(item_id)
     if not op or not agent_task.owns(item_id, generation):
         return {"outcome": "cancelled"}
-    before = _initial_baseline(item_id, generation, workspace, mode)
     adir = os.path.join(agent_task.run_dir(item), op["attempt_id"], "a%d" % approach)
     sigs, last_failure, rnd = [], None, 0
 
@@ -774,101 +629,47 @@ def _run_approach_owned(item, stream, request, workspace, approach, post_reports
             return stop(outcome, result.error or "agent execution outcome unavailable")
         if not agent_task.checkpoint(item_id, generation, "verifying"):
             return {"outcome": "cancelled"}
-        tail = parse_tail(result.text)
-        if not tail:
-            return stop("review_unavailable", "execution returned no verification evidence; draft retained")
-        cmd, summary = tail.get("verify"), tail.get("summary")
-        if ("verify" not in tail or not isinstance(summary, str) or not summary.strip()
-                or (cmd is not None and (not isinstance(cmd, str) or not cmd.strip()))):
-            return stop("review_unavailable", "invalid final verification contract; draft retained")
-        summary = summary.strip()
-        if mode == "git":
-            changed, changed_via = detect_changes(workspace, tail.get("changed"))
-        rc, out = run_verify(str(cmd), workspace) if cmd else (None, "(no executable verification)")
-        _write(os.path.join(rdir, "verify.txt"), "cmd: %s\nrc: %s\n\n%s" % (cmd, rc, out))
-        artifacts = artifacts_error = None
-        if mode == "artifacts":
-            # One bounded capture after the check serves the file list, the review diff and the
-            # stall signature: the workspace is this order's own directory.
-            try:
-                artifacts = _capture_evidence(workspace, mode)
-                changed, changed_via = artifact_changes(before, artifacts), "artifacts"
-            except (OSError, RuntimeError, UnicodeError, ValueError, KeyError) as exc:
-                artifacts_error = str(exc)[:200]
-                changed, changed_via = reported_changes(tail.get("changed")), "self-reported; " + artifacts_error
+        terms = contract(parse_tail(result.text))
+        if terms is None:
+            # No usable contract: the executor's own answer is the result. Nothing is run.
+            summary = answer_summary(result.text) or "(执行者没有给出说明)"
+            cmd, rc, out, changed, contracted = None, None, "", [], False
+        else:
+            cmd, summary, changed = terms
+            contracted = True
+            rc, out = run_verify(str(cmd), workspace) if cmd else (None, "(no executable verification)")
+            _write(os.path.join(rdir, "verify.txt"), "cmd: %s\nrc: %s\n\n%s" % (cmd, rc, out))
         if cmd and rc != 0:
             if rc in (124, 127, 130):
                 return stop("reconcile", "verification interrupted: " + out[:200])
             last_failure = "命令: %s\n返回码: %s\n输出:\n%s" % (cmd, rc, out)
-        else:
-            if not getattr(result, "effective_model", None) or not getattr(result, "model_family", None) or before is None:
-                return stop("review_unavailable", "independent actor identity or baseline diff unavailable")
-            if mode == "artifacts":
-                if artifacts is None:
-                    return stop("review_unavailable", "actual diff unavailable: " + artifacts_error)
-                diff = artifacts
-            else:
-                try:
-                    diff = _capture_evidence(workspace, mode)
-                except (OSError, RuntimeError, UnicodeError) as exc:
-                    return stop("review_unavailable", "actual diff unavailable: " + str(exc)[:200])
-            if before.startswith("HEAD ") and before.splitlines()[0] != diff.splitlines()[0]:
-                return stop("review_unavailable", "revision changed; working-tree diff alone is incomplete")
-            _write(os.path.join(rdir, "before.diff"), before)
-            _write(os.path.join(rdir, "after.diff"), diff)
-            review = review_prompt(request, summary, changed, changed_via, cmd, rc, out,
-                                   diff=diff, before=before, actor_identity=identity(result))
-            _write(os.path.join(rdir, "review-prompt.txt"), review)
-            _write(os.path.join(rdir, "evidence.json"), json.dumps({
-                "work_item_id": item_id, "run_id": op["run_id"], "attempt_id": op["attempt_id"],
-                "generation": generation, "actor": identity(result),
-                "baseline_sha256": hashlib.sha256(before.encode("utf-8")).hexdigest(),
-                "original_head": before.splitlines()[0],
-                "diff_sha256": hashlib.sha256(diff.encode()).hexdigest(),
-                "review_input_sha256": hashlib.sha256(review.encode()).hexdigest()}, ensure_ascii=False))
-            if not agent_task.checkpoint(item_id, generation, "reviewing"):
-                return {"outcome": "cancelled"}
-            reviewer = _observed_call("reviewer", _llm, review, REVIEW_TIMEOUT, "judge",
-                                      actor_family=result.model_family)
-            _write(os.path.join(rdir, "review.json"), json.dumps(_result_record(reviewer), ensure_ascii=False))
-            if reviewer.error or getattr(reviewer, "outcome", None) != "success" or not independent_review(result, reviewer):
-                return stop("review_unavailable", "independent reviewer unavailable; draft retained")
-            decision = (reviewer.text or "").strip()
-            verdict = review_verdict(decision)
-            if verdict == "done":
-                # Git mode only: the owner may edit the same repository during review, which
-                # invalidates the evidence, not the work. An artifacts workspace is this order's
-                # own directory and the reviewer writes nothing.
-                if mode == "git" and _capture_evidence(workspace, mode) != diff:
-                    return stop("review_unavailable", "workspace changed during review")
-                if not agent_task.finish(item_id, True, summary[:200] or "done", generation=generation):
-                    return {"outcome": "cancelled"}
-                if post_reports:
-                    post(stream, _done_report(item_id[:8], request, summary, changed, changed_via,
-                         cmd, rc, out, reviewer.effective_model, decision, approach, rnd,
-                         agent_task.run_dir(item)))
-                return {"outcome": "done"}
-            if verdict != "continue":
-                return stop("review_unavailable", "review verdict unavailable; draft retained")
-            last_failure = "独立复核判定还没完成: " + decision
-        sigs.append(agent_task.signature(rc, out, changed, workspace, evidence=artifacts))
-        if len(sigs) >= STALL_ROUNDS and len(set(sigs[-STALL_ROUNDS:])) == 1:
-            return {"outcome": "stalled"}
+            sigs.append(agent_task.signature(rc, out, changed, workspace))
+            if len(sigs) >= STALL_ROUNDS and len(set(sigs[-STALL_ROUNDS:])) == 1:
+                return {"outcome": "stalled"}
+            continue
+        if not agent_task.finish(item_id, True, summary[:200] or "done", generation=generation):
+            return {"outcome": "cancelled"}
+        if post_reports:
+            post(stream, _done_report(item_id[:8], request, summary, changed, cmd, rc, out,
+                                      approach, rnd, agent_task.run_dir(item), contracted=contracted))
+        return {"outcome": "done"}
 
 
-def _done_report(short, request, summary, changed, changed_via, cmd, rc, out, rprov, decision,
-                 approach, rnd, rundir):
+def _done_report(short, request, summary, changed, cmd, rc, out, approach, rnd, rundir, *,
+                 contracted=True):
     lines = ["✅ 工作单 `%s` 完成(第 %d 个思路,第 %d 轮)" % (short, approach + 1, rnd),
              "请求:%s" % request.strip().replace("\n", " ")[:150],
-             "自述:%s" % (summary or "(无)")[:200],
-             "改动(%s):%s" % (changed_via, ", ".join(changed[:12]) or "(无文件变更)")]
+             "自述:%s" % (summary or "(无)")[:SUMMARY_LIMIT + 3],
+             "改动(self-reported):%s" % (", ".join(changed[:12]) or "(未列出)")]
     if cmd:
         lines += ["验证:`%s` 返回 %s" % (cmd, rc), fence(out, 700)]
+    elif contracted:
+        lines += ["⚠️ 本次完成判定【没有可执行验证】:执行者说明这项任务无法用一条命令验证,"
+                  "按执行者的自述收口。"]
     else:
-        lines += ["⚠️ 本次完成判定【没有可执行验证】,执行者未能给出一条能失败的检查命令,"
-                  "仅凭独立复核意见收口。"]
-    lines += ["独立复核(%s):%s" % (rprov or "?", decision[:300]),
-              "完整记录:`%s`" % rundir]
+        lines += ["⚠️ 本次完成判定【没有可执行验证】:执行者没有给出有效的验证契约,"
+                  "按执行者的回答收口。"]
+    lines += ["完整记录:`%s`" % rundir]
     return "\n".join(lines)
 
 

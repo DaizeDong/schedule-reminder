@@ -28,8 +28,9 @@ safety is enforced at commit time by the Guards hooks and CI.
 Current defaults use root-level `state/`, `agent-runs/` and `digest.json`; the sole
 reminder database is `data/db.sqlite3`. The contract also declares known leaves for
 retained `data/state/`, `data/agent-runs/` and `data/digest.json` selections. A dispatched
-order with no usable requested folder gets its own artifact workspace under
-`agent-runs/workspaces/`; the contract owns that container, not its outputs. Explicit
+order with no usable requested folder gets its own workspace under
+`agent-runs/workspaces/`, which keeps its files out of the home directory; the contract owns
+that container, not its outputs. Explicit
 overrides need their own reviewed path families. An entry
 does not create a directory or change the installed consumer's selected path. See
 [deployment](../skills/schedule-reminder/reference/deployment.md) for initialization
@@ -46,7 +47,10 @@ Ingest staging follows the root state directory; durable dispatch retry records
 retain their distinct default under `data/state/dispatch/`.
 
 Run ownership names request/event files and the known approach/round leaves in both
-current attempt and verified earlier layouts. Keep active or unresolved work and
+current attempt and verified earlier layouts. A round now writes `prompt.txt`, `actor.json`,
+`answer.txt` and, when a check ran, `verify.txt`; the review inputs and workspace evidence of
+earlier rounds (`before.diff`, `after.diff`, `review-prompt.txt`, `evidence.json`, `review.json`)
+are no longer produced and remain declared for the orders that have them. Keep active or unresolved work and
 evidence required to interpret its matching generation and attempt. Worker logs
 are diagnostics with a conditional hold during unresolved recovery. Once completed
 rounds no longer support selected results or recovery, preserve the useful result

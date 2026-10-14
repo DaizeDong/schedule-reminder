@@ -136,25 +136,12 @@ def test_untyped_results_are_left_unresolved(installed):
     assert agent_run.execution_evidence(untyped) is untyped
 
 
-def test_translated_actor_and_reviewer_complete_only_across_families(installed):
-    actor = agent_run.execution_evidence(Result(text="{}", provider="codexg",
-                                                attempts=[Attempt("codexg", True, 5, group="codex")]))
-    other = agent_run.execution_evidence(Result(text="DONE", provider="claude",
-                                                attempts=[Attempt("claude", True, 5, group="claude")]))
-    same = agent_run.execution_evidence(Result(text="DONE", provider="codex",
-                                               attempts=[Attempt("codex", True, 5, group="codex")]))
-    assert agent_run.independent_review(actor, other)
-    assert not agent_run.independent_review(actor, same)
-
-
-def test_actor_gets_the_act_budget_and_reviewer_the_review_budget(installed, monkeypatch):
+def test_actor_gets_the_act_budget(installed, monkeypatch):
     seen = []
     monkeypatch.setattr(installed, "call", lambda prompt, **kw: seen.append(kw) or Result())
     agent_run._llm("p", agent_run.ACT_TIMEOUT, "agent")
-    agent_run._llm("p", agent_run.REVIEW_TIMEOUT, "judge", actor_family="codex")
-    assert [kw["timeout"] for kw in seen] == [1800.0, 420.0]
-    assert seen[1]["avoid"] == "codex"
-    assert all(not {"cwd", "cancel", "requirements", "chain", "model"} & kw.keys() for kw in seen)
+    assert [kw["timeout"] for kw in seen] == [1800.0]
+    assert not {"avoid", "cwd", "cancel", "requirements", "chain", "model"} & seen[0].keys()
 
 
 def test_runner_child_gets_a_hidden_console_not_a_detached_one():

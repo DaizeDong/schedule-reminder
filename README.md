@@ -159,9 +159,10 @@ the live scheduled tasks; use the execution report for the exact source revision
 - **Recurrence uses rolling expansion.** The supported RRULE subset advances the master row to the next future occurrence; it does not materialize an infinite series. See the contract for supported fields.
 - **Windows-first deployment** (scheduled task via `install.ps1`); no maintained Unix cron installer is shipped.
 - **DB must stay on local NTFS**, never a OneDrive/GDrive/network path (WAL lock + sync corruption).
-- **Work completion needs llmcall execution evidence.** Missing process containment, cleanup
-  confirmation, model-family identity or review evidence leaves the run unresolved. Offline
-  controls do not establish that an installed llmcall version provides those capabilities.
+- **Work completion needs llmcall execution evidence.** Missing process containment or cleanup
+  confirmation leaves the run unresolved. Completion itself is the executor's own verification
+  command, run by the system; no second model reviews the work. Offline controls do not establish
+  that an installed llmcall version provides those capabilities.
 
 ## Languages
 

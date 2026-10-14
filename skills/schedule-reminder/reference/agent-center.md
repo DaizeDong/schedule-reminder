@@ -278,22 +278,20 @@ calls, command execution and database changes. It is not a dry run. See
   enqueues work or requests a stop against the saved authorized work IDs. Console actions bind
   stop intent and final cancellation to the observed generation; a stale request cannot stop a
   replacement generation. A confirmation distinguishes requested, stopped and unresolved outcomes.
-- **A round is act, verify, review, decide.** The actor returns a final verification contract with
-  a nonempty summary and a command, or an explicit `verify: null` when no executable check exists.
-  A failing check cannot complete the work. Completion additionally requires the actual actor and
-  reviewer model identities, different reported model families and a `DONE` verdict; in git mode
-  the review evidence must also be unchanged after the review. A review-only completion is
-  identified in the report. The verdict
-  is the first non-empty line of the answer and lines after it are explanation
-  (`agent_run.review_verdict`): `DONE` must be the bare token (one trailing full stop allowed) and
-  no later line may itself read as a verdict; `CONTINUE:` must open the answer with a reason.
-  Anything else (`DONE, but ...`, a verdict after a preamble, `DONE` followed by a `CONTINUE:`
-  line) is no verdict and leaves `review_unavailable`.
-- **Unknown evidence does not replay execution.** Missing execution or cleanup evidence leaves
-  `reconcile`; an invalid final contract or unavailable independent review leaves
-  `review_unavailable`. A confirmed failure before execution can be recorded as `failed`.
-  Only known verification failures or an explicit `CONTINUE:` verdict may continue the loop.
-  Repeated unchanged failures rotate the prompt approach, while llmcall routing remains unchanged.
+- **A round is act, verify, decide.** The executor (one `mode="agent"` call) does the work and
+  ends its answer with a final contract: a nonempty summary and a `verify` command, or an explicit
+  `verify: null` when no executable check exists. The system runs that command itself in the
+  workspace. Exit 0 completes the order; 124, 127 or 130 (timeout, unrunnable, cancelled) leaves
+  `reconcile` as "verification interrupted"; any other nonzero exit starts the next round with the
+  command's real output, and a failing check never completes the work. `verify: null` completes
+  the order on the executor's summary. An answer without a valid contract also completes the
+  order: the executor is trusted, nothing is run, and its answer (prose with any trailing JSON
+  stripped, bounded) becomes the summary. No second model reviews the work.
+- **Unknown execution does not replay.** Missing execution or cleanup evidence leaves
+  `reconcile`. A confirmed failure before execution can be recorded as `failed`. Only a known
+  verification failure continues the loop. Repeated unchanged failures rotate the prompt approach,
+  while llmcall routing remains unchanged. `review_unavailable` is historical: the retired
+  independent review produced it, and old orders may still carry it.
 - **Execution evidence from llmcall 0.3.0.** The installed `Result` has no typed outcome,
   cleanup or model-id fields, so `agent_run.execution_evidence` derives them from llmcall's own
   public records and from nothing else (never from response text):
@@ -322,13 +320,12 @@ calls, command execution and database changes. It is not a dry run. See
   child receipt, finish) is a generation-fenced store write whose `False` ends the round as
   cancelled. Under llmcall 0.3.0 the token is ignored while a model call runs, so the order waits
   for that call's phase budget.
-- **Evidence by mode.** The mode (`git` or `artifacts`) is fixed at enqueue and read once per run.
-  Git mode lists changed files with `git status`, captures the diff after a passing check and
-  captures it again after a `DONE` verdict to catch an edit made during review. These read-only
-  git inspections run as plain bounded children of the runner (30 s, no window), not as journaled
-  executions. Artifacts mode never runs git: one bounded capture of the order's own directory after
-  the check gives the changed-file list (paths whose sha256 differs from the baseline), the review
-  evidence and the stall signature.
+- **No workspace inspection.** The runner neither runs git nor snapshots the workspace. The
+  changed-file list is the executor's self-reported `changed` list and the report labels it so.
+  The stall signature hashes the check's return code, its normalized output and the current bytes
+  of the reported files. Dispatch uses a requested folder that exists in place; an order with no
+  usable folder (none, a missing one, the home directory or a filesystem root) gets its own
+  directory under `agent-runs/workspaces/`, so its files stay out of the home directory.
 - **Work-order reads and writes are in process.** `agent_task.orders`/`get` read the store
   directly, and every lifecycle write is a generation-fenced store transaction. No reminder.py
   child is started on the tick or runner path.
@@ -397,17 +394,16 @@ calls, command execution and database changes. It is not a dry run. See
   with no console, so each console program it started opened a visible window. The runner now has
   one hidden console that its children inherit. Native process tests and installed scheduler
   validation are separate from source review.
-- **Installed llmcall policy applies throughout.** Actor calls use `llmcall.call(prompt,
-  mode="agent", timeout=ACT_TIMEOUT)`; reviewer calls use judge mode with
-  `timeout=REVIEW_TIMEOUT` and the observed actor family as `avoid`. The phase budgets
-  (`AGENT_EXEC_ACT_TIMEOUT`, default 1800 s; `AGENT_EXEC_REVIEW_TIMEOUT`, default 420 s) are the
-  whole chain budget for one act or one review. Without them llmcall's 180 s default ends agent work
-  mid-task. The runner does not override `LLMCALL_AGENT_RUNNER` or pin providers, models or
+- **Installed llmcall policy applies throughout.** The executor is the runner's only model call:
+  `llmcall.call(prompt, mode="agent", timeout=ACT_TIMEOUT)`. The phase budget
+  (`AGENT_EXEC_ACT_TIMEOUT`, default 1800 s) is the whole chain budget for one act. Without it
+  llmcall's 180 s default ends agent work mid-task. The runner does not override `LLMCALL_AGENT_RUNNER` or pin providers, models or
   fallback. The working directory is the runner's process cwd (it changes into the workspace
   first), and it passes no `cwd`, `cancel` or `requirements` arguments, which 0.3.0 does not accept;
   cancellation travels through the execution scope instead.
-- **Terminal reports carry evidence**: changed files, the command, its actual output and the
-  reviewer's verdict. Tests prohibit 已处理 as an unsupported completion statement.
+- **Terminal reports carry evidence**: the executor's summary, its self-reported changed files,
+  the command and its actual output, or a warning that no executable check ran. Tests prohibit
+  已处理 as an unsupported completion statement.
 - **Schedule**: an order launches as soon as it can. Enqueue starts a detached `agent_tick.py`
   (`pythonw`, no window, not waited for) once the order is published, and a runner does the same
   after it releases the serial slot, so the next queued order does not wait for the poll. Windows

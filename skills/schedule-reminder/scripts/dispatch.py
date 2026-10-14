@@ -178,19 +178,15 @@ def _thread_key(title):
 
 
 def _order_workspace(requested, key):
-    """A requested Git workspace keeps Git evidence; a requested ordinary folder keeps artifact
-    evidence in place. Only an order with no usable folder gets its own artifact workspace: the
-    default (the home directory) is neither a repository nor an artifact root, so an order sent
-    there failed its initial baseline about a second after launch."""
+    """A requested folder that exists is used in place. An order with no usable folder (none
+    requested, a missing one, the home directory or a filesystem root) gets its own workspace in
+    the private companion, so its files stay out of the home directory."""
     if requested:
         workspace, note = agent_task.resolve_workspace(requested)
-        if note is None:
-            if agent_task.is_git_workspace(workspace):
-                return workspace, None
-            if os.path.abspath(workspace) not in (os.path.abspath(os.path.expanduser('~')),
-                                                  os.path.abspath(os.sep)):
-                return workspace, 'artifacts'
-    return agent_task.order_workspace(key), 'artifacts'
+        if note is None and os.path.abspath(workspace) not in (
+                os.path.abspath(os.path.expanduser('~')), os.path.abspath(os.sep)):
+            return workspace
+    return agent_task.order_workspace(key)
 
 
 def _action_identity(stream, msg_id, index, action):
@@ -286,9 +282,9 @@ def execute(stream, cfg, plan, items, log=None, work=None, msg_id=None,
                         else:
                             outcome['reason'] = 'agent origin was not shown to the planner'
                     elif request:
-                        workspace, evidence = _order_workspace(action.get("workspace"), key)
+                        workspace = _order_workspace(action.get("workspace"), key)
                         item = agent_task.enqueue(stream, request, workspace=workspace,
-                                                  msg_id=msg_id, evidence=evidence,
+                                                  msg_id=msg_id,
                                                   idempotency_key=key if source_identity is not None else None,
                                                   **({'origin_item_id': origin} if origin is not None else {}))
                         outcome = ({"op": op, "status": "succeeded", "id": item["id"]} if item.get("id")

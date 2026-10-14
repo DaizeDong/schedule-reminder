@@ -41,8 +41,8 @@ records belong in the PRIVATE companion and remain under version control.
 Create database backups with SQLite's backup API or a cold checkpointed snapshot inside PRIVATE
 storage; do not copy a live WAL database as an ordinary single file.
 
-Install the complete owner scripts together, including creation, action, feed, linkage,
-notification-receipt and artifact modules. `SCHEDULE_ACTION_WORKSPACE` must name an existing
+Install the complete owner scripts together, including creation, action, feed, linkage and
+notification-receipt modules. `SCHEDULE_ACTION_WORKSPACE` must name an existing
 absolute directory inside the admitted PRIVATE data directory; each agent action creates its
 owner-issued work UUID directory there. Prepared command notification files temporarily use
 `notification-payloads` beside the admitted database. Neither location falls back into source.
@@ -88,10 +88,10 @@ does not read any other copy of the token.
 
 Work additionally requires llmcall process containment and truthful execution/cleanup receipts.
 Missing cleanup confirmation keeps the writer reservation; a stop whose runner job is terminated and
-then reports no live member releases it itself. Completion review requires actor and
-reviewer model-family identities plus the original workspace baseline and actual change evidence.
-Offline synthetic tests exercise those checks but do not establish support in an installed
-llmcall version. `agent_task.py status` observes reservations; `recover-cleanup` accepts an explicit,
+then reports no live member releases it itself. Completion is decided by the executor's own
+verification command, which the runner executes; no second model reviews the work. Offline
+synthetic tests exercise those checks but do not establish support in an installed llmcall
+version. `agent_task.py status` observes reservations; `recover-cleanup` accepts an explicit,
 generation-bound operator review, not a retry of the work. See [Agent Center](agent-center.md).
 
 Configuration setup and the local registry doctor are specified in [CONFIG.md](../../../CONFIG.md).

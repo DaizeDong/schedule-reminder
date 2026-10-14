@@ -1610,7 +1610,10 @@ def _operation(conn, item_id, generation=None):
 
 
 def _migrate_work_evidence(conn):
-    """Old started reservations have no descendant-cleanup evidence; never infer it from PID."""
+    """Old started reservations have no descendant-cleanup evidence; never infer it from PID.
+
+    The baseline columns held the initial workspace evidence of the retired independent review.
+    Nothing writes them any more; they stay so existing rows read unchanged without a migration."""
     columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_operations)")}
     for name, definition in (
             ("cleanup_state", "TEXT NOT NULL DEFAULT 'quiescent'"),
@@ -1775,8 +1778,7 @@ def _job_kill_supersedes(receipt, child_receipt):
 
 
 def advance_work(item_id, generation, action, *, pid=None, pstart=None, checkpoint=None,
-                 outcome=None, note="", fields=None, progress=None, expected=None,
-                 baseline=None, baseline_sha256=None, workspace=None, receipt=None,
+                 outcome=None, note="", fields=None, progress=None, expected=None, receipt=None,
                  actor=None, db_path=None):
     """Fenced operation updates. A false result means ownership or snapshot was lost.
 
@@ -1889,13 +1891,6 @@ def advance_work(item_id, generation, action, *, pid=None, pstart=None, checkpoi
                     if not op["started_at"] or op["cleanup_state"] != "quiescent":
                         return False
                     updates.update(cleanup_state="in_flight", cleanup_receipt=_dump_json(receipt))
-                elif action == "baseline":
-                    if op["checkpoint"] != "running" or op["baseline"] is not None:
-                        return False
-                    if not isinstance(baseline, str) or not baseline or not baseline_sha256 or not workspace:
-                        raise ValueError("incomplete initial baseline")
-                    updates.update(baseline=baseline, baseline_sha256=baseline_sha256,
-                                   baseline_workspace=workspace)
                 elif action in ("receipt", "start"):
                     if pid is None or pstart is None:
                         return False
@@ -1929,7 +1924,8 @@ def advance_work(item_id, generation, action, *, pid=None, pstart=None, checkpoi
                         if op["cleanup_state"] == "quiescent":
                             updates["released_at"] = now
                     if outcome == "done":
-                        if (not op["started_at"] or op["checkpoint"] != "reviewing"
+                        # Completion follows the executor's call and its verification step.
+                        if (not op["started_at"] or op["checkpoint"] != "verifying"
                                 or op["cleanup_state"] != "quiescent"):
                             return False
                         ok, unmet = _deps_satisfied(conn, _row_to_item(row).get("relations"))
@@ -1953,8 +1949,7 @@ def advance_work(item_id, generation, action, *, pid=None, pstart=None, checkpoi
                            "attempt_id": op["attempt_id"], "checkpoint": updates.get("checkpoint"),
                            "outcome": updates.get("outcome"),
                            "cleanup_state": updates.get("cleanup_state"),
-                           "cleanup_receipt": receipt,
-                           "baseline_sha256": updates.get("baseline_sha256")})
+                           "cleanup_receipt": receipt})
             if item_fields.get("state", row["state"]) != row["state"]:
                 _append_event(conn, item_id, actor, "status_change", row["state"],
                               item_fields["state"], {"reason": note, "generation": generation})

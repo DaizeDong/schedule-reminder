@@ -52,9 +52,10 @@ in README and README_CN consistent with that release. Roadmap badges and ROADMAP
 planned work; CHANGELOG.md preserves historical entries. Do not rewrite history or add a release
 claim before that release is made.
 
-The optional automatic completion path requires execution, cleanup, and effective model-family
-evidence from the shared model interface. Missing evidence leaves work in `reconcile` or
-`review_unavailable`; a model's text alone cannot establish completion. Tests cover full behavior
-with generated typed results and separately cover the current interface's missing metadata.
+The optional automatic completion path requires execution and cleanup evidence from the shared
+model interface; missing evidence leaves work in `reconcile`. Completion is the executor's own
+verification command, run by the system, or the executor's answer when it gives no executable
+check; no second model reviews it. Tests stub every model call with generated typed results and
+separately cover the current interface's missing metadata.
 
 License: MIT (see [LICENSE](LICENSE)).

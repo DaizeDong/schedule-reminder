@@ -24,8 +24,8 @@ import sys
 
 import pytest
 
-from make_fixtures import llm_call_result, schedule10_review_cases, schedule11_query_cases
-from test_agent_review_evidence import real_process
+from make_fixtures import llm_call_result, schedule10_request_cases, schedule11_query_cases
+from test_agent_completion import real_process
 
 _SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
 if _SCRIPTS not in sys.path:
@@ -296,28 +296,11 @@ def test_act_prompt_forbids_a_check_that_cannot_fail():
     assert "非零退出" in p and "echo" in p
 
 
-def test_review_prompt_asks_about_scope_not_just_satisfaction():
-    """Review checks unrelated changes as well as satisfaction of the requested change."""
-    p = agent_run.review_prompt("req", "sum", ["a.py"], "git", "cmd", 0, "out")
-    assert "请求之外" in p and "CONTINUE" in p
-
-
-def test_review_prompt_shows_the_real_output_and_its_provenance():
-    p = agent_run.review_prompt("req", "sum", ["a.py"], "self-reported", "the-cmd", 3, "REALOUT")
-    assert "REALOUT" in p and "the-cmd" in p and "3" in p
-    assert "self-reported" in p, "a self-reported change list is weaker evidence and must say so"
-
-
-
-@pytest.mark.parametrize("case", schedule10_review_cases(), ids=lambda case: case["name"])
-def test_completion_review_keeps_the_entire_accepted_request(case):
+@pytest.mark.parametrize("case", schedule10_request_cases(), ids=lambda case: case["name"])
+def test_actor_prompt_keeps_the_entire_accepted_request(case):
     actor = agent_run.act_prompt(case["request"], case["workspace"])
-    review = agent_run.review_prompt(
-        case["request"], case["summary"], case["changed"], case["changed_via"],
-        case["command"], case["return_code"], case["output"])
     assert case["request"] in actor
-    assert case["request"] in review
-    assert case["trailing_requirement"] in review
+    assert case["trailing_requirement"] in actor
 
 
 # --------------------------------------------------------------------------- the JSON tail
@@ -392,10 +375,9 @@ def test_bad_workspace_falls_back_and_says_so():
 # --------------------------------------------------------------------------- honesty of reports
 def _report(**over):
     kw = dict(short="abc12345", request="停掉发图", summary="改了默认值",
-              changed=["tools/gradient_bot.py"], changed_via="git",
+              changed=["tools/gradient_bot.py"],
               cmd="python -c \"import sys; sys.exit(0)\"", rc=0,
-              out="REALVERIFYOUTPUT ok", rprov="cc", decision="DONE 确认已停",
-              approach=0, rnd=2, rundir="R")
+              out="REALVERIFYOUTPUT ok", approach=0, rnd=2, rundir="R")
     kw.update(over)
     return agent_run._done_report(**kw)
 
@@ -403,7 +385,7 @@ def _report(**over):
 def test_done_report_carries_the_real_check_output():
     r = _report()
     assert "REALVERIFYOUTPUT" in r and "rc" not in r.split("验证")[0]
-    assert "cc" in r and "DONE" in r
+    assert "改动(self-reported):tools/gradient_bot.py" in r, "the file list is the executor's own"
 
 
 def test_done_report_never_says_handled():
@@ -413,9 +395,10 @@ def test_done_report_never_says_handled():
 
 
 def test_done_report_announces_a_missing_check():
-    r = _report(cmd=None, rc=None, out="")
-    assert "没有可执行验证" in r
-    assert "REALVERIFYOUTPUT" not in r
+    for r in (_report(cmd=None, rc=None, out=""), _report(cmd=None, rc=None, out="", contracted=False)):
+        assert "没有可执行验证" in r
+        assert "REALVERIFYOUTPUT" not in r
+    assert "验证契约" in _report(cmd=None, rc=None, out="", contracted=False)
 
 
 # --------------------------------------------------------------------------- owner gate
@@ -441,7 +424,7 @@ class _Harness:
     under test."""
 
     def __init__(self, monkeypatch, tmp_path, verify_results, answers=None):
-        self.finished, self.verifies, self.reviews = [], [], []
+        self.finished, self.verifies, self.calls = [], [], []
         self.verify_results = list(verify_results)
         self.answers = answers
         store.init_db()
@@ -457,8 +440,6 @@ class _Harness:
             self.finished.append((i, ok, note))
             return finish(i, ok, note, **kwargs)
         monkeypatch.setattr(agent_task, "finish", finish_order)
-        monkeypatch.setattr(agent_run, "detect_changes", lambda ws, claimed: ([], "git"))
-        monkeypatch.setattr(agent_run, "capture_diff", lambda ws: "HEAD unborn\nsynthetic evidence")
         monkeypatch.setattr(agent_run, "post", lambda s, t: None)
         monkeypatch.setattr(agent_run, "_llm", self._llm)
         monkeypatch.setattr(agent_run, "run_verify", self._verify)
@@ -466,12 +447,10 @@ class _Harness:
 
     def run(self, request, workspace):
         return agent_run._run_approach(store.get_item("wo-1"), "crypto", request, workspace, 0, False,
-                                       generation=1, mode="git")
+                                       generation=1)
 
-    def _llm(self, prompt, timeout, mode, **kwargs):
-        if mode == "judge":
-            self.reviews.append(prompt)
-            return llm_call_result(text="DONE", effective_model="synthetic-reviewer", model_family="reviewer")
+    def _llm(self, prompt, timeout, mode):
+        self.calls.append(mode)
         n = len(self.verifies)
         if self.answers:
             return llm_call_result(text=self.answers[min(n, len(self.answers) - 1)])
@@ -485,43 +464,29 @@ class _Harness:
 
 def test_a_failing_check_never_closes_the_round(monkeypatch, tmp_path):
     """NEGATIVE CONTROL. The check is poisoned to exit non-zero forever. The order must NOT be
-    reported done, and the reviewer must never even be consulted, because review only happens after
-    verification passes. Without this test, every other test here would still pass if the return
-    code were ignored entirely."""
+    reported done. Without this test, every other test here would still pass if the return code
+    were ignored entirely."""
     h = _Harness(monkeypatch, tmp_path, verify_results=[(1, "assertion failed: still enabled")])
     out = h.run("停掉它", str(tmp_path))
     assert out["outcome"] == "stalled"
     assert h.finished == [], "a poisoned check must not produce a terminal success"
-    assert h.reviews == [], "review must not run on top of a failed check"
     assert len(h.verifies) >= 2, "it must actually keep trying before declaring no progress"
+    assert set(h.calls) == {"agent"} and len(h.calls) == len(h.verifies)
 
 
-def test_a_passing_check_plus_review_closes_the_round(monkeypatch, tmp_path):
+def test_a_passing_check_closes_the_round(monkeypatch, tmp_path):
     """The positive control for the test above: same harness, healthy check, must close."""
     h = _Harness(monkeypatch, tmp_path, verify_results=[(0, "disabled ok")])
     out = h.run("停掉它", str(tmp_path))
     assert out["outcome"] == "done"
     assert h.finished and h.finished[0][1] is True
-    assert h.reviews, "a closed round must have been independently reviewed"
-
-
-def test_a_continue_verdict_blocks_a_passing_check(monkeypatch, tmp_path):
-    """A green check that checked the wrong thing must not be enough."""
-    h = _Harness(monkeypatch, tmp_path, verify_results=[(0, "ok")])
-    monkeypatch.setattr(agent_run, "_llm",
-                        lambda p, t, mode, **kw: llm_call_result(
-                            text="CONTINUE: 这条命令没验到点子上", effective_model="synthetic-reviewer", model_family="reviewer")
-                        if mode == "judge"
-                        else llm_call_result(text='{"verify": "c", "changed": [], "summary": "s"}'))
-    out = h.run("停掉它", str(tmp_path))
-    assert out["outcome"] == "stalled"
-    assert h.finished == [], "a CONTINUE verdict must not close the order"
+    assert h.calls == ["agent"]
 
 
 def test_an_unavailable_provider_records_failure_without_replay(monkeypatch, tmp_path):
     h = _Harness(monkeypatch, tmp_path, verify_results=[(0, "ok")])
     calls = []
-    monkeypatch.setattr(agent_run, "_llm", lambda p, t, mode, **kw:
+    monkeypatch.setattr(agent_run, "_llm", lambda p, t, mode:
                         calls.append(mode) or llm_call_result(text="", error="synthetic provider unavailable",
                             execution_started=False, outcome="not_started"))
     out = h.run("x", str(tmp_path))
@@ -676,19 +641,21 @@ def test_runner_does_not_install_a_runner_policy(monkeypatch):
 
 def test_approaches_vary_prompts_without_provider_selection():
     assert len(set(chain[0] for chain in agent_run.APPROACH_CHAINS)) == agent_run.MAX_APPROACHES
-    # The phase budgets are the chain budgets for one act and one review, not routing.
-    assert (agent_run.ACT_TIMEOUT, agent_run.REVIEW_TIMEOUT) == (1800, 420)
+    # The phase budget is the chain budget for one act, not routing.
+    assert agent_run.ACT_TIMEOUT == 1800
 
 
-def test_actor_and_reviewer_keep_installed_routing(monkeypatch):
+def test_actor_keeps_installed_routing(monkeypatch):
     from types import SimpleNamespace
     import llmcall
     calls = []
     monkeypatch.setattr(llmcall, "call", lambda prompt, **kw:
                         calls.append(kw) or SimpleNamespace(text="", provider=None, error=None))
-    for mode in ("agent", "judge"):
-        agent_run._llm("", None, mode)
-    assert [call["mode"] for call in calls] == ["agent", "judge"]
-    assert all(not ({"chain", "providers", "model", "timeout", "fallback"} & call.keys()) for call in calls)
+    agent_run._llm("", None, "agent")
+    assert [call["mode"] for call in calls] == ["agent"]
+    assert not ({"chain", "providers", "model", "timeout", "fallback", "avoid"} & calls[0].keys())
     agent_run._llm("", agent_run.ACT_TIMEOUT, "agent")
     assert calls[-1]["timeout"] == 1800.0 and not ({"chain", "model"} & calls[-1].keys())
+    with pytest.raises(ValueError):
+        agent_run._llm("", None, "judge")
+    assert len(calls) == 2, "the runner calls no model other than the executor"

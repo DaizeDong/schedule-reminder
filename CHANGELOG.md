@@ -5,6 +5,28 @@ All notable changes to this project are documented here (Keep a Changelog style)
 ## [Unreleased]
 
 ### Removed
+- The independent completion review of Agent Center work orders. After the executor (llmcall
+  `mode="agent"`) finished and its own verify command passed, a second model of another family
+  (`mode="judge"`) was asked DONE or CONTINUE over a full before/after capture of the workspace
+  (an artifact snapshot capped at 1 MB, or the git diff). Every completed round paid for that
+  second call and the capture, and the review's own failures (an unreadable verdict, a reviewer of
+  the same family, a capture over its cap) left finished work as `review_unavailable`. The
+  executor's check, run by the system, now decides alone: exit 0 completes the order, 124, 127 and
+  130 leave `reconcile`, and any other nonzero exit starts the next round with the real output.
+  `verify: null` completes on the executor's summary, and an answer without a valid final contract
+  completes with the answer itself (any trailing JSON stripped, bounded) as its summary instead of
+  stopping. The changed-file list is the executor's self-reported list. Removed with it:
+  `review_prompt`, `review_verdict`, `independent_review`, `AGENT_EXEC_REVIEW_TIMEOUT`, the
+  `reviewing` checkpoint, the per-round `review-prompt.txt`, `review.json`, `before.diff`,
+  `after.diff` and `evidence.json` records, `agent_artifacts.py`, the git and artifact evidence
+  capture with its initial baseline (`agent_task.save_baseline` and the store's `baseline`
+  action), the `evidence` argument of `agent_task.enqueue` and the `x_agent_exec_evidence` field
+  on new orders. The runner's only model call is the executor's, and `_llm` refuses any other
+  mode. Existing orders keep reading: `review_unavailable` stays a known execution state,
+  `x_agent_exec_evidence` and the operation baseline columns stay where they are (no schema
+  migration), and the storage contract keeps the old round records declared as historical.
+  Dispatch still gives an order with no usable folder its own workspace, which keeps its files out
+  of the home directory. The CI collection floor drops from 1100 to 1040 with the deleted tests.
 - The runtime PRIVATE visibility proof before every DATA write, lock and database open (about 56
   git and gh subprocesses, 15 to 43 s under load, memoised per process for 60 s). It made the Task
   Console work-feed and work-action calls time out before their insert, got the Agent Center ticks

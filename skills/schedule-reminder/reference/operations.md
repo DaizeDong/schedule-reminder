@@ -16,6 +16,8 @@ A newly discovered or registered channel first records a PRIVATE baseline of own
 
 Work orders use agent_task.py, agent_run.py and agent_tick.py. Finalization commits execution metadata and pool state in one generation-fenced SQLite transaction (`store.advance_work`). A failed transaction leaves the prior running state available to recovery.
 
+An order completes when the executor's own verification command, run by the runner, exits 0, when the executor declares `verify: null`, or when its answer carries no valid final contract; in the last case its answer is the summary and nothing is run. Any other failing check starts the next round with the real output; an interrupted check (exit 124, 127 or 130) leaves `reconcile`. No second model reviews the work. See [Agent Center](agent-center.md).
+
 The launch/stop lock remains required: it keeps a stop out of the window between a runner's spawn and its PID receipt. PID creation-time checks, detached process survival and Job Object termination need platform tests. Synthetic state-transition checks do not establish those properties.
 
 Model calls use the installed llmcall interface: `llmcall.call(prompt, mode="agent")` for agent work, and its default judge mode for text decisions. Routing, models, timeouts and fallback policy belong to that interface.

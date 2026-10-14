@@ -121,9 +121,11 @@ jobs:
 
       # Guards against the suite quietly shrinking to nothing, which would otherwise look exactly
       # like a suite that passes. The floor is raised deliberately when tests are added, never
-      # lowered to make a red build green.
+      # lowered to make a red build green. It was lowered once, from 1100 to 1040, together with
+      # the code it covered: removing the independent completion review deleted its verdict
+      # parser, evidence capture and baseline tests (1111 collected before, 1049 after).
       - name: The suite must not have evaporated
         run: |
           n=$(python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider --collect-only 2>/dev/null | grep -c '::' || true)
           echo "collected $n tests"
-          test "$n" -ge 1100 || { echo "::error::only $n tests collected, expected at least 1100 -- tests were removed or collection broke"; exit 1; }
+          test "$n" -ge 1040 || { echo "::error::only $n tests collected, expected at least 1040 -- tests were removed or collection broke"; exit 1; }

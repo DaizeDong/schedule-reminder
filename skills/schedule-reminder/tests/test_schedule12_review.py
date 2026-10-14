@@ -13,7 +13,7 @@ import relay
 import store
 from make_fixtures import schedule12_review_cases
 from test_agent_exec import _Harness
-from test_agent_review_evidence import real_process
+from test_agent_completion import real_process
 import offline_support
 from make_fixtures import companion_case
 
@@ -34,8 +34,7 @@ def native_storage(tmp_path, monkeypatch):
 
 def _approach(workspace):
     item = store.get_item("wo-1")
-    return agent_run._run_approach(item, F["stream"], F["request"], str(workspace), 0, False, generation=1,
-                                   mode=agent_run.evidence_mode(item, str(workspace)))
+    return agent_run._run_approach(item, F["stream"], F["request"], str(workspace), 0, False, generation=1)
 
 
 def apply_progress(db, operation, value, item):
@@ -140,26 +139,26 @@ def test_complete_final_object_remains_selectable_after_a_malformed_example():
 
 
 @pytest.mark.parametrize("answer", F["bad_tails"])
-def test_invalid_contract_cannot_reach_judge_or_finalize(monkeypatch, tmp_path, answer):
+def test_invalid_contract_completes_on_the_answer_without_running_a_check(monkeypatch, tmp_path, answer):
     harness = _Harness(monkeypatch, tmp_path, [(0, F["text"])], answers=[answer or " "])
     result = _approach(tmp_path)
-    assert result["outcome"] == "review_unavailable"
-    assert not any(ok for _, ok, _ in harness.finished)
-    assert harness.reviews == harness.verifies == []
+    assert result["outcome"] == "done"
+    assert [ok for _, ok, _ in harness.finished] == [True]
+    assert harness.verifies == [] and harness.calls == ["agent"]
 
 
-def test_explicit_explained_null_verify_retains_review(monkeypatch, tmp_path):
+def test_explicit_explained_null_verify_completes(monkeypatch, tmp_path):
     harness = _Harness(monkeypatch, tmp_path, [], answers=[F["null_tail"]])
     result = _approach(tmp_path)
     assert result["outcome"] == "done"
-    assert harness.finished and harness.reviews and harness.verifies == []
+    assert harness.finished and harness.verifies == [] and harness.calls == ["agent"]
 
 
 def test_quoted_failing_verifier_blocks_completion(monkeypatch, tmp_path):
     harness = _Harness(monkeypatch, tmp_path, [(1, F["text"])], answers=[json.dumps(F["tails"][0])])
     result = _approach(tmp_path)
     assert result["outcome"] == "stalled"
-    assert harness.finished == harness.reviews == []
+    assert harness.finished == []
     assert harness.verifies == [F["failing_verify"]] * 2
 
 
@@ -220,4 +219,4 @@ def test_native_quoted_verifier_runs_and_prevents_completion(monkeypatch, tmp_pa
     result = _approach(tmp_path)
     assert result["outcome"] == "stalled"
     assert outcomes == [(1, "{"), (1, "{")]
-    assert harness.finished == harness.reviews == []
+    assert harness.finished == []

@@ -483,6 +483,7 @@ def test_latest_generation_retains_unknown_cleanup_reservation(case):
         if generation == 2:
             assert agent_task.child_started(work_id, generation, {'phase': 'actor'})
             assert agent_task.child_finished(work_id, generation, {'phase': 'actor'}, quiescent=False)
+        # review_unavailable is a historical outcome that old orders still carry.
         assert agent_task.finish(work_id, False, exec_state_value='review_unavailable', generation=generation)
         if generation == 1:
             assert agent_task.release(work_id, generation)

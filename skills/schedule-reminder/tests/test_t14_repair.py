@@ -1,4 +1,4 @@
-"""Synthetic regressions for retained T14 review traces; no model or live pool."""
+"""Synthetic regressions for retained T14 cleanup traces; no model or live pool."""
 import json
 import os
 import subprocess
@@ -14,7 +14,7 @@ import agent_task
 import agent_tick
 import store
 from make_fixtures import llm_call_result
-from test_agent_review_evidence import real_process, load_process
+from test_agent_completion import real_process, load_process
 
 process = load_process()
 
@@ -51,16 +51,14 @@ def work(tmp_path, monkeypatch, real_process):
         "Create fix.txt and preserve all existing user files.", encoding="utf-8")
     assert agent_task.claim(item["id"])
     assert agent_task.begin_spawn(item["id"], 1)
-    monkeypatch.setattr(agent_run, "capture_diff", lambda ws: "HEAD unborn\nSTAGED\nUNSTAGED")
-    monkeypatch.setattr(agent_run, "detect_changes", lambda *a: ([], "git"))
     monkeypatch.setattr(agent_run, "run_verify", lambda *a, **k: (0, "synthetic passed"))
-    monkeypatch.setattr(agent_run, "_llm", lambda p, t, mode, **kw: reply(mode))
+    monkeypatch.setattr(agent_run, "_llm", lambda p, t, mode: reply(mode))
     return item["id"], workspace
 
 
 def reply(mode, **kwargs):
-    return Result(text='{"verify":"synthetic-check","summary":"synthetic fix","changed":[]}'
-                  if mode == "agent" else "DONE",
+    assert mode == "agent", "the runner calls only the executor"
+    return Result(text='{"verify":"synthetic-check","summary":"synthetic fix","changed":[]}',
                   effective_model="synthetic-" + mode, model_family="family-" + mode,
                   execution_started=True, outcome="success", cleanup_confirmed=True, **kwargs)
 
@@ -74,7 +72,7 @@ def assert_reserved(iid):
     assert not agent_task.claim(other["id"])
 
 
-@pytest.mark.parametrize("phase", ["actor", "verify", "reviewer"])
+@pytest.mark.parametrize("phase", ["actor", "verify"])
 @pytest.mark.parametrize("cancelled", [False, True])
 def test_cleanup_failure_retains_reservation_across_all_boundaries(work, monkeypatch, phase, cancelled):
     iid, workspace = work
@@ -88,17 +86,15 @@ def test_cleanup_failure_retains_reservation_across_all_boundaries(work, monkeyp
         monkeypatch.setattr(agent_run, "run_verify", lambda *a, **k:
             agent_run._contained_command([], str(workspace), 1))
     else:
-        def llm(prompt, timeout, mode, **kwargs):
-            if mode == ("agent" if phase == "actor" else "judge"):
-                fail_process()
-                return Result(error="synthetic cleanup failed", outcome="cleanup_failed",
-                              execution_started=True)
-            return reply(mode)
+        def llm(prompt, timeout, mode):
+            fail_process()
+            return Result(error="synthetic cleanup failed", outcome="cleanup_failed",
+                          execution_started=True)
         monkeypatch.setattr(agent_run, "_llm", llm)
     try:
         agent_run.run_order(iid, post_reports=False, generation=1)
     except RuntimeError:
-        pass  # Evidence may fail visibly; it still must retain the slot.
+        pass  # A cleanup failure may surface visibly; it still must retain the slot.
     assert_reserved(iid)
     assert agent_task.operation(iid)["outcome"] == ("cancelled" if cancelled else "reconcile")
 
@@ -155,66 +151,9 @@ def test_windows_cleanup_failure_keeps_slot_while_descendant_writes(work, monkey
             real_close(job)
 
 
-@pytest.mark.parametrize("rotate", [False, True])
-def test_original_untracked_deletion_survives_retry_and_rotation(work, monkeypatch, rotate):
-    iid, workspace = work
-    # Restore the real evidence reader and exercise an empty temporary Git repo, without commits.
-    capture = _REAL_CAPTURE
-    monkeypatch.setattr(agent_run, "capture_diff", capture)
-    subprocess.run(["git", "init", "--quiet", "--template=", str(workspace)], check=True,
-                   env=dict(os.environ), capture_output=True,
-                   creationflags=0x08000000 if sys.platform == "win32" else 0)
-    user_file = workspace / "user-note.txt"
-    user_file.write_text("SYNTHETIC_ORIGINAL_USER_NOTE", encoding="utf-8")
-    calls, reviews = [], []
-    def llm(prompt, timeout, mode, **kwargs):
-        if mode == "judge":
-            reviews.append(prompt)
-            r = reply(mode)
-            r.text = "CONTINUE: restore user-note.txt" if "SYNTHETIC_ORIGINAL_USER_NOTE" in prompt else "DONE"
-            return r
-        calls.append(1)
-        if len(calls) == 1:
-            user_file.unlink()
-        else:
-            (workspace / "fix.txt").write_text("SYNTHETIC_FIX", encoding="utf-8")
-        return reply(mode)
-    monkeypatch.setattr(agent_run, "_llm", llm)
-    monkeypatch.setattr(agent_run, "STALL_ROUNDS", 1 if rotate else 2)
-    monkeypatch.setattr(agent_run, "MAX_APPROACHES", 2)
-    monkeypatch.setattr(agent_run, "run_verify", lambda *a, **k:
-        (1, "synthetic first check failed") if len(calls) == 1 else (0, "synthetic passed"))
-    agent_run.run_order(iid, post_reports=False, generation=1)
-    assert reviews and all("SYNTHETIC_ORIGINAL_USER_NOTE" in p and "user-note.txt" in p for p in reviews)
-    assert all("HEAD unborn" in p and "SYNTHETIC_FIX" in p for p in reviews)
-    assert agent_task.operation(iid)["outcome"] != "done"
-
-
-def test_revision_changed_in_failed_round_cannot_become_new_baseline(work, monkeypatch):
-    iid, workspace = work
-    state, reviews = {"acted": 0}, []
-    monkeypatch.setattr(agent_run, "capture_diff", lambda ws:
-        "HEAD " + ("synthetic-original" if state["acted"] == 0 else "synthetic-later") + "\nSTAGED\n")
-    def llm(prompt, timeout, mode, **kwargs):
-        if mode == "agent":
-            state["acted"] += 1
-        else:
-            reviews.append(prompt)
-        return reply(mode)
-    monkeypatch.setattr(agent_run, "_llm", llm)
-    monkeypatch.setattr(agent_run, "run_verify", lambda *a, **k:
-        (1, "failed first round") if state["acted"] == 1 else (0, "passed"))
-    agent_run.run_order(iid, post_reports=False, generation=1)
-    assert agent_task.operation(iid)["outcome"] == "review_unavailable"
-    assert reviews == []
-
-
-_REAL_CAPTURE = agent_run.capture_diff
-
-
 def test_interrupted_child_receipt_cannot_be_cleared_by_parent_exit(work, monkeypatch):
     iid, workspace = work
-    def interrupted(*args, **kwargs):
+    def interrupted(*args):
         raise KeyboardInterrupt("synthetic lost child receipt")
     monkeypatch.setattr(agent_run, "_llm", interrupted)
     with pytest.raises(KeyboardInterrupt):
@@ -224,46 +163,13 @@ def test_interrupted_child_receipt_cannot_be_cleared_by_parent_exit(work, monkey
     assert_reserved(iid)
 
 
-def test_missing_baseline_after_action_checkpoint_is_not_recaptured(work, monkeypatch):
-    iid, workspace = work
-    assert agent_task.start_runner(iid, 1, 123, 456)
-    assert agent_task.checkpoint(iid, 1, "acting")
-    calls = []
-    monkeypatch.setattr(agent_run, "_llm", lambda p, t, mode, **kw: calls.append(mode) or reply(mode))
-    try:
-        agent_run._run_approach(store.get_item(iid), "synthetic", "synthetic request", str(workspace), 0, False, generation=1,
-                                mode=agent_run.evidence_mode(store.get_item(iid), str(workspace)))
-    except RuntimeError:
-        pass
-    assert calls == [], "re-entry cannot invent an initial baseline after side effects"
-    assert agent_task.operation(iid)["outcome"] != "done"
-
-
-def test_baseline_persistence_failure_prevents_first_actor(work, monkeypatch):
-    iid, workspace = work
-    calls = []
-    advance = store.advance_work
-    def fail_baseline(iid, generation, action, **kwargs):
-        if action == "baseline":
-            raise OSError("synthetic baseline persistence failure")
-        return advance(iid, generation, action, **kwargs)
-    monkeypatch.setattr(store, "advance_work", fail_baseline)
-    monkeypatch.setattr(agent_run, "_llm", lambda p, t, mode, **kw: calls.append(mode) or reply(mode))
-    with pytest.raises(OSError, match="baseline persistence"):
-        agent_run.run_order(iid, post_reports=False, generation=1)
-    assert calls == []
-
-
-@pytest.mark.parametrize("mode", ["agent", "judge"])
 @pytest.mark.parametrize("outcome", ["cancelled", "timeout", "failed"])
-def test_started_model_failure_without_cleanup_confirmation_stays_unknown(work, monkeypatch, mode, outcome):
+def test_started_model_failure_without_cleanup_confirmation_stays_unknown(work, monkeypatch, outcome):
     iid, workspace = work
-    def llm(prompt, timeout, actual_mode, **kwargs):
-        if actual_mode == mode:
-            if outcome == "cancelled":
-                agent_task.cancel(iid, "synthetic cancellation")
-            return Result(error="synthetic interrupted model", outcome=outcome, execution_started=True)
-        return reply(actual_mode)
+    def llm(prompt, timeout, mode):
+        if outcome == "cancelled":
+            agent_task.cancel(iid, "synthetic cancellation")
+        return Result(error="synthetic interrupted model", outcome=outcome, execution_started=True)
     monkeypatch.setattr(agent_run, "_llm", llm)
     agent_run.run_order(iid, post_reports=False, generation=1)
     monkeypatch.setattr(agent_task, "proc_identity", lambda pid: (False, None))
@@ -304,43 +210,19 @@ def test_confirmed_command_cleanup_allows_release_even_after_interruption(work, 
     assert op["outcome"] == ("cancelled" if cancelled else "reconcile")
 
 
-def test_baseline_is_immutable_and_readable_by_a_fresh_interpreter(work, monkeypatch):
-    iid, workspace = work
-    monkeypatch.setattr(agent_run, "capture_diff", lambda ws:
-        "HEAD synthetic-original\nUNTRACKED user-note.txt\nSYNTHETIC_ORIGINAL_USER_NOTE")
-    monkeypatch.setattr(agent_run, "run_verify", lambda *a, **k: (1, "synthetic failure"))
-    monkeypatch.setattr(agent_run, "STALL_ROUNDS", 1)
-    assert agent_task.start_runner(iid, 1, 123, 456)
-    assert agent_run._run_approach(store.get_item(iid), "synthetic", "request", str(workspace), 0, False,
-                                   generation=1, mode=agent_run.evidence_mode(store.get_item(iid), str(workspace)))["outcome"] == "stalled"
-    original = agent_task.operation(iid)
-    assert not agent_task.save_baseline(iid, 1, "changed", "changed", str(workspace))
-    scripts = str(Path(agent_run.__file__).parent)
-    code = ("import sys; sys.path.insert(0," + repr(scripts) + "); import agent_run; "
-            "agent_run.capture_diff=lambda ws: (_ for _ in ()).throw(AssertionError('recaptured')); "
-            "print(agent_run._initial_baseline(sys.argv[1],1,sys.argv[2],'git'))")
-    child = subprocess.run([sys.executable, "-c", code, iid, str(workspace)],
-                           env=dict(os.environ), capture_output=True, text=True, timeout=15,
-                           creationflags=0x08000000 if sys.platform == "win32" else 0)
-    assert child.returncode == 0, child.stderr
-    assert "SYNTHETIC_ORIGINAL_USER_NOTE" in child.stdout and "HEAD synthetic-original" in child.stdout
-    assert agent_task.operation(iid)["baseline"] == original["baseline"]
-
-
-def test_evidence_fsync_failure_cannot_finish_work(work, monkeypatch):
+def test_record_fsync_failure_cannot_finish_work(work, monkeypatch):
     iid, workspace = work
     fsync = os.fsync
     calls = []
-    def fail_evidence(fd):
+    def fail_record(fd):
         calls.append(fd)
         if len(calls) == 2:  # prompt durable, actor output cannot be persisted
-            raise OSError("synthetic evidence fsync failure")
+            raise OSError("synthetic record fsync failure")
         return fsync(fd)
-    monkeypatch.setattr(os, "fsync", fail_evidence)
-    with pytest.raises(OSError, match="evidence fsync"):
+    monkeypatch.setattr(os, "fsync", fail_record)
+    with pytest.raises(OSError, match="record fsync"):
         agent_run.run_order(iid, post_reports=False, generation=1)
     assert agent_task.operation(iid)["outcome"] == "reconcile"
-    assert agent_task.operation(iid)["baseline"] is not None
 
 
 def test_v2_started_reservation_migrates_to_unknown_without_changing_public_rows(work):

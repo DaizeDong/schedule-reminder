@@ -242,7 +242,7 @@ def start(request, *, db_path, workspace_root=None, context=None):
             '参考材料：', reference or '没有附加对话材料，请根据待办本身推进。'])
         work = agent_task.enqueue('infra', prompt, workspace=str(workspace), title=item['title'],
             idempotency_key='console-action:' + row['id'], origin_item_id=item['id'],
-            evidence='artifacts', work_id=row['work_item_id'], db_path=db_path, action_id=row['id'])
+            work_id=row['work_item_id'], db_path=db_path, action_id=row['id'])
         if work.get('_err') or not work.get('id'):
             raise ActionError('work_submission_failed')
         return _reply(db_path, row, wakeup=True)

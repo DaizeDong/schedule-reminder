@@ -136,7 +136,7 @@ python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider
 - **RRULE 按次滚动。** 提醒成功后，主记录移到下一个未来时间，不会一次建出无限多条记录。支持的字段见契约。
 - **优先 Windows 部署**（`install.ps1` 计划任务）；目前未提供维护中的 Unix cron 安装方式。
 - **数据库必须放本地 NTFS**，绝不放 OneDrive/GDrive/网络盘（WAL 锁 + 同步会损坏库）。
-- **工作完成依赖 llmcall 的执行证据**。缺少进程约束、清理确认、模型家族身份或审查证据时，工作保留未解决状态。
+- **工作完成依赖 llmcall 的执行证据**。缺少进程约束或清理确认时，工作保留未解决状态。完成与否由执行者自己的验证命令决定，命令由系统执行，不再由第二个模型把关。
   离线测试不能证明本机安装的 llmcall 已提供这些能力。
 
 ## 语言

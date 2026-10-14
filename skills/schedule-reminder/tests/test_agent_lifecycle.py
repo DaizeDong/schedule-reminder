@@ -11,7 +11,7 @@ import agent_task
 import agent_tick
 import store
 from tools.make_fixtures import cleanup_call_result, cleanup_recovery_evidence
-from test_agent_review_evidence import real_process
+from test_agent_completion import real_process
 
 
 @pytest.fixture
@@ -42,9 +42,9 @@ def test_stop_intent_revokes_execution_before_termination_receipt(pool):
     assert agent_task.child_started(iid, 1, {"phase": "actor"})
     assert not agent_task.request_stop(iid, "synthetic stop").get("_err")
     assert not agent_task.owns(iid, 1)
-    assert not agent_task.checkpoint(iid, 1, "reviewing")
+    assert not agent_task.checkpoint(iid, 1, "verifying")
     assert not agent_task.finish(iid, True, generation=1)
-    assert not agent_task.child_started(iid, 1, {"phase": "late reviewer"})
+    assert not agent_task.child_started(iid, 1, {"phase": "late command"})
     assert agent_task.child_finished(iid, 1, {"phase": "actor", "cleanup_confirmed": True}, quiescent=True)
     assert agent_task.operation(iid)["released_at"] is None
 
@@ -627,7 +627,7 @@ def test_finished_generation_never_accepts_another_terminal_outcome(pool):
     assert not agent_task.finish(iid, True, generation=1), "unstarted work cannot be done"
     agent_task.begin_spawn(iid, 1)
     agent_task.start_runner(iid, 1, 123, 456)
-    agent_task.checkpoint(iid, 1, "reviewing")
+    agent_task.checkpoint(iid, 1, "verifying")
     assert agent_task.finish(iid, True, generation=1)
     assert not agent_task.finish(iid, False, generation=1)
     assert agent_task.operation(iid)["outcome"] == "done"

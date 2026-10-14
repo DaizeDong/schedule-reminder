@@ -8,7 +8,7 @@ compare-and-swap is exactly the lock a queue needs.
 
 Split of concerns:
   agent_task.py  (here)  the work order: enqueue, claim, liveness, terminal states, run directory
-  agent_run.py           one order's execution: act -> verify -> review -> decide, stall, rotation
+  agent_run.py           one order's execution: act -> verify -> decide, stall, rotation
   agent_tick.py          the scheduled drainer: reap the dead, launch one
 
 WHAT LIVES WHERE. `ext` carries only small FIXED fields (see EXT_* below). Everything that grows
@@ -81,7 +81,8 @@ EXT_MAX_CHARS = 2000
 STATE_QUEUED, STATE_RUNNING, STATE_STALLED = "queued", "running", "stalled"
 STATE_DONE, STATE_FAILED = "done", "failed"
 STATE_STOPPING = "stop_pending"
-# Every execution state an order can carry; anything else is a damaged record.
+# Every execution state an order can carry; anything else is a damaged record. review_unavailable
+# is historical: only the retired independent review produced it, and old orders still carry it.
 EXEC_STATES = (STATE_QUEUED, STATE_RUNNING, STATE_STOPPING, STATE_STALLED, STATE_DONE, STATE_FAILED,
                "preparing", "reconcile", "review_unavailable", "cancelled", "interrupted")
 
@@ -158,18 +159,11 @@ def default_workspace():
     return os.environ.get("AGENT_EXEC_WORKSPACE") or os.path.expanduser("~")
 
 
-def is_git_workspace(path):
-    """True when ``path`` or a parent holds a .git entry."""
-    if not path:
-        return False
-    from pathlib import Path
-    return any((root/".git").exists() for root in (Path(path), *Path(path).parents))
-
-
 def order_workspace(token):
-    """A dedicated artifact workspace for one order, stable for one action identity.
+    """A dedicated workspace for one order, stable for one action identity.
 
-    It lives beside the run records in the private companion and is created here."""
+    It lives beside the run records in the private companion and is created here, so an order
+    with no usable folder of its own does not write its files into the home directory."""
     path = os.path.join(runs_root(), "workspaces", hashlib.sha256(str(token).encode("utf-8")).hexdigest()[:32])
     private_data.check_destination(path)
     os.makedirs(path, exist_ok=True)
@@ -258,7 +252,7 @@ def _persist_request(item, request):
 
 
 def enqueue(stream, request, workspace=None, msg_id=None, title=None, *,
-            idempotency_key=None, origin_item_id=None, evidence=None, work_id=None, db_path=None, action_id=None):
+            idempotency_key=None, origin_item_id=None, work_id=None, db_path=None, action_id=None):
     """Create a queued work order. Returns the item dict, or {"_err": ...}."""
     private_data.check_destination(runs_root())
     ws, note = resolve_workspace(workspace)
@@ -276,12 +270,8 @@ def enqueue(stream, request, workspace=None, msg_id=None, title=None, *,
         ext[EXT_NOTE] = note
     if origin_item_id:
         ext['x_console_origin_item'] = origin_item_id
-    if evidence is not None:
-        if evidence not in ('git', 'artifacts'):
-            return {"_err": "invalid evidence mode"}
-        ext['x_agent_exec_evidence'] = evidence
     if work_id is None:
-        identity = [request or '', os.path.normcase(os.path.abspath(ws)), origin_item_id, evidence]
+        identity = [request or '', os.path.normcase(os.path.abspath(ws)), origin_item_id]
         ext['x_agent_exec_request_identity'] = hashlib.sha256(
             json.dumps(identity, ensure_ascii=False).encode('utf-8')).hexdigest()
     t = (title or request or "").strip().replace("\n", " ")
@@ -492,11 +482,6 @@ def release_verified_cleanup(item_id, generation, receipt, expected):
     return _advance(item_id, generation, "verified_cleanup", expected=expected, receipt=receipt)
 
 
-def save_baseline(item_id, generation, baseline, digest, workspace):
-    return _advance(item_id, generation, "baseline", baseline=baseline,
-                    baseline_sha256=digest, workspace=workspace)
-
-
 # --------------------------------------------------------------------------- stall signature
 _DIGITS = re.compile(r"\d{2,}")
 
@@ -512,18 +497,14 @@ def normalize_output(text):
     return re.sub(r"\s+", " ", _DIGITS.sub("#", text or "")).strip()
 
 
-def signature(verify_rc, verify_output, changed_files, workspace, evidence=None):
-    """A round's fingerprint: what the check said, and what the tree actually looks like.
+def signature(verify_rc, verify_output, changed_files, workspace):
+    """A round's fingerprint: what the check said, and what the reported files look like.
 
     File CONTENT is hashed, not just the name: an agent that rewrites the same file with the same
-    bytes every round has not moved, and a name-only signature would read that as progress.
-    Artifact evidence already carries every file's sha256, so it is used as is."""
+    bytes every round has not moved, and a name-only signature would read that as progress."""
     h = hashlib.sha256()
     h.update(("rc=%s\n" % verify_rc).encode("utf-8"))
     h.update((normalize_output(verify_output)[:4000] + "\n").encode("utf-8"))
-    if evidence is not None:
-        h.update(evidence.encode("utf-8"))
-        return h.hexdigest()
     for rel in sorted(set(changed_files or [])):
         p = rel if os.path.isabs(rel) else os.path.join(workspace or "", rel)
         try:

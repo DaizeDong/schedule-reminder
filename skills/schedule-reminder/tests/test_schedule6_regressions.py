@@ -101,14 +101,14 @@ def test_command_intent_failure_prevents_handler(tmp_path, monkeypatch):
 
 
 def started_order(tmp_path, monkeypatch):
-    """A running generation that has reached review, so either terminal outcome is allowed."""
+    """A running generation that has reached verification, so either terminal outcome is allowed."""
     db = database(tmp_path)
     monkeypatch.setenv('SCHEDULE_DB_PATH', db)
     ext = {**F["unknown_ext"], agent_task.EXT_STATE: agent_task.STATE_QUEUED}
     item = store.add_item(F["title"], source=agent_task.WORK_SOURCE, ext=ext, db_path=db)
     assert agent_task.claim(item["id"]) and agent_task.begin_spawn(item["id"], 1)
     assert agent_task.start_runner(item["id"], 1, 6102, 61)
-    assert agent_task.checkpoint(item["id"], 1, "reviewing")
+    assert agent_task.checkpoint(item["id"], 1, "verifying")
     return SimpleNamespace(db=db, item=store.get_item(item["id"], db_path=db))
 
 

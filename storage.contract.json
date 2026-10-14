@@ -640,10 +640,10 @@
     {
       "artifact_id": "agent-runs-order-workspace",
       "path_pattern": "agent-runs/workspaces/*",
-      "purpose": "Dedicated artifact workspace for one dispatched order, keyed by its action identity; ownership covers the container only.",
+      "purpose": "Dedicated workspace for one dispatched order with no usable folder, keyed by its action identity, so its files stay out of the home directory; ownership covers the container only.",
       "schema": "scripts/agent_task.py order_workspace, used by scripts/dispatch.py for an order with no usable requested folder.",
       "producer": "Inbound dispatch of a work order.",
-      "consumer_or_final_deliverable": "The order's agent execution and artifact evidence; child outputs are arbitrary action-workspace outputs and remain gaps until classified.",
+      "consumer_or_final_deliverable": "The order's agent execution; child outputs are arbitrary action-workspace outputs and remain gaps until classified.",
       "rebuild_or_restore": "Recreated empty when the same action identity is dispatched again; outputs are not reproducible.",
       "retention_rule": {
         "class": "core",
@@ -669,8 +669,8 @@
       "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
       "schema": "scripts/agent_run.py generation, attempt and round record contract.",
       "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "consumer_or_final_deliverable": "Unresolved execution recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation and attempt ID; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
@@ -682,8 +682,8 @@
       "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
       "schema": "scripts/agent_run.py generation, attempt and round record contract.",
       "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "consumer_or_final_deliverable": "Unresolved execution recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation and attempt ID; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
@@ -695,8 +695,8 @@
       "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
       "schema": "scripts/agent_run.py generation, attempt and round record contract.",
       "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "consumer_or_final_deliverable": "Unresolved execution recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation and attempt ID; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
@@ -708,8 +708,8 @@
       "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
       "schema": "scripts/agent_run.py generation, attempt and round record contract.",
       "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "consumer_or_final_deliverable": "Unresolved execution recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation and attempt ID; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
@@ -718,11 +718,11 @@
     {
       "artifact_id": "agent-runs-attempt-before-diff",
       "path_pattern": "agent-runs/*/*/a[0-9]*/r[0-9]*/before.diff",
-      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
-      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
-      "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "purpose": "Historical review input, verdict or workspace evidence of an earlier round; no longer produced.",
+      "schema": "Historical scripts/agent_run.py independent review records.",
+      "producer": "Earlier versions of the agent execution worker.",
+      "consumer_or_final_deliverable": "Historical review interpretation for the orders that have it.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
@@ -731,11 +731,11 @@
     {
       "artifact_id": "agent-runs-attempt-after-diff",
       "path_pattern": "agent-runs/*/*/a[0-9]*/r[0-9]*/after.diff",
-      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
-      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
-      "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "purpose": "Historical review input, verdict or workspace evidence of an earlier round; no longer produced.",
+      "schema": "Historical scripts/agent_run.py independent review records.",
+      "producer": "Earlier versions of the agent execution worker.",
+      "consumer_or_final_deliverable": "Historical review interpretation for the orders that have it.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
@@ -744,11 +744,11 @@
     {
       "artifact_id": "agent-runs-attempt-review-prompt-txt",
       "path_pattern": "agent-runs/*/*/a[0-9]*/r[0-9]*/review-prompt.txt",
-      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
-      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
-      "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "purpose": "Historical review input, verdict or workspace evidence of an earlier round; no longer produced.",
+      "schema": "Historical scripts/agent_run.py independent review records.",
+      "producer": "Earlier versions of the agent execution worker.",
+      "consumer_or_final_deliverable": "Historical review interpretation for the orders that have it.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
@@ -757,11 +757,11 @@
     {
       "artifact_id": "agent-runs-attempt-evidence-json",
       "path_pattern": "agent-runs/*/*/a[0-9]*/r[0-9]*/evidence.json",
-      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
-      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
-      "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "purpose": "Historical review input, verdict or workspace evidence of an earlier round; no longer produced.",
+      "schema": "Historical scripts/agent_run.py independent review records.",
+      "producer": "Earlier versions of the agent execution worker.",
+      "consumer_or_final_deliverable": "Historical review interpretation for the orders that have it.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
@@ -770,11 +770,11 @@
     {
       "artifact_id": "agent-runs-attempt-review-json",
       "path_pattern": "agent-runs/*/*/a[0-9]*/r[0-9]*/review.json",
-      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
-      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
-      "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "purpose": "Historical review input, verdict or workspace evidence of an earlier round; no longer produced.",
+      "schema": "Historical scripts/agent_run.py independent review records.",
+      "producer": "Earlier versions of the agent execution worker.",
+      "consumer_or_final_deliverable": "Historical review interpretation for the orders that have it.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
@@ -914,10 +914,10 @@
     {
       "artifact_id": "data-agent-runs-order-workspace",
       "path_pattern": "data/agent-runs/workspaces/*",
-      "purpose": "Dedicated artifact workspace for one dispatched order, keyed by its action identity; ownership covers the container only.",
+      "purpose": "Dedicated workspace for one dispatched order with no usable folder, keyed by its action identity, so its files stay out of the home directory; ownership covers the container only.",
       "schema": "scripts/agent_task.py order_workspace, used by scripts/dispatch.py for an order with no usable requested folder.",
       "producer": "Inbound dispatch of a work order.",
-      "consumer_or_final_deliverable": "The order's agent execution and artifact evidence; child outputs are arbitrary action-workspace outputs and remain gaps until classified.",
+      "consumer_or_final_deliverable": "The order's agent execution; child outputs are arbitrary action-workspace outputs and remain gaps until classified.",
       "rebuild_or_restore": "Recreated empty when the same action identity is dispatched again; outputs are not reproducible.",
       "retention_rule": {
         "class": "core",
@@ -943,8 +943,8 @@
       "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
       "schema": "scripts/agent_run.py generation, attempt and round record contract.",
       "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "consumer_or_final_deliverable": "Unresolved execution recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation and attempt ID; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
@@ -956,8 +956,8 @@
       "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
       "schema": "scripts/agent_run.py generation, attempt and round record contract.",
       "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "consumer_or_final_deliverable": "Unresolved execution recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation and attempt ID; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
@@ -969,8 +969,8 @@
       "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
       "schema": "scripts/agent_run.py generation, attempt and round record contract.",
       "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "consumer_or_final_deliverable": "Unresolved execution recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation and attempt ID; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
@@ -982,8 +982,8 @@
       "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
       "schema": "scripts/agent_run.py generation, attempt and round record contract.",
       "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "consumer_or_final_deliverable": "Unresolved execution recovery and selected final work evidence.",
+      "rebuild_or_restore": "Restore with matching task-store generation and attempt ID; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
@@ -992,11 +992,11 @@
     {
       "artifact_id": "data-agent-runs-attempt-before-diff",
       "path_pattern": "data/agent-runs/*/*/a[0-9]*/r[0-9]*/before.diff",
-      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
-      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
-      "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "purpose": "Historical review input, verdict or workspace evidence of an earlier round; no longer produced.",
+      "schema": "Historical scripts/agent_run.py independent review records.",
+      "producer": "Earlier versions of the agent execution worker.",
+      "consumer_or_final_deliverable": "Historical review interpretation for the orders that have it.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
@@ -1005,11 +1005,11 @@
     {
       "artifact_id": "data-agent-runs-attempt-after-diff",
       "path_pattern": "data/agent-runs/*/*/a[0-9]*/r[0-9]*/after.diff",
-      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
-      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
-      "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "purpose": "Historical review input, verdict or workspace evidence of an earlier round; no longer produced.",
+      "schema": "Historical scripts/agent_run.py independent review records.",
+      "producer": "Earlier versions of the agent execution worker.",
+      "consumer_or_final_deliverable": "Historical review interpretation for the orders that have it.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
@@ -1018,11 +1018,11 @@
     {
       "artifact_id": "data-agent-runs-attempt-review-prompt-txt",
       "path_pattern": "data/agent-runs/*/*/a[0-9]*/r[0-9]*/review-prompt.txt",
-      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
-      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
-      "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "purpose": "Historical review input, verdict or workspace evidence of an earlier round; no longer produced.",
+      "schema": "Historical scripts/agent_run.py independent review records.",
+      "producer": "Earlier versions of the agent execution worker.",
+      "consumer_or_final_deliverable": "Historical review interpretation for the orders that have it.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
@@ -1031,11 +1031,11 @@
     {
       "artifact_id": "data-agent-runs-attempt-evidence-json",
       "path_pattern": "data/agent-runs/*/*/a[0-9]*/r[0-9]*/evidence.json",
-      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
-      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
-      "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "purpose": "Historical review input, verdict or workspace evidence of an earlier round; no longer produced.",
+      "schema": "Historical scripts/agent_run.py independent review records.",
+      "producer": "Earlier versions of the agent execution worker.",
+      "consumer_or_final_deliverable": "Historical review interpretation for the orders that have it.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."
@@ -1044,11 +1044,11 @@
     {
       "artifact_id": "data-agent-runs-attempt-review-json",
       "path_pattern": "data/agent-runs/*/*/a[0-9]*/r[0-9]*/review.json",
-      "purpose": "Owned attempt/approach/round input, result or independently captured verification evidence.",
-      "schema": "scripts/agent_run.py generation, attempt and round record contract.",
-      "producer": "The owned agent execution and verification worker.",
-      "consumer_or_final_deliverable": "Unresolved execution/review recovery and selected final work evidence.",
-      "rebuild_or_restore": "Restore with matching task-store generation, attempt ID and retained baseline; do not replay uncertain execution.",
+      "purpose": "Historical review input, verdict or workspace evidence of an earlier round; no longer produced.",
+      "schema": "Historical scripts/agent_run.py independent review records.",
+      "producer": "Earlier versions of the agent execution worker.",
+      "consumer_or_final_deliverable": "Historical review interpretation for the orders that have it.",
+      "rebuild_or_restore": "Restore alongside the corresponding historical task-store work identity; do not replay uncertain execution.",
       "retention_rule": {
         "class": "core",
         "rule": "Keep active or unresolved work, requests, receipt identities and evidence required to interpret the matching task-store operation. Preserve selected final results once; reconcile execution, review and recovery dependencies before retiring completed rounds. Prompt, log or model output presence does not establish completion."

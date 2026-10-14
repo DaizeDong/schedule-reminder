@@ -174,13 +174,6 @@ def watchdog_database(path):
     return path
 
 
-def artifact_workspace(path, size=24):
-    """Generate a non-code workspace containing a synthetic report."""
-    path.mkdir(parents=True, exist_ok=True)
-    (path / 'report.txt').write_text(('Acme synthetic report.\n' * (size // 22 + 1))[:size], encoding='utf-8')
-    return path
-
-
 def action_database(path, *, source='user', blocked=False):
     """Generate a full owner database and one actionable synthetic todo."""
     import store
@@ -476,7 +469,7 @@ def schedule8_cases():
 
 
 
-def schedule10_review_cases():
+def schedule10_request_cases():
     """Generate complete requests with a trailing synthetic completion requirement."""
     prefix = "Perform the synthetic maintenance task.\n"
     tail = "\nRequire SYNTHETIC_TAIL_ACK in the final artifact."
@@ -488,12 +481,6 @@ def schedule10_review_cases():
             "request": request,
             "trailing_requirement": tail.strip(),
             "workspace": "synthetic-workspace",
-            "summary": "Synthetic partial implementation.",
-            "changed": ["synthetic-result.txt"],
-            "changed_via": "synthetic-inspection",
-            "command": "synthetic-check",
-            "return_code": 0,
-            "output": "Synthetic check output.",
         })
     return cases
 
