@@ -5,39 +5,14 @@ Downstream skills depend on this infrastructure base's state and CLI contracts. 
 
 ## Golden rules
 
-1. **The contract is frozen.** Verbs, item fields, and the state enum are golden-tested (E11). You
+1. **The contract is frozen.** Verbs, item fields, and the state enum are fixed. You
    may add fields/verbs (additive); deleting/renaming/changing semantics requires bumping
    `api_version` (in `store.py`) and a dual-run transition period.
 2. **Never break backward compatibility.** Schema changes are additive only (`PRAGMA user_version`
-   migrations); unknown fields stay MUST-PRESERVE (E12).
-3. **Evaluation-driven.** Write/extend the E1-E15 assertions in `skills/schedule-reminder/tests/`
-   before the implementation. The suite must stay green; E8/E9/E11/E12 are merge-blocking.
-4. **Keep runtime DATA and credentials out of public source.** Use the initialized PRIVATE
+   migrations); unknown fields stay MUST-PRESERVE.
+3. **Keep runtime DATA and credentials out of public source.** Use the initialized PRIVATE
    companion and source storage contract. Ignore rules are an additional safeguard, not a storage
    boundary. Read configured credentials only for their intended operation; never log or echo them.
-
-## Run the suite
-
-```bash
-python -m pytest skills/schedule-reminder/tests/ -q
-```
-
-Test source roots are derived from the test files. Synthetic filesystem fixtures create and
-clean up their own temporary workspaces; no author-specific workspace setting is required.
-
-## Canonical test dependency
-
-The route tests execute the canonical code-only notification language rule. Prepare the exact artifact using the hash and size in tools/test_dependencies.json:
-
-    python tools/prepare_test_dependency.py --source /path/to/notification_language.py --out /tmp/schedule-tests/notification_language.py
-    export SCHEDULE_TEST_LANGUAGE_RULE=/tmp/schedule-tests/notification_language.py
-
-CI checks out the pinned code-only file, validates its hash and size, and supplies its path through
-`SCHEDULE_TEST_LANGUAGE_RULE`. Missing read access or a hash mismatch fails before test collection.
-Fork CI needs the dependency provisioned by a trusted runner; it must not skip language assertions
-or reduce the acceptance floor. The suite runs on Linux and Windows. Local consumer integration
-also accepts `SCHEDULE_TEST_TASK_CONSOLE_ROOT` pointing to a Task Console checkout; those checks
-compile synthetic declarations and invoke the owner API without registering or running tasks.
 
 ## Conventions
 

@@ -108,31 +108,15 @@ OS 任务只是心跳。`tick` 对账持久表，所以休眠/关机的机器下
 - 带业务事件身份的通知见[通知回执](skills/schedule-reminder/reference/notification-receipts.md)。
 - 源码布局和存储保留规则见[storage.md](docs/storage.md)和[storage.contract.json](storage.contract.json)。
 
-## 测试范围
-
-15 个验收信号（E1-E15）全程经 subprocess 调冻结 CLI、断言 JSON：CRUD、完整状态转移表（合法 + 非法）、写入
-不变量、到期触发 / 幂等 tick / 错过补发 / 重试退避、并发写 + `PRAGMA integrity_check`、并发读写、幂等去重、
-API golden、未知字段保留、health、RRULE 滚动重复、per-alarm 提前量。外加 Agent Center 总线、relay 出口、
-每日 digest、心跳存活、notify 路由及双向 ingest/dispatch 的隔离模块测试。E8/E9/E11/E12 为阻断合并的红线。
-
-```bash
-python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider
-```
-
-通知路由测试需要通过 `SCHEDULE_TEST_LANGUAGE_RULE` 指定现有的 `notification_language.py`。
-测试只把该代码复制到合成配置中，不读取实际配置或凭据。通过 `SCHEDULE_TEST_TASK_CONSOLE_ROOT`
-指定 Task Console 源码后，还会验证其编译器和工作接口对 reminder CLI 的调用；未指定时明确跳过这些检查。
-这些测试不运行计划任务，也不证明安装后的就绪状态。
+## 合成验证
 
 `verify_expired_email_active.py --data-dir <PRIVATE-directory>` 在私有伴生仓生成可丢弃的合成记录，
-拒绝使用公开源码内的数据库。该工具不能证明实际 worker 已就绪。历史测试结果也不代表当前版本
-已通过回归或完成安装，请以对应源码版本的执行报告为准。
+拒绝使用公开源码内的数据库。该工具不能证明实际 worker 已就绪。请以对应源码版本的执行报告为准。
 
 ## 局限
 
 - **建议 SQLite ≥ 3.51.3**。更早版本有 WAL-reset 多写者损坏 bug；`health` 会告警（不硬性失败）。无需换 Python
-  的升级路径：`pip install pysqlite3-binary`（自动检测）。测试套件会验证本机 SQLite 在并发下 `integrity_check`
-  保持 `ok`。
+  的升级路径：`pip install pysqlite3-binary`（自动检测）。
 - **RRULE 按次滚动。** 提醒成功后，主记录移到下一个未来时间，不会一次建出无限多条记录。支持的字段见契约。
 - **优先 Windows 部署**（`install.ps1` 计划任务）；目前未提供维护中的 Unix cron 安装方式。
 - **数据库必须放本地 NTFS**，绝不放 OneDrive/GDrive/网络盘（WAL 锁 + 同步会损坏库）。

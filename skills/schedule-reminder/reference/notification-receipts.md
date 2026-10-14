@@ -61,8 +61,7 @@ No credential-bearing registry snapshot is persisted.
 
 Set `SCHEDULE_NOTIFICATION_LANGUAGE_POLICY` to an absolute maintained policy path, or configure
 `SCHEDULE_ROUTE_SCRIPTS_DIR` containing `notification_language.py`. A Python caller may pass
-`language_policy_path` explicitly. Missing policy is a pre-send failure. Tests use the pinned,
-code-only dependency selected by `SCHEDULE_TEST_LANGUAGE_RULE` and synthetic generated data.
+`language_policy_path` explicitly. Missing policy is a pre-send failure.
 
 ## Consumer and compatibility APIs
 

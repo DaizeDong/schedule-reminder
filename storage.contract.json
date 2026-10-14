@@ -145,7 +145,7 @@
       "schema": "Original artifact formats; retain the relocation and inactivity evidence outside the public source tree.",
       "producer": "Reviewed maintenance relocation.",
       "consumer_or_final_deliverable": "Final retirement review only.",
-      "rebuild_or_restore": "Synthetic tests are regenerated from tools/make_fixtures.py and the source tests. This directory is not a recovery dependency.",
+      "rebuild_or_restore": "This directory is not a recovery dependency.",
       "retention_rule": {
         "class": "retired",
         "rule": "Remove after the exact removal action is authorized and inactivity is rechecked. Relocation is not disk reclamation and does not make development outputs core state."

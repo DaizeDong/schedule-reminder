@@ -120,30 +120,7 @@ triggers, no silent skips.
 - **Identified notifications:** [business-event receipts](skills/schedule-reminder/reference/notification-receipts.md).
 - **Source layout and storage retention:** [storage.md](docs/storage.md) and [storage.contract.json](storage.contract.json).
 
-## Test coverage and evidence
-
-15 acceptance signals (E1-E15) drive the frozen CLI via subprocess and assert JSON: CRUD, the full
-transition table (legal + illegal), write invariants, due trigger / idempotent tick / missed-fire
-catch-up / retry back-off, concurrent writes with `PRAGMA integrity_check`, concurrent read/write,
-idempotent dedupe, API golden, unknown-field preservation, health, RRULE rolling recurrence, and
-per-alarm lead times. Plus hermetic module tests for the Agent Center bus, relay egress, daily
-digest, heartbeat survival, notify routing, and the two-way ingest/dispatch. E8/E9/E11/E12 are
-merge-blocking red lines.
-
-```bash
-python -B -m pytest skills/schedule-reminder/tests/ -q -p no:cacheprovider
-```
-
-The existing notification-route checks also need the canonical `notification_language.py` code.
-Set `SCHEDULE_TEST_LANGUAGE_RULE` to that file when running them. The test harness copies the code
-unchanged into its synthetic profile; it does not load the operator's configuration or credentials.
-Without the dependency, those checks report its absence. Live scheduled-task checks remain separate
-from offline capability tests.
-
-Creation, action-receipt and linkage tests cover synthetic retries and concurrent changes.
-Set `SCHEDULE_TEST_TASK_CONSOLE_ROOT` to a canonical Task Console checkout to also exercise its
-compiler and work API against the real reminder CLI. Those consumer checks explicitly skip when
-the checkout is not provided; no Scheduler task is run by them.
+## Synthetic verification
 
 <a id="synthetic-verification"></a>
 `verify_expired_email_active.py --data-dir <PRIVATE-directory>` generates disposable synthetic
@@ -154,8 +131,7 @@ the live scheduled tasks; use the execution report for the exact source revision
 
 - **SQLite ≥ 3.51.3 recommended.** Earlier versions carry a WAL-reset multi-writer corruption bug;
   `health` warns (does not hard-fail). Upgrade path without changing Python: `pip install
-  pysqlite3-binary` (auto-detected). The bundled test suite verifies `integrity_check` stays `ok`
-  under concurrency on the host SQLite.
+  pysqlite3-binary` (auto-detected).
 - **Recurrence uses rolling expansion.** The supported RRULE subset advances the master row to the next future occurrence; it does not materialize an infinite series. See the contract for supported fields.
 - **Windows-first deployment** (scheduled task via `install.ps1`); no maintained Unix cron installer is shipped.
 - **DB must stay on local NTFS**, never a OneDrive/GDrive/network path (WAL lock + sync corruption).

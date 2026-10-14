@@ -5,6 +5,7 @@ All notable changes to this project are documented here (Keep a Changelog style)
 ## [Unreleased]
 
 ### Removed
+- The test suite, its fixtures and the CI tests workflow: confirmed-working features keep no tests.
 - The independent completion review of Agent Center work orders. After the executor (llmcall
   `mode="agent"`) finished and its own verify command passed, a second model of another family
   (`mode="judge"`) was asked DONE or CONTINUE over a full before/after capture of the workspace

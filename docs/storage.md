@@ -10,9 +10,7 @@ relative to the selected private repository root, not to this source checkout.
 | `skills/schedule-reminder/SKILL.md` | Invocation and stable public entrypoints |
 | `skills/schedule-reminder/scripts/` | Store, CLI, relay, ingest, work execution and installation |
 | `skills/schedule-reminder/reference/` | CLI contracts, deployment, integration and operations |
-| `skills/schedule-reminder/tests/` | Offline behavioral and regression tests |
-| `tools/make_fixtures.py` | Reproducible synthetic test and example inputs |
-| `tools/test_dependencies.json` | Pinned external test-code identity |
+| `tools/make_fixtures.py` | Reproducible synthetic example and verifier inputs |
 | `guards/` | Pinned security and private-data boundary checks |
 | `style/` | Pinned documentation checks |
 
