@@ -160,8 +160,9 @@ the live scheduled tasks; use the execution report for the exact source revision
 - **Windows-first deployment** (scheduled task via `install.ps1`); no maintained Unix cron installer is shipped.
 - **DB must stay on local NTFS**, never a OneDrive/GDrive/network path (WAL lock + sync corruption).
 - **Work completion needs llmcall execution evidence.** Missing process containment or cleanup
-  confirmation leaves the run unresolved. Completion itself is the executor's own verification
-  command, run by the system; no second model reviews the work. Offline controls do not establish
+  confirmation leaves the run unresolved. A passing verification command, run by the system,
+  completes the order, and so does an executor answer that declares `verify: null` or carries no
+  valid contract; no second model reviews the work. Offline controls do not establish
   that an installed llmcall version provides those capabilities.
 
 ## Languages

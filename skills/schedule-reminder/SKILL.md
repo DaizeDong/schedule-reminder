@@ -38,8 +38,9 @@ enumeration of which channels are read, one egress for everything sent. See
 `reference/operations.md`.
 
 Execution requests become work orders in the same pool and run through the optional third
-scheduled task. The executor's own verification command, run by the system, decides completion;
-no second model reviews the work. See the same reference.
+scheduled task. A passing verification command, run by the system, completes the order, and so
+does an executor answer that declares `verify: null` or carries no valid contract; no second model
+reviews the work. See the same reference.
 
 The OS task is only a heartbeat; `tick` reconciles the local table, so a slept/off machine catches
 up **all** missed reminders on the next run (idempotent, at-least-once + dedupe).

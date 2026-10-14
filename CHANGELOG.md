@@ -15,7 +15,8 @@ All notable changes to this project are documented here (Keep a Changelog style)
   130 leave `reconcile`, and any other nonzero exit starts the next round with the real output.
   `verify: null` completes on the executor's summary, and an answer without a valid final contract
   completes with the answer itself (any trailing JSON stripped, bounded) as its summary instead of
-  stopping. The changed-file list is the executor's self-reported list. Removed with it:
+  stopping. The changed-file list is the executor's self-reported list, kept from the final JSON
+  even when that JSON is not a valid contract. Removed with it:
   `review_prompt`, `review_verdict`, `independent_review`, `AGENT_EXEC_REVIEW_TIMEOUT`, the
   `reviewing` checkpoint, the per-round `review-prompt.txt`, `review.json`, `before.diff`,
   `after.diff` and `evidence.json` records, `agent_artifacts.py`, the git and artifact evidence
@@ -24,7 +25,9 @@ All notable changes to this project are documented here (Keep a Changelog style)
   on new orders. The runner's only model call is the executor's, and `_llm` refuses any other
   mode. Existing orders keep reading: `review_unavailable` stays a known execution state,
   `x_agent_exec_evidence` and the operation baseline columns stay where they are (no schema
-  migration), and the storage contract keeps the old round records declared as historical.
+  migration), and the storage contract keeps the old round records declared as historical. The
+  request identity of a new order keeps its four-slot shape with the retired evidence slot set to
+  null, so an identical request still reuses a live order enqueued earlier without an evidence mode.
   Dispatch still gives an order with no usable folder its own workspace, which keeps its files out
   of the home directory. The CI collection floor drops from 1100 to 1040 with the deleted tests.
 - The runtime PRIVATE visibility proof before every DATA write, lock and database open (about 56

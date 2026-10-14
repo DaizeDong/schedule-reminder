@@ -88,8 +88,9 @@ does not read any other copy of the token.
 
 Work additionally requires llmcall process containment and truthful execution/cleanup receipts.
 Missing cleanup confirmation keeps the writer reservation; a stop whose runner job is terminated and
-then reports no live member releases it itself. Completion is decided by the executor's own
-verification command, which the runner executes; no second model reviews the work. Offline
+then reports no live member releases it itself. A passing verification command, which the runner
+executes, completes the order, and so does an executor answer that declares `verify: null` or
+carries no valid contract; no second model reviews the work. Offline
 synthetic tests exercise those checks but do not establish support in an installed llmcall
 version. `agent_task.py status` observes reservations; `recover-cleanup` accepts an explicit,
 generation-bound operator review, not a retry of the work. See [Agent Center](agent-center.md).

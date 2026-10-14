@@ -271,7 +271,9 @@ def enqueue(stream, request, workspace=None, msg_id=None, title=None, *,
     if origin_item_id:
         ext['x_console_origin_item'] = origin_item_id
     if work_id is None:
-        identity = [request or '', os.path.normcase(os.path.abspath(ws)), origin_item_id]
+        # The fourth slot once held the evidence mode. It stays as None so the hash matches every
+        # order enqueued before evidence was removed without one, and a live order is still reused.
+        identity = [request or '', os.path.normcase(os.path.abspath(ws)), origin_item_id, None]
         ext['x_agent_exec_request_identity'] = hashlib.sha256(
             json.dumps(identity, ensure_ascii=False).encode('utf-8')).hexdigest()
     t = (title or request or "").strip().replace("\n", " ")

@@ -144,6 +144,17 @@ def test_missing_or_invalid_contract_completes_on_the_executor_answer(monkeypatc
     assert "verify.txt" not in {Path(name).name for name in _records(h)}
 
 
+@pytest.mark.parametrize("answer", [
+    '{"verify": 42, "changed": ["report.txt", " ", "notes.txt"], "summary": "Synthetic bad check."}',
+    'Synthetic report written.\n{"changed": ["report.txt", "notes.txt"], "summary": "no verify key"}',
+])
+def test_invalid_contract_keeps_the_self_reported_changed_files(monkeypatch, tmp_path, answer):
+    result, h = _round(monkeypatch, tmp_path, [_result(text=answer)], post_reports=True)
+    assert result["outcome"] == "done" and h.verifies == []
+    [(_stream, report)] = h.posts
+    assert "改动(self-reported):notes.txt, report.txt" in report
+
+
 def test_a_long_answer_is_bounded_as_its_summary(monkeypatch, tmp_path):
     answer = "Synthetic finding. " * 400
     result, h = _round(monkeypatch, tmp_path, [_result(text=answer)], post_reports=True)
@@ -230,6 +241,19 @@ def test_historical_review_rows_stay_readable(monkeypatch, capsys, tmp_path):
     feed = read_work_feed(db_path=os.environ["SCHEDULE_DB_PATH"])
     rows = {row["id"]: row for row in feed["items"]}
     assert rows[item_id]["execution"]["state"] == "review_unavailable"
+
+
+def test_new_orders_reuse_a_live_order_enqueued_before_evidence_was_removed(tmp_path):
+    """The request identity keeps its old four-slot shape, so a live order from before the change
+    (enqueued without an evidence mode) is still found instead of duplicated."""
+    import hashlib
+    from creation_guard import _scope
+    store.init_db()
+    item = agent_task.enqueue("synthetic", "Synthetic request", workspace=str(tmp_path))
+    legacy = ["Synthetic request", os.path.normcase(os.path.abspath(item["ext"][agent_task.EXT_WORKSPACE])), None, None]
+    expected = hashlib.sha256(json.dumps(legacy, ensure_ascii=False).encode("utf-8")).hexdigest()
+    assert item["ext"]["x_agent_exec_request_identity"] == expected
+    assert _scope(item) == {"work_request": expected}
 
 
 def test_contained_command_preserves_stdout_stderr_and_nonzero_exit(tmp_path, real_process):

@@ -587,9 +587,13 @@ def contract(tail):
     if ("verify" not in tail or not isinstance(summary, str) or not summary.strip()
             or (cmd is not None and (not isinstance(cmd, str) or not cmd.strip()))):
         return None
+    return cmd, _bounded(summary), reported_changed(tail)
+
+
+def reported_changed(tail):
+    """The executor's self-reported changed files from a parsed tail, valid contract or not."""
     changed = tail.get("changed")
-    changed = sorted({str(c).strip() for c in changed if str(c).strip()}) if isinstance(changed, list) else []
-    return cmd, _bounded(summary), changed
+    return sorted({str(c).strip() for c in changed if str(c).strip()}) if isinstance(changed, list) else []
 
 
 def _run_approach_owned(item, stream, request, workspace, approach, post_reports, *, generation):
@@ -629,11 +633,12 @@ def _run_approach_owned(item, stream, request, workspace, approach, post_reports
             return stop(outcome, result.error or "agent execution outcome unavailable")
         if not agent_task.checkpoint(item_id, generation, "verifying"):
             return {"outcome": "cancelled"}
-        terms = contract(parse_tail(result.text))
+        tail = parse_tail(result.text)
+        terms = contract(tail)
         if terms is None:
             # No usable contract: the executor's own answer is the result. Nothing is run.
             summary = answer_summary(result.text) or "(执行者没有给出说明)"
-            cmd, rc, out, changed, contracted = None, None, "", [], False
+            cmd, rc, out, changed, contracted = None, None, "", reported_changed(tail), False
         else:
             cmd, summary, changed = terms
             contracted = True
