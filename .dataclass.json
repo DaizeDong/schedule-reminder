@@ -19,6 +19,6 @@
     "db.sqlite3.example",
     "examples.json"
   ],
-  "_data_home": "SCHEDULE_REMINDER_DATA_DIR or the data directory of SCHEDULE_REMINDER_CONFIG. PRIVATE companion DATA is versioned and backed up; PUBLIC, unknown and unmanaged destinations fail closed.",
+  "_data_home": "SCHEDULE_REMINDER_DATA_DIR or the data directory of SCHEDULE_REMINDER_CONFIG. Resolved through the fleet_guards.runtime companion resolver; destinations inside this source tree are refused. PRIVATE companion DATA is versioned and backed up; PRIVATE publication is enforced by the commit-time .githooks, not at write time.",
   "_run_shape_probes": []
 }
