@@ -9,7 +9,7 @@ storage and does not introduce another schema version.
 
 Only the explicit `reminder.py init` command initializes or upgrades storage.
 Review and linked reads use `store.admitted_connection(..., readonly=True)`;
-apply uses the same PRIVATE admission with a write transaction. Neither path
+apply uses the same companion path resolution with a write transaction. Neither path
 creates a missing database or upgrades its schema.
 
 ## Private inputs and explicit approval
@@ -98,6 +98,6 @@ write access can forge metadata; this receipt is not a tamper-resistant audit lo
 
 Ship `reminder_linked_items.py` and `reminder_link_review.py` alongside the existing
 `store.py`. The apply/review CLI needs the installed task-console package for nonempty
-linkage. The reader depends on the owner's store and PRIVATE admission helpers,
+linkage. The reader depends on the owner's store and companion path resolution,
 and has no dependency on task-console. Preserve the existing explicit
 `TASK_CONSOLE_REMINDER_DB` binding.

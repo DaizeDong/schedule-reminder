@@ -10,11 +10,11 @@ settings; a storage-only check cannot establish configured readiness.
 file even when `SCHEDULE_REMINDER_CONFIG` selects another companion for state and work records.
 Keep the two selections consistent unless separate locations are deliberate and reviewed.
 
-For the companion root, the order is `SCHEDULE_REMINDER_CONFIG`, then `AGENT_CENTER_CONFIG`
-(its parent when it names a JSON file), then the installed fleet-guards convention:
-sibling `schedule-reminder-config`; there is no home-directory location. With none of
-these, commands that need the companion fail as uninitialized instead of guessing a path. Explicit CONFIG and
-AGENT_CENTER selections remain selected when missing. A DATA override is excluded from
+For the companion root, the installed fleet-guards resolver uses `SCHEDULE_REMINDER_CONFIG`,
+then the convention sibling `schedule-reminder-config`; there is no home-directory location. With
+neither, commands that need the companion fail as uninitialized instead of guessing a path. An
+explicit `SCHEDULE_REMINDER_CONFIG` that names a missing directory fails. `AGENT_CENTER_CONFIG`
+selects only the registry file, never the companion root. A DATA override is excluded from
 registry discovery. `SCHEDULE_REMINDER_DATA_DIR` selects runtime DATA directly; otherwise DATA
 is `<companion>/data`. `SCHEDULE_DB_PATH` overrides the default `<data>/db.sqlite3`, and
 `reminder.py --db` overrides that variable. These independent overrides do not migrate data.

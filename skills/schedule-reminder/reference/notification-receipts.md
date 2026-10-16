@@ -15,7 +15,8 @@ fallback and an optional command policy.
 `notification_receipts.deliver(event, content, **options)` and
 `notify.notify_event(event, content, **options)` return a persisted business-event receipt.
 They use the existing reminder database through `store.admitted_connection` and `store._Tx`.
-Both receipt reads and writes require PRIVATE admission. The producer never creates or migrates
+Both receipt reads and writes require the resolved companion path (private_data.py);
+PRIVATE publication is enforced at commit time. The producer never creates or migrates
 a database. Initialize the current store before enabling callers; missing storage or schema
 remains an explicit error.
 
@@ -106,5 +107,5 @@ Cleanup removes the snapshot before process invocation or when `llmcall.process`
 confirms that the notifier's job is empty (`cleanup_confirmed`). A lost process response or unconfirmed cleanup retains
 the snapshot and leaves delivery uncertain; retries do not invoke the command again. An abrupt
 producer termination can also leave a private snapshot. Reconcile the retained artifact and confirm
-the notifier's job is empty before removing it. Missing PRIVATE admission prevents snapshot
+the notifier's job is empty before removing it. An unresolved companion path prevents snapshot
 creation and sending.

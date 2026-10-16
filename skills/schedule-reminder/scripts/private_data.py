@@ -17,10 +17,6 @@ SOURCE = Path(__file__).resolve().parents[3]
 
 
 def config_root():
-    selected = os.environ.get('SCHEDULE_REMINDER_CONFIG') or os.environ.get('AGENT_CENTER_CONFIG')
-    if selected:
-        path = assert_writable_path(selected).resolve()
-        return path.parent if path.suffix.lower() == '.json' else path
     try:
         from fleet_guards.runtime import companion_resolver
     except ImportError as error:

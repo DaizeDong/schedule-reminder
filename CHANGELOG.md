@@ -4,6 +4,7 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ## [Unreleased]
 
+- `private_data.config_root()` no longer treats `AGENT_CENTER_CONFIG` as a companion-root alias; it selects only the registry file. The companion root comes from the fleet-guards resolver (`SCHEDULE_REMINDER_CONFIG`, then the sibling). Docs no longer describe a runtime PRIVATE admission proof.
 - `private_data.config_root()` no longer falls back to a guessed `../schedule-reminder-config` path when no companion resolves; it raises an uninitialized error. `SCHEDULE_REMINDER_CONFIG_DIR` is no longer a documented alias.
 
 ### Removed

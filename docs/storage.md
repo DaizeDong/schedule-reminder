@@ -12,10 +12,9 @@ relative to the selected private repository root, not to this source checkout.
 | `skills/schedule-reminder/reference/` | CLI contracts, deployment, integration and operations |
 | `tools/make_fixtures.py` | Reproducible synthetic example and verifier inputs |
 
-`private_data.py` selects the initialized PRIVATE companion through
-`SCHEDULE_REMINDER_CONFIG`, `AGENT_CENTER_CONFIG` or its configured discovery.
-Without an explicit config pointer, the installed fleet-guards resolver selects an initialized
-sibling companion before a home companion. DATA overrides do not select the config
+`private_data.py` selects the initialized PRIVATE companion through the installed
+fleet-guards resolver: `SCHEDULE_REMINDER_CONFIG`, else the initialized sibling companion.
+`AGENT_CENTER_CONFIG` selects only the registry file. DATA overrides do not select the config
 root. Missing storage remains inert for reads; a missing fleet_guards install or an unproven inferred
 companion fails explicitly, and a write below an uninitialized companion fails instead of
 creating it. Runtime writes run no visibility proof: they refuse only destinations inside the
@@ -114,7 +113,8 @@ python skills/skill-smith/scripts/storage_contract.py check --repo <source-check
 
 The explicit companion path must be the exact PRIVATE Git worktree root, including
 configuration and recovery files. Checking only its `data/` child is invalid. Folder
-names do not establish visibility. The checker proves PRIVATE admission and validates
-metadata coverage and sizes; domain scripts validate record contents. Undeclared,
+names do not establish visibility. The checker validates metadata coverage, ownership
+and sizes; PRIVATE publication is enforced at commit time by the .githooks shims;
+domain scripts validate record contents. Undeclared,
 ambiguous or unobserved requirements remain failed checks after schema validation.
 Moving data into PRIVATE storage changes its location and does not reclaim space.
