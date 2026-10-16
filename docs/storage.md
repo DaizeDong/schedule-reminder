@@ -11,18 +11,16 @@ relative to the selected private repository root, not to this source checkout.
 | `skills/schedule-reminder/scripts/` | Store, CLI, relay, ingest, work execution and installation |
 | `skills/schedule-reminder/reference/` | CLI contracts, deployment, integration and operations |
 | `tools/make_fixtures.py` | Reproducible synthetic example and verifier inputs |
-| `guards/` | Pinned security and private-data boundary checks |
-| `style/` | Pinned documentation checks |
 
 `private_data.py` selects the initialized PRIVATE companion through
 `SCHEDULE_REMINDER_CONFIG`, `AGENT_CENTER_CONFIG` or its configured discovery.
-Without an explicit config pointer, the pinned Guards resolver selects an initialized
+Without an explicit config pointer, the installed fleet-guards resolver selects an initialized
 sibling companion before a home companion. DATA overrides do not select the config
-root. Missing storage remains inert for reads; missing Guards or an unproven inferred
+root. Missing storage remains inert for reads; a missing fleet_guards install or an unproven inferred
 companion fails explicitly, and a write below an uninitialized companion fails instead of
 creating it. Runtime writes run no visibility proof: they refuse only destinations inside the
 public source tree, inside Git metadata, or reached through a filesystem alias. Publication
-safety is enforced at commit time by the Guards hooks and CI.
+safety is enforced at commit and push time by the fleet-guards hooks.
 Current defaults use root-level `state/`, `agent-runs/` and `digest.json`; the sole
 reminder database is `data/db.sqlite3`. The contract also declares known leaves for
 retained `data/state/`, `data/agent-runs/` and `data/digest.json` selections. A dispatched

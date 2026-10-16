@@ -11,7 +11,7 @@ file even when `SCHEDULE_REMINDER_CONFIG` selects another companion for state an
 Keep the two selections consistent unless separate locations are deliberate and reviewed.
 
 For the companion root, the order is `SCHEDULE_REMINDER_CONFIG`, then `AGENT_CENTER_CONFIG`
-(its parent when it names a JSON file), then the pinned Guards convention:
+(its parent when it names a JSON file), then the installed fleet-guards convention:
 `SCHEDULE_REMINDER_CONFIG_DIR`, then sibling `schedule-reminder-config`; there is no
 home-directory location. Explicit CONFIG and
 AGENT_CENTER selections remain selected when missing. A DATA override is excluded from

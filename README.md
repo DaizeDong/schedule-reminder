@@ -46,7 +46,8 @@ one-shot notifications. Calendar interfaces and cloud hosting are outside this t
 Or clone manually:
 
 ```bash
-git clone --recurse-submodules https://github.com/DaizeDong/schedule-reminder.git ~/.claude/plugins/schedule-reminder
+git clone https://github.com/DaizeDong/schedule-reminder.git ~/.claude/plugins/schedule-reminder
+python -m pip install -e "$(git config --get fleet.guards)"   # companion resolver
 ```
 
 Set `SCHEDULE_REMINDER_CONFIG` to an initialized PRIVATE versioned companion repository before

@@ -30,7 +30,7 @@ location. `AGENT_CENTER_CONFIG` selects the registry file. Explicit `reminder.py
 source tree, inside Git metadata or reached through a filesystem alias is refused before output
 creation, and a write below an uninitialized companion fails instead of creating it. Keeping the
 companion PRIVATE is the operator's setup step; publication is guarded at commit time by the
-Guards hooks and CI. Permission denial is reported separately from policy refusal.
+fleet-guards commit and push hooks. Permission denial is reported separately from policy refusal.
 
 Initialize or additively upgrade the chosen database with `reminder.py init`; reads and action
 entrypoints do not run migrations. `PRAGMA user_version` follows `store.SCHEMA_USER_VERSION`.

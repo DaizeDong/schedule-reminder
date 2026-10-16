@@ -42,7 +42,8 @@ v0.1 着重保证并发安全、防崩溃持久化、受保护的状态机、幂
 或手动克隆：
 
 ```bash
-git clone --recurse-submodules https://github.com/DaizeDong/schedule-reminder.git ~/.claude/plugins/schedule-reminder
+git clone https://github.com/DaizeDong/schedule-reminder.git ~/.claude/plugins/schedule-reminder
+python -m pip install -e "$(git config --get fleet.guards)"   # 伴生仓解析器
 ```
 
 先将 `SCHEDULE_REMINDER_CONFIG` 指向已初始化、纳入版本管理的 PRIVATE 伴生仓，再写入运行数据。预览所选能力后运行幂等安装器：

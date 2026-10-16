@@ -4,16 +4,14 @@ There is no runtime visibility proof. Where DATA lives is decided by resolution:
 directory (or an explicit override), never an in-repo fallback. A write is refused only by cheap
 path checks: the destination must not be inside this repository's source tree or Git metadata,
 and must not reach through a filesystem alias. Publication safety is enforced at commit time by
-the Guards hooks and CI, not on every runtime write.
+the fleet-guards commit and push hooks, not on every runtime write.
 """
 from pathlib import Path
 from contextlib import contextmanager
-import functools
 import ntpath
 import os
 import stat
 import time
-from types import SimpleNamespace
 
 SOURCE = Path(__file__).resolve().parents[3]
 
@@ -24,9 +22,19 @@ def config_root():
         path = assert_writable_path(selected).resolve()
         return path.parent if path.suffix.lower() == '.json' else path
     try:
-        root = _shared_resolver(SOURCE/'guards/tools/datadir.py').resolve_companion_root('schedule-reminder')
+        from fleet_guards.runtime import companion_resolver
+    except ImportError as error:
+        raise ImportError('fleet_guards is not installed; run: pip install -e "$(git config --get fleet.guards)"') from error
+    # A DATA override selects output storage, not the registry/inbox companion, so discovery
+    # runs without SCHEDULE_REMINDER_DATA_DIR in the environment.
+    data_override = os.environ.pop('SCHEDULE_REMINDER_DATA_DIR', None)
+    try:
+        root = companion_resolver(source_root=SOURCE).resolve_companion_root('schedule-reminder')
     except RuntimeError as error:
         raise ValueError('Schedule companion discovery failed: '+str(error)) from error
+    finally:
+        if data_override is not None:
+            os.environ['SCHEDULE_REMINDER_DATA_DIR'] = data_override
     # Nothing found: the answer is the sibling convention path, which is never created here.
     # Reads of it stay inert (an uninitialized tool) and check_destination refuses writes below it.
     # This module never names a home-directory path.
@@ -40,29 +48,6 @@ def data_dir():
 
 def registry_path():
     return assert_writable_path(os.environ.get('AGENT_CENTER_CONFIG') or config_root()/'registry.json').resolve()
-
-
-@functools.lru_cache(maxsize=None)
-def _shared_resolver(path):
-    """Load portable discovery from this consumer's pinned Guards dependency, once per process."""
-    import importlib.util
-    assert_writable_path(path)
-    if not path.is_file():
-        raise ValueError('Guards dependency is missing; initialize the reviewed submodule')
-    try:
-        spec = importlib.util.spec_from_file_location('_schedule_companion_resolver', path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    except (OSError, ImportError, ValueError) as error:
-        raise ValueError('Guards companion discovery API is unavailable') from error
-    if not callable(getattr(module, 'resolve_companion_root', None)):
-        raise ValueError('Guards dependency lacks the supported companion discovery API')
-    # A DATA override selects output storage, not the registry/inbox companion, so the resolver
-    # sees the live environment without SCHEDULE_REMINDER_DATA_DIR.
-    module.os = SimpleNamespace(**{**vars(os), 'environ': SimpleNamespace(
-        get=lambda name, default=None: (default if name == 'SCHEDULE_REMINDER_DATA_DIR'
-                                        else os.environ.get(name, default)))})
-    return module
 
 
 def assert_writable_path(destination):
