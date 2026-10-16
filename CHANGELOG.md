@@ -4,6 +4,8 @@ All notable changes to this project are documented here (Keep a Changelog style)
 
 ## [Unreleased]
 
+- `private_data.config_root()` no longer falls back to a guessed `../schedule-reminder-config` path when no companion resolves; it raises an uninitialized error. `SCHEDULE_REMINDER_CONFIG_DIR` is no longer a documented alias.
+
 ### Removed
 - The guards and style submodules, the gate workflows (pii-guard, dash-guard, doc-contract, load-budget) and fleet-sync. `.githooks` forwards to the local fleet-guards and fleet-style checkouts named by `git config fleet.guards` and `fleet.style` and blocks when either is unset or missing; commits also run the dash check on added lines. `private_data.config_root()` resolves the companion through the installed `fleet_guards.runtime.companion_resolver` (`pip install -e "$(git config --get fleet.guards)"`).
 - The test suite, its fixtures and the CI tests workflow: confirmed-working features keep no tests.

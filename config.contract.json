@@ -13,14 +13,12 @@
     "discovery_document": "CONFIG.md",
     "environment": "SCHEDULE_REMINDER_CONFIG",
     "aliases": [
-      "SCHEDULE_REMINDER_CONFIG_DIR",
       "AGENT_CENTER_CONFIG"
     ],
     "precedence": [
       "explicit --config registry file / initializer --out root",
       "AGENT_CENTER_CONFIG selects registry file independently",
       "SCHEDULE_REMINDER_CONFIG selects companion root",
-      "SCHEDULE_REMINDER_CONFIG_DIR",
       "sibling schedule-reminder-config; DATA_DIR only selects runtime DATA"
     ],
     "required_fields": [

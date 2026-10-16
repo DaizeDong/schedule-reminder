@@ -35,10 +35,9 @@ def config_root():
     finally:
         if data_override is not None:
             os.environ['SCHEDULE_REMINDER_DATA_DIR'] = data_override
-    # Nothing found: the answer is the sibling convention path, which is never created here.
-    # Reads of it stay inert (an uninitialized tool) and check_destination refuses writes below it.
-    # This module never names a home-directory path.
-    return assert_writable_path(root or SOURCE.parent/'schedule-reminder-config').resolve()
+    if root is None:
+        raise ValueError('Uninitialized: clone the PRIVATE schedule-reminder-config companion or set SCHEDULE_REMINDER_CONFIG')
+    return assert_writable_path(root).resolve()
 
 
 def data_dir():
