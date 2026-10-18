@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "component": "schedule-reminder",
-  "read": "task-console-status --configured",
+  "read": "background-task-core-status --configured",
   "tasks": [
     {
       "id": "scheduleremindertick",

@@ -137,7 +137,7 @@ def update(db_path, action_id, state, result=None, *, expected=None):
             connection.execute('UPDATE work_actions SET state=?,updated_at=?,result=? WHERE id=?',
                                (state, store.to_rfc3339(store.now_utc()),
                                 json.dumps(result or {}, ensure_ascii=False), action_id))
-            store._append_event(connection, row['item_id'], 'task-console', 'action_update',
+            store._append_event(connection, row['item_id'], 'background-task-core', 'action_update',
                                 payload={'action_id': action_id, 'state': state})
             return public(connection, by_id(connection, action_id))
     finally:

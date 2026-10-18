@@ -23,7 +23,7 @@ compatibility.
 SQLite (WAL) single file          <- private storage, NEVER touched by downstream
   store.py  (typed functions)     <- in-process, trusted skills MAY import
     reminder.py <verb>            <- versioned CLI contract (JSON always); call via subprocess
-    reminder_linked_items.py      <- reviewed read-only Task Console linkage
+    reminder_linked_items.py      <- reviewed read-only Background Task Core linkage
 [Windows task ScheduleReminderTick, PT5M] -> tick.py, three steps in order:
    work   -> agent_tick   -> reap the dead, launch one work order (also woken on enqueue and release)
    remind -> store.tick   -> reconcile due items -> relay.py -> Discord (out)

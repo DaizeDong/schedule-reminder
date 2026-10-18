@@ -19,8 +19,8 @@ The one on-demand reference for this skill. `SKILL.md` stays the always-loaded s
 > `api_version 1.x`; any delete/rename/semantic change bumps `api_version` and runs a dual-version
 > transition period.
 
-Task Console also has the separately documented, read-only `reminder_linked_items` owner seam;
-its reviewed authority and versioning are described in [linkage review](#task-console-linkage).
+Background Task Core also has the separately documented, read-only `reminder_linked_items` owner seam;
+its reviewed authority and versioning are described in [linkage review](#background-task-core-linkage).
 
 Contents: [Invocation](#invocation) · [Verbs](#verbs) · [Item fields](#item-fields) ·
 [States](#states--transitions) · [Error codes](#error-codes) · [Idempotency](#idempotency) ·
@@ -149,13 +149,13 @@ letters, digits, underscores or hyphens. The same exact request replays its dura
 
 `complete` commits its receipt and guarded transition together, without a workspace, scheduler or
 notification. An agent action needs an admitted PRIVATE workspace. A reviewed task action returns
-one `dispatch` instruction for Task Console; replay does not issue another instruction.
+one `dispatch` instruction for Background Task Core; replay does not issue another instruction.
 `work-action-result` accepts `{action_id: <receipt ID>, result: <controller result>}` and updates
 only a receipt still awaiting dispatch. The action saves the reviewed task ID, exact controller
 name and review revision before dispatch; a result for another controller cannot satisfy it.
 A canonical acknowledged `run_requested`, or observed
 `already_running`, releases the handoff reservation as `task_requested` and leaves the todo state
-unchanged. Incomplete acknowledgement or uncertain cleanup remains `reconcile`; Task Console owns
+unchanged. Incomplete acknowledgement or uncertain cleanup remains `reconcile`; Background Task Core owns
 task runtime and stop control.
 Historical task receipts without that identity binding remain `reconcile`.
 
@@ -215,7 +215,7 @@ Exhausted delivery is excluded from later ticks until rearmed, independently of 
 
 > For #2 email-monitor, #4 daily-hotspots, #6 demand-mining, #7 promotion-assistant, and any future
 > skill that needs to persist a reminder or read task progress. Use the CLI contract or the
-> separately documented read-only Task Console linkage seam, never database internals.
+> separately documented read-only Background Task Core linkage seam, never database internals.
 
 ### The golden rules
 
@@ -321,9 +321,9 @@ item = call("--actor", "my-skill", "add", "--title", "X", "--source", "my-skill"
 
 ### Work and notification consumers
 
-Task Console reads `work-feed`, then submits its owner-issued action/revision through `work-action`
+Background Task Core reads `work-feed`, then submits its owner-issued action/revision through `work-action`
 using JSON stdin. Manual completion needs no executor and preserves dependency guards. Linked task
-execution first requires explicit [linkage review](#task-console-linkage); task IDs are compiled from
+execution first requires explicit [linkage review](#background-task-core-linkage); task IDs are compiled from
 declarations and private bindings, never guessed from titles. A Scheduler handoff receipt leaves
 the todo's business state unchanged. Work-feed is persisted observation, not a liveness probe.
 
@@ -634,7 +634,7 @@ calls, command execution and database changes. It is not a dry run. See
   Failed identity queries remain uncertainty. Stop intent is saved before the job is terminated;
   cancellation requires a verified absent/reused identity or verified termination.
 - **A stop terminates; it does not wait for the runner to cancel itself.** `agent_tick.stop` (the
-  Task Console's stop and `--stop`) saves the intent and then terminates the runner's job within a
+  Background Task Core's stop and `--stop`) saves the intent and then terminates the runner's job within a
   few seconds. The runner's cooperative path (the polled token above)
   never gets to end the running llmcall call, so that call writes no ledger row; the record of
   the stop is the run's `events.jsonl` `stopped` event (`killed`, `status`) and the cancelled
@@ -883,7 +883,7 @@ A different request from a stale page is rejected.
 
 While agent execution or an unconfirmed task handoff is active, completion is disabled.
 First stop or finish that work. A confirmed Scheduler handoff releases only the request
-reservation; Task Console owns the task's runtime and stop controls, and the todo remains open.
+reservation; Background Task Core owns the task's runtime and stop controls, and the todo remains open.
 Signal records and terminal todos have no completion offer. A dependency failure
 leaves the todo and receipt store unchanged. Completed todos retain their original
 content and remain available in history.
@@ -944,7 +944,7 @@ recognize differently worded follow-ups, or provide exactly-once delivery of ext
 ## Deployment
 
 One Windows task, **ScheduleReminderTick**, runs `scripts/tick.py` every 5 minutes through a launcher
-generated by the task registration authority (task-console). `tick.py` runs three steps in order,
+generated by the task registration authority (background-task-core). `tick.py` runs three steps in order,
 each with its own result in the JSON summary; the exit code is the number of steps that raised:
 
 | Step | Runs | Needs |
@@ -987,9 +987,9 @@ When the registry names the bot token by `reader.bot_token_ref`, the credvault p
 importable by the interpreter the task uses (`pythonw.exe -B`). A tick that cannot resolve the
 reference logs `BotTokenUnavailable` with the cause; it reads no other copy of the token.
 
-### Task Console linkage
+### Background Task Core linkage
 
-`reminder_linked_items.py` is the read-only seam Task Console uses to list reminders linked to a
-task through `ext.task_console.task_id`. It returns results only when the database carries a valid
-`task_console_link_review` receipt in `meta`; without one the linkage is unreviewed and nothing is
+`reminder_linked_items.py` is the read-only seam Background Task Core uses to list reminders linked to a
+task through `ext.background_task_core.task_id`. It returns results only when the database carries a valid
+`background_task_core_link_review` receipt in `meta`; without one the linkage is unreviewed and nothing is
 returned. Reads never create or migrate a database.

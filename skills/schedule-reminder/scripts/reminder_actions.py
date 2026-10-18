@@ -69,7 +69,7 @@ def origin_links(item):
 
 
 def _task_link(item, db_path, connection=None):
-    link = item['ext'].get('task_console')
+    link = item['ext'].get('background_task_core')
     task_id = link.get('task_id') if isinstance(link, dict) else None
     if not isinstance(task_id, str) or not task_id:
         return None
@@ -179,10 +179,10 @@ def _reserve(request, db_path, workspace):
                 (action_id, request['request_id'], fingerprint, item['id'], offer['id'], offer['kind'],
                  offer.get('target_id'), work_id, state, now, now,
                  json.dumps({'expected_task': offer['task_binding']}) if offer['kind'] == 'task' else None))
-            store._append_event(connection, item['id'], 'task-console', 'action_requested',
+            store._append_event(connection, item['id'], 'background-task-core', 'action_requested',
                                 payload={'action_id': action_id, 'kind': offer['kind'], 'work_item_id': work_id})
             if offer['kind'] == 'complete':
-                store._transition(connection, item['id'], 'done', expect_state=item['state'], actor='task-console')
+                store._transition(connection, item['id'], 'done', expect_state=item['state'], actor='background-task-core')
             return receipts.by_id(connection, action_id), True, item
     finally:
         connection.close()
@@ -318,13 +318,13 @@ def stop(request, *, db_path, workspace_root=None):
             stop_state = 'stopped' if not work or never_started else 'reconcile'
             if work:
                 store._transition(connection, work['id'], 'cancelled' if never_started else work['state'],
-                    expect_state=work['state'], actor='task-console',
+                    expect_state=work['state'], actor='background-task-core',
                     ext={'x_agent_exec_state': 'cancelled' if never_started else 'stop_pending',
                          'x_agent_exec_note': '用户在待办工作台停止本次执行'})
             connection.execute("UPDATE work_actions SET state=?,updated_at=?,result=? WHERE id=?",
                 (stop_state, store.to_rfc3339(store.now_utc()),
                  json.dumps({'message': '已停止' if stop_state == 'stopped' else '停止请求已记录，执行状态尚未确认'}, ensure_ascii=False), row['id']))
-            store._append_event(connection, item['id'], 'task-console', 'action_stop_requested', payload={'action_id': row['id']})
+            store._append_event(connection, item['id'], 'background-task-core', 'action_stop_requested', payload={'action_id': row['id']})
     finally:
         connection.close()
     if work and not never_started:

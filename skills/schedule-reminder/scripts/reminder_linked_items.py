@@ -9,8 +9,8 @@ from pathlib import Path
 import sqlite3
 
 
-REVIEW_KEY = "task_console_link_review"
-MARKER_KEY = "task_console_link_schema"
+REVIEW_KEY = "background_task_core_link_review"
+MARKER_KEY = "background_task_core_link_schema"
 MAX_ITEMS = 100000
 
 
@@ -62,8 +62,8 @@ def _items(conn):
         ext = _loads(raw) if raw not in (None, "") else {}
         if not isinstance(ext, dict):
             raise ValueError("invalid work-item extension")
-        link = ext.get("task_console")
-        if "task_console" in ext and (not isinstance(link, dict)
+        link = ext.get("background_task_core")
+        if "background_task_core" in ext and (not isinstance(link, dict)
                 or not isinstance(link.get("task_id"), str) or not link["task_id"].strip()):
             raise ValueError("invalid work-item task link")
         result.append({"id": item_id, "version": version, "state": state, "raw": raw,
@@ -94,7 +94,7 @@ def _valid_receipt(receipt, binding, items):
     if not isinstance(review, dict) or review.get("review_revision") != _review_revision(review):
         return False
     after = receipt.get("after")
-    if (review.get("scope") != "ext.task_console.task_id" or type(review.get("schemaVersion")) is not int
+    if (review.get("scope") != "ext.background_task_core.task_id" or type(review.get("schemaVersion")) is not int
             or review["schemaVersion"] != 1 or not isinstance(after, dict) or after.get("binding") != binding):
         return False
     decisions = review.get("decisions", {})

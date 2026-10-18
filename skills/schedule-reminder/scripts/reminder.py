@@ -3,7 +3,7 @@
 
 Downstream skills (email-monitor, daily-hotspots, demand-mining, promotion-assistant)
 call this CLI via subprocess and parse stdout JSON. They must not read the database,
-build SQL, or import internal tables. Task Console also has the separate read-only
+build SQL, or import internal tables. Background Task Core also has the separate read-only
 reminder_linked_items owner seam. See ../reference/reference.md.
 
 Conventions (frozen — additive evolution only; deletes/renames bump api_version):
@@ -77,7 +77,7 @@ class _Diagnostics:
 
     The owner verbs run code that also serves the scheduled worker, and that code logs with
     print(): stopping a running work order printed "stopped <id> (terminated)" before the reply,
-    so stdout was a log line plus JSON and Task Console's json.loads() reported
+    so stdout was a log line plus JSON and Background Task Core's json.loads() reported
     owner_reply_unknown for a stop that had succeeded. Library output is held here and written
     afterwards to whichever stream is NOT carrying the reply: stderr on success (the caller reads
     stdout), stdout on failure (the caller reads stderr). Nothing is dropped and neither parsed
