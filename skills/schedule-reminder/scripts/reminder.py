@@ -4,7 +4,7 @@
 Downstream skills (email-monitor, daily-hotspots, demand-mining, promotion-assistant)
 call this CLI via subprocess and parse stdout JSON. They must not read the database,
 build SQL, or import internal tables. Task Console also has the separate read-only
-reminder_linked_items owner seam. See ../reference/contract.md.
+reminder_linked_items owner seam. See ../reference/reference.md.
 
 Conventions (frozen — additive evolution only; deletes/renames bump api_version):
   * stdout: one JSON object (JSON Lines) on success, with top-level api_version + schema_version.
@@ -156,6 +156,14 @@ def cmd_init(a):
     return _emit({"db_path": path, "schema_user_version": store.SCHEMA_USER_VERSION})
 
 
+def cmd_export_text(a):
+    return _emit({"exported": store.export_text(a.out, db_path=a.db), "out": a.out})
+
+
+def cmd_import_text(a):
+    return _emit({"imported": store.import_text(a.from_dir, db_path=a.db)})
+
+
 def cmd_add(a):
     item = store.add_item(
         a.title, kind=a.kind, due_at=a.due_at, state=a.state,
@@ -297,6 +305,10 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init").set_defaults(fn=cmd_init)
+    s = sub.add_parser("export-text"); s.set_defaults(fn=cmd_export_text)
+    s.add_argument("--out", required=True, help="existing directory for items.jsonl and events.jsonl")
+    s = sub.add_parser("import-text"); s.set_defaults(fn=cmd_import_text)
+    s.add_argument("--from", dest="from_dir", required=True, help="directory written by export-text")
 
     s = sub.add_parser("work-feed", help="read-only work projection; never initializes or migrates")
     s.set_defaults(fn=cmd_work_feed)

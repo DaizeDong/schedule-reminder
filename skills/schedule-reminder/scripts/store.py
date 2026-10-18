@@ -4,7 +4,7 @@
 This is the *private* engine. Trusted, in-process skills MAY import it; everything else MUST go
 through the frozen CLI contract (reminder.py). It owns SQL, transaction boundaries, the state
 machine, write-time invariants, the events audit stream, idempotent upsert, BUSY back-off and the
-due/tick reconciliation. See ../reference/contract.md for the stable surface.
+due/tick reconciliation. See ../reference/reference.md for the stable surface.
 
 Design invariants enforced here (T0 base — these are the promise to downstream skills):
   * every write = BEGIN IMMEDIATE short transaction (never default DEFERRED -> instant SQLITE_BUSY)
@@ -357,6 +357,64 @@ def init_db(db_path=None):
 
 
 # =================================================================================================
+# Text export / import (the companion commits these instead of the binary database)
+# =================================================================================================
+_TEXT_TABLES = (("items", "id"), ("events", "seq"))
+
+
+def export_text(out_dir, db_path=None):
+    """Write items.jsonl and events.jsonl (one JSON object per row, sorted by key) into out_dir.
+
+    Reads a snapshot through one read-only connection; each file is replaced atomically, so a
+    crash leaves the previous export intact. Returns {table: row_count}."""
+    conn = admitted_connection(db_path, readonly=True)
+    counts = {}
+    try:
+        conn.execute("BEGIN")
+        for table, key in _TEXT_TABLES:
+            rows = conn.execute('SELECT * FROM "%s" ORDER BY "%s"' % (table, key)).fetchall()
+            target = os.path.join(out_dir, table + ".jsonl")
+            tmp = target + ".tmp"
+            with private_data.open_for_write(tmp, "w", encoding="utf-8", newline="\n") as fh:
+                for row in rows:
+                    fh.write(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) + "\n")
+            os.replace(tmp, target)
+            counts[table] = len(rows)
+        conn.execute("COMMIT")
+    finally:
+        conn.close()
+    return counts
+
+
+def import_text(in_dir, db_path=None):
+    """Rebuild a MISSING database from an export_text directory. Refuses an existing database."""
+    path = db_path or default_db_path()
+    if os.path.exists(path):
+        raise SkillError("ERR_EXISTS", "database already exists; import only rebuilds a missing one")
+    init_db(path)
+    conn = _connect(path)
+    counts = {}
+    try:
+        with _Tx(conn):
+            for table, _key in _TEXT_TABLES:
+                n = 0
+                with open(os.path.join(in_dir, table + ".jsonl"), encoding="utf-8") as fh:
+                    for line in fh:
+                        if not line.strip():
+                            continue
+                        row = json.loads(line)
+                        cols = sorted(row)
+                        conn.execute('INSERT INTO "%s" (%s) VALUES (%s)' % (
+                            table, ", ".join('"%s"' % c for c in cols), ", ".join("?" * len(cols))),
+                            [row[c] for c in cols])
+                        n += 1
+                counts[table] = n
+    finally:
+        conn.close()
+    return counts
+
+
+# =================================================================================================
 # Row <-> dict
 # =================================================================================================
 def _row_to_item(row):
@@ -482,7 +540,7 @@ def _validate_complete_item(conn, fields):
         raise SkillError("ERR_BLOCK_REASON_REQUIRED", "blocked requires an unmet blocker or a reason")
 
 def _enforce_terminal_fields(fields, to_state, now):
-    """done/cancelled MUST have end_at; done forces progress=100 (see docs/design-brief.md §2.3)."""
+    """done/cancelled MUST have end_at; done forces progress=100."""
     if to_state == "done":
         fields.setdefault("end_at", now)
         if fields.get("end_at") is None:

@@ -7,7 +7,7 @@ description: Persistent store for todos, events, deadlines and progress with pen
 
 Downstream skills use the versioned CLI/JSON surface and documented read-only linkage seam.
 Database internals remain private. Design constraints cover concurrency, crash recovery and
-compatibility; see [PHILOSOPHY.md](../../PHILOSOPHY.md).
+compatibility.
 
 ## When to use / when to stop
 
@@ -24,21 +24,21 @@ SQLite (WAL) single file          <- private storage, NEVER touched by downstrea
   store.py  (typed functions)     <- in-process, trusted skills MAY import
     reminder.py <verb>            <- versioned CLI contract (JSON always); call via subprocess
     reminder_linked_items.py      <- reviewed read-only Task Console linkage
-[Windows task: PT5M heartbeat] -> reminder.py tick -> reconcile due items -> Discord relay (out)
-[Windows task: PT5M ingest]    -> ingest_tick    -> poll every readable channel -> commands.py
-                                                    (deterministic) or dispatch (LLM judge)  (in)
-[Windows task: PT2M work]      -> agent_tick     -> reap the dead, launch one work order (do; also woken on enqueue and release)
+[Windows task ScheduleReminderTick, PT5M] -> tick.py, three steps in order:
+   work   -> agent_tick   -> reap the dead, launch one work order (also woken on enqueue and release)
+   remind -> store.tick   -> reconcile due items -> relay.py -> Discord (out)
+   ingest -> ingest_tick  -> poll every readable channel -> commands.py (deterministic)
+                             or dispatch (LLM judge) (in)
 ```
 
 The Agent Center bus is **two-way**: `relay.py` pushes out; `ingest.py`/`commands.py`/
 `dispatch.py` pull user messages back in. A message matching a registered command is answered
 deterministically by that handler; everything else uses the installed `llmcall.call` judge policy
 and becomes pool mutations or an idempotent work order. Both halves are single points on purpose: one
-enumeration of which channels are read, one egress for everything sent. See
-`reference/operations.md`.
+enumeration of which channels are read, one egress for everything sent (`relay.py send --stream`,
+`--channel-id`, or `--dm` for the owner's DM). See `reference/reference.md`.
 
-Execution requests become work orders in the same pool and run through the optional third
-scheduled task. A passing verification command, run by the system, completes the order, and so
+Execution requests become work orders in the same pool and run through the tick's work step. A passing verification command, run by the system, completes the order, and so
 does an executor answer that declares `verify: null` or carries no valid contract; no second model
 reviews the work. See the same reference.
 
@@ -53,15 +53,14 @@ An explicit `--db` takes precedence over `SCHEDULE_DB_PATH`. Reads do not initia
 list reads may return empty, work-feed reports unavailable, and creation preflight requires an
 initialized database. Writes fail until the PRIVATE database is explicitly initialized.
 
-`scripts/install.ps1 -Capabilities store,remind -Plan` emits four capability rows without effects.
-Omitting selection chooses store plus remind; explicit empty selection is a no-op. Ingest and work
-are optional, with their own tasks and llmcall dependency. Each task runs its real entrypoint
-and is read back after registration. The installer succeeds when the database is healthy and the
-relay registry exists.
+The one scheduled task runs `scripts/tick.py` every 5 minutes; it is registered through the
+machine's task registration authority, not by this skill. `tick.py --only remind|work|ingest` runs
+one step; the exit code counts the steps that raised.
 
 `health` keeps its report-success JSON and exit zero: a database `quick_check` plus whether the
-relay registry is present. It starts no process. See `reference/deployment.md` for the task contract.
-[CONFIG.md](../../CONFIG.md) defines registry initialization and the local doctor.
+relay registry is present. It starts no process. The companion commits `reminder.py export-text`
+output (`items.jsonl`, `events.jsonl`), not the SQLite file; `import-text` rebuilds a missing database.
+Registry fields and initialization (`tools/init_config.py`, `tools/verify_config.py`) are in the README.
 
 ## Command cheat-sheet
 
@@ -81,7 +80,9 @@ python scripts/reminder.py done --id <ID>
 python scripts/reminder.py block --id <ID> --blocker-id <OTHER> --reason "waiting"
 python scripts/reminder.py snooze --id <ID> --until 2026-07-01T09:00:00Z
 python scripts/reminder.py due  --now 2026-06-28T17:00:00Z          # read-only
-python scripts/reminder.py tick --now 2026-06-28T17:00:00Z          # scheduler calls this
+python scripts/reminder.py tick --now 2026-06-28T17:00:00Z          # the remind step of tick.py
+python scripts/tick.py                                               # what the 5-minute task runs
+python scripts/relay.py send --dm --text "..."                       # owner DM, the one send path
 python scripts/reminder.py health
 ```
 
@@ -96,7 +97,7 @@ with `error_code` + exit 1. Inject a clock with `--now`/`SCHEDULE_NOW`; isolate 
 `tags[]` · `source` · `idempotency_key` · `relations[]` (depends-on/...) · `recurrence` (RRULE,
 `tick` rolls to the next occurrence) · `alarms[]` (per-alarm lead, e.g. `[{"lead":3600}]` /
 `[{"trigger":"-PT15M"}]`) · `ext` (**unknown fields preserved**, namespace `x_<skill>_*`). Full
-table -> `reference/contract.md`.
+table -> `reference/reference.md`.
 
 ## Hard rules
 
@@ -114,17 +115,11 @@ table -> `reference/contract.md`.
 
 ## Progressive loading
 
-This `SKILL.md` is the only always-loaded file. Load one shard on demand:
-
-- `reference/contract.md`, frozen verbs, fields, states, error codes, idempotency, versioning.
-- `reference/deployment.md`, DB init, heartbeat task, SQLite version, backup, secrets.
-- `reference/integration.md`, copy-paste examples for downstream skills.
-- `reference/operations.md`, inbound commands, explicit retry, atomic work finalization,
-  notification recovery and the installed llmcall interface.
-- `reference/linkage-review.md`, exact Task Console linkage and its read-only owner seam.
-- `reference/notification-receipts.md`, business-event identity, delivery receipts and uncertainty.
+This `SKILL.md` is the only always-loaded file. Load `reference/reference.md` on demand: frozen
+verbs, fields, states, error codes and idempotency; downstream integration examples; the Agent
+Center bus; notification receipts; delivery and work recovery; deployment and storage.
 
 `work-action` consumes an owner-issued offer and revision from `work-feed`. Manual completion
 uses the existing dependency/state guards and requires no executor. Execution and task handoff
 have separate receipts; a Scheduler acknowledgement does not complete the todo. See the contract
-for stdin schemas and [manual completion](../../docs/manual-completion.md).
+for stdin schemas and manual completion.

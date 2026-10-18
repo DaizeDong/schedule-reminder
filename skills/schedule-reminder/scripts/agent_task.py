@@ -103,7 +103,7 @@ def _utcnow():
 
 def wake_tick():
     """Start a detached tick now instead of waiting for the scheduled poll. Never raises: the
-    scheduled AgentCenterWorkTick remains the backstop when this cannot start."""
+    work step of the scheduled tick.py remains the backstop when this cannot start."""
     exe = sys.executable or "python"
     windowless = os.path.join(os.path.dirname(exe), "pythonw.exe")
     if os.path.isfile(windowless):

@@ -4,148 +4,104 @@ Track todos, events and progress in a crash-safe SQLite store; fire due reminder
 
 [![Claude Code Skill](https://img.shields.io/badge/Claude%20Code-Skill-orange?style=flat)](https://docs.anthropic.com/en/docs/claude-code)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Languages](https://img.shields.io/badge/Languages-EN%20%2F%20CN-blue?style=flat)](README_CN.md)
-[![Roadmap](https://img.shields.io/badge/Roadmap-v0.6.0-purple?style=flat)](ROADMAP.md)
 
-[English](README.md) | [中文版](README_CN.md)
+schedule-reminder is a base other skills build on: they write reminders into it and read task
+progress out of it through the versioned CLI/JSON surface (`api_version`), never the database. It
+also carries the Agent Center bus: `relay.py` is the single Discord egress, and the inbound half
+turns owner replies in Discord into pool changes or agent work orders.
 
----
-
-## ⭐ Design Philosophy
-
-schedule-reminder is a **T0 infrastructure base**: other skills write reminders into it and read task
-progress out of it. Downstream integrations use the versioned CLI/JSON surface (with an
-`api_version`) and the documented read-only Task Console linkage seam, never database internals.
-v0.1 established concurrency-safe and crash-safe persistence, a guarded state machine,
-idempotent writes, at-least-once delivery and MUST-PRESERVE unknown fields.
-
-A stable contract requires stricter input and state checks, at the cost of refusing
-ambiguous writes. Due reminders retain at-least-once retry behavior. Identified business-event
-notifications use payload-bound receipts and preserve uncertain sends for reconciliation;
-uncertainty does not authorize an automatic resend. Task registration, health reports and source
-inspection do not alone prove delivery.
-
-📜 **[Read the full design philosophy -> PHILOSOPHY.md](PHILOSOPHY.md)**
-
----
-
-<a id="what-it-is-and-isnt"></a>
-## Scope
-
-The persistent schedule and memo store provides a `pending/doing/done/blocked/cancelled` state
-machine, due-reminder dispatch via the local Discord relay, and a stable
-`reminder.py [--actor NAME] <verb>` API for people and other skills. Use the relay directly for
-one-shot notifications. Calendar interfaces and cloud hosting are outside this tool's scope.
+Use it to track a todo / event / deadline / progress / reminder / memo (任务 / 提醒 / 进度 / 备忘), or
+when another skill needs to write a reminder or read task progress. For a one-shot message with
+nothing to persist, call the relay directly.
 
 ## Install
-
-```
-/plugin install github:DaizeDong/schedule-reminder
-```
-
-Or clone manually:
 
 ```bash
 git clone https://github.com/DaizeDong/schedule-reminder.git ~/.claude/plugins/schedule-reminder
 python -m pip install -e "$(git config --get fleet.guards)"   # companion resolver
 ```
 
-Set `SCHEDULE_REMINDER_CONFIG` to an initialized PRIVATE versioned companion repository before
-writing runtime data. Preview the selected capabilities, then run the idempotent installer:
+Create a PRIVATE versioned companion repository for the runtime data, then:
 
 ```powershell
-pwsh -File skills/schedule-reminder/scripts/install.ps1 -Capabilities store,remind -Plan
-pwsh -File skills/schedule-reminder/scripts/install.ps1 -Capabilities store,remind
+$env:SCHEDULE_REMINDER_CONFIG = '<private-companion>'
+python tools/init_config.py --out $env:SCHEDULE_REMINDER_CONFIG   # creates registry.json, never overwrites
+# fill registry.json
+python tools/verify_config.py --json                             # local shape check only
+python skills/schedule-reminder/scripts/reminder.py init         # create or upgrade the database
 ```
 
-The default selection is store plus remind. Empty selection is a no-op; ingest and work are
-optional. Each task runs its real entrypoint and is read back after registration; installation
-succeeds when the database is healthy and the relay registry exists. `health` is a database
-`quick_check` plus registry presence. See [deployment](skills/schedule-reminder/reference/deployment.md)
-for PRIVATE storage and task readback.
+Schedule `skills/schedule-reminder/scripts/tick.py` every 5 minutes (on Windows through your task
+registration tool; this repository ships no installer). One tick runs the agent work step, fires
+due reminders, then polls the inbound channels.
 
-## Config
+## Configuration
 
-Set `SCHEDULE_REMINDER_CONFIG` to the selected PRIVATE companion root. To switch configurations, select the other root and update any `AGENT_CENTER_CONFIG` file override together. Settings live in the selected PRIVATE registry. See [CONFIG.md](CONFIG.md) for the schema, independent registry/DATA overrides, initialization, switching and recovery. `tools/init_config.py` preserves existing settings; `tools/verify_config.py --json` checks local configuration only. Database initialization and measured capability health remain separate operations.
+`SCHEDULE_REMINDER_CONFIG` selects the companion root; without it, commands that need the companion
+fail as uninitialized instead of guessing a path. `AGENT_CENTER_CONFIG` optionally selects a
+different registry **file**. DATA is `<companion>/data` unless `SCHEDULE_REMINDER_DATA_DIR` names
+another PRIVATE directory; `SCHEDULE_DB_PATH` overrides `<data>/db.sqlite3`, and `reminder.py --db`
+overrides that. Writes into the public source tree or Git metadata are refused.
+
+The registry (`registry.json`, UTF-8 without BOM) is a JSON object; unknown fields are preserved.
+
+| Field | Meaning |
+| --- | --- |
+| `streams.<name>.webhook` | HTTPS webhook for that stream, or use `channel_id` with the bot |
+| `streams.<name>.channel_id` | Decimal channel id for bot delivery |
+| `streams.<name>.inbound`, `.listen` | Optional booleans controlling inbound polling |
+| `reader.bot_token_ref` | `cv://<record>/<credential>` reference resolved through credvault (or `reader.bot_token` inline, never both) |
+| `guild_id` | Decimal guild id, required for inbound |
+| `big_brother.user_id` | The owner's user id: the only author whose replies count, and the target of `relay.py send --dm` |
+| `commands` | Deterministic inbound command handlers |
+
+`AGENT_CENTER_BOT_TOKEN` in the environment overrides both token fields. Credential values live only
+in the PRIVATE companion; the doctor never prints them and never opens the vault.
+
+The companion does not commit the SQLite file. `reminder.py export-text --out <dir>` writes sorted
+`items.jsonl` and `events.jsonl`; commit those, and rebuild a missing database with
+`reminder.py import-text --from <dir>`.
 
 ## Quick start
 
-JSON output is unconditional. Place global options such as `--db` and `--actor` before the verb;
-do not pass `--json`. Before creating a real obligation, use `creation-preflight` to compare
-existing items; see [integration](skills/schedule-reminder/reference/integration.md) for reuse
-and retry identities.
-
 ```bash
 cd skills/schedule-reminder/scripts
-python reminder.py init
 python reminder.py add --title "Reply to recruiter" --due-at 2026-06-28T17:00:00Z --priority 1 \
        --source me --idempotency-key me:1
 python reminder.py list --active
 python reminder.py creation-preflight --title "Prepare Acme report" --source my-skill --idempotency-key my-skill:report-1
 python reminder.py transition --id <ID> --to doing --progress 30
 python reminder.py done --id <ID>
-python reminder.py tick --now 2026-06-28T17:00:00Z   # the scheduler runs this every 5 min
+python tick.py --only remind                                   # what the 5-minute task runs, one step
+python relay.py send --dm --text "hello"                       # owner DM through the bot
 ```
 
-## How to invoke
+Output is always JSON. Global options such as `--db` and `--actor` go before the verb. See
+[examples.json](examples.json) for synthetic output reproduced by `tools/make_fixtures.py`.
 
-The skill fires when the user wants to track a todo / event / deadline / progress / reminder / memo
-(任务 / 提醒 / 进度 / 备忘), or when another skill needs to write a reminder or read task progress.
-
-## Example output
-
-See [examples.json](examples.json) for synthetic output reproduced by tools/make_fixtures.py.
-
-## Architecture (three layers)
+## Architecture
 
 ```
-SQLite (WAL) single file        <- private storage, downstream NEVER touches it
+SQLite (WAL) single file        <- private storage, downstream never touches it
   store.py (typed functions)    <- in-process; trusted skills may import
-    reminder.py [--actor NAME] <verb>   <- versioned CLI contract (api_version 1.0.0)
-    reminder_linked_items.py           <- read-only, reviewed Task Console linkage
-[Windows task: PT5M heartbeat] -> reminder.py tick -> reconcile due -> Discord relay (out)
-[Windows task: PT5M ingest]   -> ingest_tick -> poll every readable channel -> a registered
-                                  command handler, else dispatch (LLM judge)              (in)
+    reminder.py <verb>          <- versioned CLI contract (api_version 1.0.0)
+[task: every 5 min] tick.py -> work   agent_tick  (reap / launch one agent order)
+                             -> remind store.tick  (due reminders -> relay.py -> Discord)
+                             -> ingest ingest_tick (owner replies -> command handler or LLM judge)
 ```
 
-The OS task is only a heartbeat. `tick` reconciles the durable table, so a slept/off machine catches
-up **all** missed reminders on the next run (idempotent, at-least-once + dedupe), no per-event OS
-triggers, no silent skips.
-
-- **Contract:** [`skills/schedule-reminder/reference/contract.md`](skills/schedule-reminder/reference/contract.md)
-- **Deployment:** [`skills/schedule-reminder/reference/deployment.md`](skills/schedule-reminder/reference/deployment.md)
-- **Integration (for downstream skills):** [`skills/schedule-reminder/reference/integration.md`](skills/schedule-reminder/reference/integration.md)
-- **Delivery and work recovery:** [operations.md](skills/schedule-reminder/reference/operations.md).
-- **Creation and follow-ups:** [integration.md](skills/schedule-reminder/reference/integration.md) and [dispatch identity](docs/dispatch-identity.md).
-- **Work feed and completion:** [manual completion](docs/manual-completion.md) and [reviewed task linkage](skills/schedule-reminder/reference/linkage-review.md).
-- **Identified notifications:** [business-event receipts](skills/schedule-reminder/reference/notification-receipts.md).
-- **Source layout and storage retention:** [storage.md](docs/storage.md) and [storage.contract.json](storage.contract.json).
-
-## Synthetic verification
-
-<a id="synthetic-verification"></a>
-`verify_expired_email_active.py --data-dir <PRIVATE-directory>` generates disposable synthetic
-records in the private companion and refuses a source-contained database. It does not exercise
-the live scheduled tasks; use the execution report for the exact source revision.
+The task is only a heartbeat: `tick` reconciles the durable table, so a machine that slept catches
+up every missed reminder on the next run (idempotent, at-least-once with dedupe). The full contract,
+integration examples, the Agent Center bus, notification receipts and recovery rules are in
+[reference.md](skills/schedule-reminder/reference/reference.md).
 
 ## Limitations
 
-- **SQLite ≥ 3.51.3 recommended.** Earlier versions carry a WAL-reset multi-writer corruption bug;
-  `health` warns (does not hard-fail). Upgrade path without changing Python: `pip install
-  pysqlite3-binary` (auto-detected).
-- **Recurrence uses rolling expansion.** The supported RRULE subset advances the master row to the next future occurrence; it does not materialize an infinite series. See the contract for supported fields.
-- **Windows-first deployment** (scheduled task via `install.ps1`); no maintained Unix cron installer is shipped.
-- **DB must stay on local NTFS**, never a OneDrive/GDrive/network path (WAL lock + sync corruption).
-- **Work completion needs llmcall execution evidence.** Missing process containment or cleanup
-  confirmation leaves the run unresolved. A passing verification command, run by the system,
-  completes the order, and so does an executor answer that declares `verify: null` or carries no
-  valid contract; no second model reviews the work. Offline controls do not establish
-  that an installed llmcall version provides those capabilities.
+- SQLite 3.51.3 or later is recommended (earlier versions have a WAL-reset corruption bug); `health` warns.
+- Recurrence uses rolling expansion of a supported RRULE subset.
+- Keep the database on a local disk, never a synced or network folder.
+- Agent work needs llmcall's process containment and cleanup evidence; without it a run stays unresolved.
 
-## Languages
+## License
 
-English (`README.md`, authoritative) · 中文 (`README_CN.md`)
-
-## Roadmap · Contributing · License
-
-See [ROADMAP.md](ROADMAP.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [LICENSE](LICENSE) (MIT).
+[MIT](LICENSE)

@@ -5,7 +5,7 @@
     "DATA is real runtime output in a PRIVATE versioned companion repository.",
     "Real DATA never exists in this public source tree, including ignored paths."
   ],
-  "_audited": "Audited store, run logs and immutable baselines, ingest cursors and durable inbound records, registry writes, digest records, creation/link/action receipts, notification receipts and prepared payloads. Receipts share the admitted SQLite database. Action workspaces and transient notification-payloads are PRIVATE output. Writers resolve DATA through the companion and refuse destinations inside the public source tree or Git metadata before creating output; there is no in-repo fallback. Explicit database paths do not bypass this check.",
+  "_audited": "Audited store, run logs and immutable baselines, ingest cursors and durable inbound records, registry writes, creation/link/action receipts, notification receipts and prepared payloads. Receipts share the admitted SQLite database. Action workspaces and transient notification-payloads are PRIVATE output. Writers resolve DATA through the companion and refuse destinations inside the public source tree or Git metadata before creating output; there is no in-repo fallback. Explicit database paths do not bypass this check.",
   "data": [
     "data/",
     "state/",

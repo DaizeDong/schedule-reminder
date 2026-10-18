@@ -20,6 +20,7 @@ CONTRACT (frozen surface downstream skills depend on — subprocess, never impor
     CLI:
       relay.py send   --stream NAME (--text T | --json '{"content":..,"username":..}')
       relay.py send   --channel-id ID --text T [--file PATH ...]
+      relay.py send   --dm (--text T | --text-file PATH|-) [--file PATH ...]   # owner DM
       relay.py list                       # show configured streams (NO secrets)
       relay.py health                     # registry present? streams sane? (NO network, NO secrets)
 
@@ -41,7 +42,7 @@ TWO TRANSPORTS, ONE EGRESS
     point of a single egress is that adding a capability here retires a fork out there.
 
 ROBUSTNESS
-    Unknown stream / missing registry  -> fall back to Big Brother DM (via bigbrother.py) so a message is
+    Unknown stream / missing registry  -> fall back to Big Brother DM (_big_brother) so a message is
     never silently lost; a one-line warning goes to stderr (never the webhook URL).
     A bot send has NO such fallback and returns False: it is addressed at one specific channel, and
     silently rerouting "the answer to what you just typed in #here" into a DM is worse than a
@@ -465,29 +466,41 @@ def _post_bot(channel_id: str, content: str, files: list | None, token: str) -> 
         return False
 
 
-def _big_brother(text: str) -> bool:
-    """Fallback target: the operator's Big Brother DM (registry.big_brother), delivered by the
-    native `bigbrother` sender. This is the phone-reaching channel; an unknown-stream fallback
-    lands here, as documented in `reference/agent-center.md`."""
-    if not isinstance(text, str) or not text.strip():
+def _open_dm(user_id: str, token: str) -> str | None:
+    """The bot's DM channel with one user (Discord returns the existing one when it exists)."""
+    if os.environ.get("AGENT_CENTER_RELAY_DRYRUN"):
+        return "dryrun-dm"
+    req = urllib.request.Request(
+        "%s/users/@me/channels" % _API, method="POST",
+        data=json.dumps({"recipient_id": str(user_id)}).encode("utf-8"),
+        headers={"Authorization": "Bot %s" % token, "Content-Type": "application/json", "User-Agent": _UA})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = json.loads(r.read().decode("utf-8") or "{}")
+    except Exception as e:
+        sys.stderr.write("relay: open DM failed (%s)\n" % type(e).__name__)
+        return None
+    chan = body.get("id") if isinstance(body, dict) else None
+    return str(chan) if chan else None
+
+
+def _big_brother(text: str, files: list | None = None) -> bool:
+    """The operator's Big Brother DM (registry.big_brother.user_id), sent as the canonical bot.
+    This is the phone-reaching channel: `send --dm` targets it, and an unknown-stream fallback
+    lands here. Over-long bodies are split by _post_bot, never truncated."""
+    if not files and (not isinstance(text, str) or not text.strip()):
         sys.stderr.write("relay: blank content cannot be delivered\n")
         return False
-    try:
-        here = os.path.dirname(os.path.abspath(__file__))
-        if here not in sys.path:
-            sys.path.insert(0, here)
-        import bigbrother  # noqa: E402  (local sibling module; stdlib DM sender)
-        # This is the LAST channel: whatever could not be delivered anywhere else arrives here.
-        # An over-long body must not die on the one path that exists to catch the others.
-        parts = split_for_discord(text or "")
-        ok = bool(parts)
-        for part in parts:
-            if not bigbrother.send_dm(part):
-                ok = False
-        return ok
-    except Exception as e:
-        sys.stderr.write("relay: big-brother fallback failed (%s)\n" % type(e).__name__)
+    reg = load_registry()
+    user_id = (reg.get("big_brother") or {}).get("user_id")
+    token = bot_token(reg)
+    if not user_id or not token:
+        sys.stderr.write("relay: no big_brother.user_id or bot token in the registry; DM not sent\n")
         return False
+    chan = _open_dm(str(user_id), token)
+    if not chan:
+        return False
+    return _post_bot(chan, text, files, token)
 
 
 def deliver(stream, content):
@@ -704,6 +717,8 @@ def main(argv=None) -> int:
     p_send.add_argument("--stream", default=None)
     p_send.add_argument("--channel-id", dest="channel_id", default=None,
                         help="post as the bot to this channel (answers where the user is looking)")
+    p_send.add_argument("--dm", action="store_true",
+                        help="send to the operator's Big Brother DM as the bot")
     p_send.add_argument("--file", dest="files", action="append", default=None,
                         help="attach a file (repeatable); forces the bot transport")
     g = p_send.add_mutually_exclusive_group(required=True)
@@ -711,6 +726,8 @@ def main(argv=None) -> int:
     # Windows PowerShell 5.1 mangles a non-ASCII argv (em/CJK -> mojibake) when it invokes python.exe,
     # so a PS caller must base64-encode the UTF-8 bytes and pass them here instead of --text/--json.
     g.add_argument("--text-b64", dest="text_b64", help="base64 of UTF-8 text (PowerShell-safe)")
+    g.add_argument("--text-file", dest="text_file",
+                   help="read the UTF-8 text from this file ('-' = stdin)")
     g.add_argument("--json", dest="json_payload", help='{"content":..,"username":..}')
     g.add_argument("--json-b64", dest="json_b64", help="base64 of UTF-8 JSON (PowerShell-safe)")
     p_send.add_argument("--username", default=None)
@@ -733,8 +750,8 @@ def main(argv=None) -> int:
     if args.cmd == "health":
         return _cmd_health()
     if args.cmd == "send":
-        if not args.stream and not args.channel_id:
-            sys.stderr.write("relay: send needs --stream or --channel-id\n")
+        if sum(bool(x) for x in (args.stream, args.channel_id, args.dm)) != 1:
+            sys.stderr.write("relay: send needs exactly one of --stream, --channel-id, --dm\n")
             return 2
         payload = None
         if args.json_b64:
@@ -751,8 +768,16 @@ def main(argv=None) -> int:
             username = obj.get("username") or args.username
         elif args.text_b64:
             content, username = _b64(args.text_b64), args.username
+        elif args.text_file:
+            # Bytes, decoded here: a detached Windows child's stdin wrapper uses the ANSI code
+            # page. utf-8-sig drops the BOM PowerShell 5.1 writes with -Encoding UTF8.
+            raw = (sys.stdin.buffer.read() if args.text_file == "-"
+                   else Path(args.text_file).read_bytes())
+            content, username = raw.decode("utf-8-sig", errors="replace"), args.username
         else:
             content, username = args.text, args.username
+        if args.dm:
+            return 0 if _big_brother(content, args.files) else 1
         if args.idempotency_key is not None:
             return _send_with_receipt(args, content)
         return 0 if send(content, stream=args.stream, channel_id=args.channel_id,

@@ -1,25 +1,7 @@
-"""Deterministic synthetic example inputs and verifier cases."""
+"""Deterministic synthetic example inputs."""
 import argparse
 import json
 from pathlib import Path
-
-
-def expired_email_cases():
-    """Generate the complete synthetic input and expected sets for the verifier."""
-    reply = "\u9700\u56de\u590d:"
-    review = "\u5f85\u67e5\u770b:"
-    rows = [
-        [reply + "Synthetic expired", "2031-04-12T13:59:59Z", "email-monitor", "verify:expired"],
-        [reply + "Synthetic boundary", "2031-04-12T14:00:00Z", "email-monitor", "verify:boundary"],
-        [reply + "Synthetic future", "2031-04-12T14:00:01Z", "email-monitor", "verify:future"],
-        [review + "Synthetic retained review", "2031-04-12T13:00:00Z", "email-monitor", "verify:review"],
-        [reply + "Synthetic other source", "2031-04-12T13:00:00Z", "synthetic-source", "verify:other"],
-        [reply + "Synthetic undated", None, "email-monitor", "verify:undated"],
-    ]
-    return {"now": "2031-04-12T14:00:00Z", "rows": rows,
-            "active": [rows[index][0] for index in (2, 3, 4, 5)],
-            "email_active": [rows[index][0] for index in (2, 3, 5)],
-            "overdue": [rows[index][0] for index in (0, 1)]}
 
 
 def public_example():

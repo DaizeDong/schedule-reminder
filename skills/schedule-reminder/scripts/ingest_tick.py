@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """schedule-reminder — Agent Center INBOUND tick: poll every stream channel, dispatch new user replies.
 
-Scheduled entrypoint (Task Scheduler: AgentCenterIngestTick). The inbound mirror of the outbound
+The ingest step of tick.py (Task Scheduler: ScheduleReminderTick). The inbound mirror of the outbound
 relay:
   1. Poll text and reactions (one read per channel), staging identified work before advancing
      consumption state.

@@ -4,13 +4,11 @@
   "configuration": "settings",
   "rationale": "Native configuration controls selected runtime resources and private state; storage discovery alone cannot establish readiness.",
   "documentation": [
-    "README.md",
-    "README_CN.md",
-    "CONFIG.md"
+    "README.md"
   ],
   "settings": {
-    "schema_document": "CONFIG.md",
-    "discovery_document": "CONFIG.md",
+    "schema_document": "README.md",
+    "discovery_document": "README.md",
     "environment": "SCHEDULE_REMINDER_CONFIG",
     "aliases": [
       "AGENT_CENTER_CONFIG"
@@ -18,8 +16,8 @@
     "precedence": [
       "explicit --config registry file / initializer --out root",
       "AGENT_CENTER_CONFIG selects registry file independently",
-      "SCHEDULE_REMINDER_CONFIG selects companion root",
-      "sibling schedule-reminder-config; DATA_DIR only selects runtime DATA"
+      "SCHEDULE_REMINDER_CONFIG selects companion root; unset fails as uninitialized",
+      "SCHEDULE_REMINDER_DATA_DIR only selects runtime DATA"
     ],
     "required_fields": [
       "streams"
