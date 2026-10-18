@@ -30,7 +30,7 @@ SQLite (WAL) single file          <- private storage, NEVER touched by downstrea
 [Windows task: PT2M work]      -> agent_tick     -> reap the dead, launch one work order (do; also woken on enqueue and release)
 ```
 
-The Agent Center bus is **two-way**: `relay.py`/`digest.py` push out; `ingest.py`/`commands.py`/
+The Agent Center bus is **two-way**: `relay.py` pushes out; `ingest.py`/`commands.py`/
 `dispatch.py` pull user messages back in. A message matching a registered command is answered
 deterministically by that handler; everything else uses the installed `llmcall.call` judge policy
 and becomes pool mutations or an idempotent work order. Both halves are single points on purpose: one

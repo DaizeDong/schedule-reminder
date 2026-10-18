@@ -4,19 +4,6 @@
   "read": "task-console-status --configured",
   "tasks": [
     {
-      "id": "agentcenterdailydigest",
-      "kind": "oneshot",
-      "entrypoint": "task:agentcenterdailydigest",
-      "timeout_seconds": 1200,
-      "concurrency_key": "schedule-reminder/agentcenterdailydigest",
-      "checks": [
-        {
-          "id": "legacy-1",
-          "required": true
-        }
-      ]
-    },
-    {
       "id": "agentcenteringesttick",
       "kind": "oneshot",
       "entrypoint": "task:agentcenteringesttick",

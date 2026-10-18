@@ -20,9 +20,9 @@ companion fails explicitly, and a write below an uninitialized companion fails i
 creating it. Runtime writes run no visibility proof: they refuse only destinations inside the
 public source tree, inside Git metadata, or reached through a filesystem alias. Publication
 safety is enforced at commit and push time by the fleet-guards hooks.
-Current defaults use root-level `state/`, `agent-runs/` and `digest.json`; the sole
+Current defaults use root-level `state/` and `agent-runs/`; the sole
 reminder database is `data/db.sqlite3`. The contract also declares known leaves for
-retained `data/state/`, `data/agent-runs/` and `data/digest.json` selections. A dispatched
+retained `data/state/` and `data/agent-runs/` selections. A dispatched
 order with no usable requested folder gets its own workspace under
 `agent-runs/workspaces/`, which keeps its files out of the home directory; the contract owns
 that container, not its outputs. Explicit

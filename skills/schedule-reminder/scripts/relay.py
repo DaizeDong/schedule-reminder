@@ -20,7 +20,6 @@ CONTRACT (frozen surface downstream skills depend on — subprocess, never impor
     CLI:
       relay.py send   --stream NAME (--text T | --json '{"content":..,"username":..}')
       relay.py send   --channel-id ID --text T [--file PATH ...]
-      relay.py digest --text T            # aggregated daily summary -> Big Brother DM
       relay.py list                       # show configured streams (NO secrets)
       relay.py health                     # registry present? streams sane? (NO network, NO secrets)
 
@@ -467,9 +466,9 @@ def _post_bot(channel_id: str, content: str, files: list | None, token: str) -> 
 
 
 def _big_brother(text: str) -> bool:
-    """Fallback / digest target: the operator's Big Brother DM (registry.big_brother), delivered by
-    the native `bigbrother` sender. This is the phone-reaching channel — the digest and any
-    unknown-stream fallback land here, as documented in `reference/agent-center.md`."""
+    """Fallback target: the operator's Big Brother DM (registry.big_brother), delivered by the
+    native `bigbrother` sender. This is the phone-reaching channel; an unknown-stream fallback
+    lands here, as documented in `reference/agent-center.md`."""
     if not isinstance(text, str) or not text.strip():
         sys.stderr.write("relay: blank content cannot be delivered\n")
         return False
@@ -606,11 +605,6 @@ def send(content: str, stream: str | None = None, channel_id: str | None = None,
     return _post_bot(str(chan), content, files, token)
 
 
-def digest(content: str) -> bool:
-    """Deliver the aggregated daily summary via Big Brother DM (registry.big_brother)."""
-    return _big_brother(content)
-
-
 def safe_stream_entry(entry: dict) -> dict:
     """Preserve ordinary metadata while removing explicit credential-bearing fields."""
     def scrub(value):
@@ -726,10 +720,6 @@ def main(argv=None) -> int:
     p_send.add_argument("--idempotency-key", dest="idempotency_key", default=None)
     p_send.add_argument("--receipt-adapter", dest="receipt_adapter", default="relay",
                         help="adapter name echoed in the receipt")
-    p_dig = sub.add_parser("digest", help="send aggregated daily summary to Big Brother")
-    gd = p_dig.add_mutually_exclusive_group(required=True)
-    gd.add_argument("--text")
-    gd.add_argument("--text-b64", dest="text_b64", help="base64 of UTF-8 text (PowerShell-safe)")
     sub.add_parser("list", help="list configured streams (no secrets)")
     sub.add_parser("health", help="check registry health (no network, no secrets)")
     args = ap.parse_args(argv)
@@ -742,9 +732,6 @@ def main(argv=None) -> int:
         return _cmd_list()
     if args.cmd == "health":
         return _cmd_health()
-    if args.cmd == "digest":
-        text = _b64(args.text_b64) if getattr(args, "text_b64", None) else args.text
-        return 0 if digest(text) else 1
     if args.cmd == "send":
         if not args.stream and not args.channel_id:
             sys.stderr.write("relay: send needs --stream or --channel-id\n")

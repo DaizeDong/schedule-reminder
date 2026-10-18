@@ -4,7 +4,7 @@
   "layout": "separate_companion",
   "max_bytes": 67108864,
   "budget_policy": "A 64 MiB aggregate working-tree review threshold, excluding Git administration. A threshold breach remains a failed capacity check and never authorizes deletion of required state, configuration, selected deliverables or recovery evidence.",
-  "scope": "Paths are relative to the exact initialized PRIVATE companion Git root. Defaults use root-level state/, agent-runs/ and digest.json; the sole reminder DB and action workspace use data/. Explicit environment overrides need reviewed path families. Known writer leaves are declared; arbitrary action-workspace outputs require owner-action and selected-output manifest review and remain gaps until classified.",
+  "scope": "Paths are relative to the exact initialized PRIVATE companion Git root. Defaults use root-level state/ and agent-runs/; the sole reminder DB and action workspace use data/. Explicit environment overrides need reviewed path families. Known writer leaves are declared; arbitrary action-workspace outputs require owner-action and selected-output manifest review and remain gaps until classified.",
   "protected_paths": [
     "registry.json",
     "routes.json",
@@ -55,32 +55,6 @@
       "retention_rule": {
         "class": "core",
         "rule": "Retain current state and required audit history. Remove sidecars only through SQLite or after a verified cold shutdown."
-      }
-    },
-    {
-      "artifact_id": "digest",
-      "path_pattern": "data/digest.json",
-      "purpose": "Contributor registry for an explicit retained data/digest.json selection.",
-      "schema": "scripts/digest.py contributor registry.",
-      "producer": "Installed digest registration commands with the selected override.",
-      "consumer_or_final_deliverable": "Daily summary generation.",
-      "rebuild_or_restore": "Restore approved contributor commands and configuration from PRIVATE history.",
-      "retention_rule": {
-        "class": "core",
-        "rule": "Retain the active contributor registry; remove obsolete contributors through reviewed configuration changes."
-      }
-    },
-    {
-      "artifact_id": "retained-digest",
-      "path_pattern": "digest.json",
-      "purpose": "Current root-level daily contributor registry or an explicitly selected digest path.",
-      "schema": "Installed digest consumer; current source accepts AGENT_CENTER_DIGEST.",
-      "producer": "scripts/digest.py registration commands.",
-      "consumer_or_final_deliverable": "Installed daily summary generation.",
-      "rebuild_or_restore": "Restore the approved private registry after checking the installed path selection.",
-      "retention_rule": {
-        "class": "core",
-        "rule": "Keep while selected by an installed consumer or needed for migration recovery."
       }
     },
     {

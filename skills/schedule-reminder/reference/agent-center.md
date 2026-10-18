@@ -1,7 +1,7 @@
-# Agent Center, unified relay + daily digest (frozen surface)
+# Agent Center, unified relay (frozen surface)
 
-Agent Center provides the reminder state contract, outbound Discord delivery (`relay.py`) and
-daily aggregation (`digest.py`). Downstream skills call these interfaces through subprocesses;
+Agent Center provides the reminder state contract and outbound Discord delivery (`relay.py`).
+Downstream skills call these interfaces through subprocesses;
 transport and scheduling remain owned by the base. Keeping webhook, bot and registry handling
 behind the relay allows routing changes without changing each caller.
 
@@ -9,7 +9,6 @@ behind the relay allows routing changes without changing each caller.
 
 ```
 OUT:  each skill  --(relay.py send --stream X)-->  Agent Center #X channel  (per-stream webhook + identity)
-      each skill  --(digest section contributor)-->  digest.py  --(one summary)-->  Big Brother DM
       schedule-reminder tick  --(relay.py send --stream reminders)-->  #reminders
 IN:   user writes in #X --(ingest_tick: poll)--> commands.py claims it?  --yes--> handler answers in #X
                                                                         --no --> dispatch (LLM judge)
@@ -19,8 +18,7 @@ IN:   user writes in #X --(ingest_tick: poll)--> commands.py claims it?  --yes--
 
 Streams (Agent Center server): `mail · hotspots · demand · promotion · support · crypto · infra ·
 reminders · general · ops`, plus `commands · guestbook · archive` which are registered but opted out
-of reading. The aggregated daily summary goes to **Big Brother DM**, not a channel. The bus is
-**two-way**: `relay.py` is the egress, `ingest.py`/`commands.py`/`dispatch.py` the ingress.
+of reading. The bus is **two-way**: `relay.py` is the egress, `ingest.py`/`commands.py`/`dispatch.py` the ingress.
 
 One channel enumeration owns inbound discovery, and one relay owns outbound transport. Separate
 readers previously kept different channel lists and cursors, which could consume a message in a
@@ -33,7 +31,6 @@ and transport fixes in one place.
 ```
 python relay.py send   --stream <name> (--text T | --json '{"content":..,"username":..}')
 python relay.py send   --channel-id ID --text T [--file PATH ...]   # bot transport
-python relay.py digest --text T        # aggregated summary -> Big Brother DM
 python relay.py list                   # configured streams (NEVER prints webhook URLs)
 python relay.py health                 # registry sane? (no network, no secrets)
 ```
@@ -115,25 +112,6 @@ Each sender runs separately so modules with the same name cannot share imported 
 Notification bodies follow the configured language rule. Model identifiers and quoted error text
 remain verbatim. Callers should return delivery success or failure and use the relay's base64 text
 option for multiline messages that need to cross Windows command arguments.
-
-## digest.py, the one daily 当日总结
-
-One daily task aggregates every *installed* skill's section into a single summary.
-
-```
-python digest.py run [--now ISO] [--dry-run]
-python digest.py register --name N --title T --cmd 'argv...' [--timeout S] [--disabled]
-python digest.py unregister --name N
-python digest.py list
-```
-
-- **Contributors file**: discovery = env `AGENT_CENTER_DIGEST`, else a digest file in the Agent Center config dir.
-- **A contributor** is a command that prints its 当日总结段 (markdown) to stdout and exits 0. Empty
-  stdout → section skipped. Failure/timeout/nonzero → section skipped and reported to `#infra`
-  (never aborts the whole digest). Child stdio is forced to UTF-8 (Windows GBG hosts otherwise
-  mangle emoji/Chinese).
-- **Pluggable**: a skill registers its contributor at install time; uninstalled skills are simply
-  absent. This is exactly skill todo.md's "如果这个 skill 安装了，则联动每日的固定定时任务".
 
 ## Inbound, user replies become actions (two-way)
 
@@ -422,9 +400,3 @@ def push(stream, text, username=None):
     return subprocess.run(cmd).returncode == 0
 ```
 
-Register a daily section at install:
-
-```
-python <reminder>/scripts/digest.py register --name hotspots --title "💡 当日商机" \
-    --cmd "python <skill>/scripts/digest.py --section"
-```
