@@ -968,7 +968,7 @@ instead of creating it. There is no in-repo fallback.
 
 Initialize or additively upgrade the database with `reminder.py init`; reads do not migrate. The
 SQLite file itself is not committed to the companion: `reminder.py export-text --out <dir>` writes
-`items.jsonl` and `events.jsonl` (sorted, one JSON object per line) and the nightly companion sync
+one `<table>.jsonl` per table, receipts and counters included (sorted, one JSON object per line), and the nightly companion sync
 commits those instead. `reminder.py import-text --from <dir>` rebuilds a missing database from them.
 Do not copy a live WAL database as an ordinary file.
 

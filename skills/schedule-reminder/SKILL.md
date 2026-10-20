@@ -59,7 +59,7 @@ one step; the exit code counts the steps that raised.
 
 `health` keeps its report-success JSON and exit zero: a database `quick_check` plus whether the
 relay registry is present. It starts no process. The companion commits `reminder.py export-text`
-output (`items.jsonl`, `events.jsonl`), not the SQLite file; `import-text` rebuilds a missing database.
+output (one `<table>.jsonl` per table), not the SQLite file; `import-text` rebuilds a missing database.
 Registry fields and initialization (`tools/init_config.py`, `tools/verify_config.py`) are in the README.
 
 ## Command cheat-sheet

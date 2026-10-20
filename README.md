@@ -58,8 +58,8 @@ The registry (`registry.json`, UTF-8 without BOM) is a JSON object; unknown fiel
 `AGENT_CENTER_BOT_TOKEN` in the environment overrides both token fields. Credential values live only
 in the PRIVATE companion; the doctor never prints them and never opens the vault.
 
-The companion does not commit the SQLite file. `reminder.py export-text --out <dir>` writes sorted
-`items.jsonl` and `events.jsonl`; commit those, and rebuild a missing database with
+The companion does not commit the SQLite file. `reminder.py export-text --out <dir>` writes one sorted
+`<table>.jsonl` per table, including meta and receipts; commit those, and rebuild a missing database with
 `reminder.py import-text --from <dir>`.
 
 ## Quick start

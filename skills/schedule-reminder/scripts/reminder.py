@@ -306,7 +306,7 @@ def build_parser():
 
     sub.add_parser("init").set_defaults(fn=cmd_init)
     s = sub.add_parser("export-text"); s.set_defaults(fn=cmd_export_text)
-    s.add_argument("--out", required=True, help="existing directory for items.jsonl and events.jsonl")
+    s.add_argument("--out", required=True, help="existing directory for one <table>.jsonl per table")
     s = sub.add_parser("import-text"); s.set_defaults(fn=cmd_import_text)
     s.add_argument("--from", dest="from_dir", required=True, help="directory written by export-text")
 

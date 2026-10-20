@@ -359,11 +359,22 @@ def init_db(db_path=None):
 # =================================================================================================
 # Text export / import (the companion commits these instead of the binary database)
 # =================================================================================================
-_TEXT_TABLES = (("items", "id"), ("events", "seq"))
+# Every table, parents first (agent_operations references items). sqlite_sequence goes last: the
+# inserts above it create its rows, and import then sets them to the exported counters.
+_TEXT_TABLES = (
+    ("items", ("id",)),
+    ("events", ("seq",)),
+    ("meta", ("key",)),
+    ("agent_operations", ("item_id", "generation")),
+    ("notification_receipts", ("event_id",)),
+    ("work_actions", ("seq",)),
+    ("work_action_stops", ("request_id",)),
+    ("sqlite_sequence", ("name",)),
+)
 
 
 def export_text(out_dir, db_path=None):
-    """Write items.jsonl and events.jsonl (one JSON object per row, sorted by key) into out_dir.
+    """Write one <table>.jsonl per table (one JSON object per row, sorted by key) into out_dir.
 
     Reads a snapshot through one read-only connection; each file is replaced atomically, so a
     crash leaves the previous export intact. Returns {table: row_count}."""
@@ -372,7 +383,8 @@ def export_text(out_dir, db_path=None):
     try:
         conn.execute("BEGIN")
         for table, key in _TEXT_TABLES:
-            rows = conn.execute('SELECT * FROM "%s" ORDER BY "%s"' % (table, key)).fetchall()
+            order = ", ".join('"%s"' % k for k in key)
+            rows = conn.execute('SELECT * FROM "%s" ORDER BY %s' % (table, order)).fetchall()
             target = os.path.join(out_dir, table + ".jsonl")
             tmp = target + ".tmp"
             with private_data.open_for_write(tmp, "w", encoding="utf-8", newline="\n") as fh:
@@ -403,6 +415,8 @@ def import_text(in_dir, db_path=None):
                         if not line.strip():
                             continue
                         row = json.loads(line)
+                        if table == "sqlite_sequence":
+                            conn.execute('DELETE FROM sqlite_sequence WHERE name = ?', (row["name"],))
                         cols = sorted(row)
                         conn.execute('INSERT INTO "%s" (%s) VALUES (%s)' % (
                             table, ", ".join('"%s"' % c for c in cols), ", ".join("?" * len(cols))),
