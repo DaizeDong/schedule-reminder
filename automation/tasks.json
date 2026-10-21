@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "skill": "schedule-reminder",
+  "tasks": [
+    {
+      "id": "schedule-reminder/scheduleremindertick",
+      "name": "ScheduleReminderTick",
+      "purpose": "Every 5 minutes: one tick runs the agent work step, fires due reminders and polls the inbound channels; the exit code is the number of steps that raised.",
+      "enabled": true,
+      "trigger": {"type": "interval", "minutes": 5},
+      "argv": [
+        "%ProgramData%\\miniconda3\\pythonw.exe",
+        "-B",
+        "${SKILL_ROOT}/skills/schedule-reminder/scripts/tick.py"
+      ],
+      "cwd": "${SKILL_ROOT}/skills/schedule-reminder/scripts",
+      "timeout_seconds": 600,
+      "checks": [
+        {
+          "id": "heartbeat",
+          "required": true,
+          "health": {
+            "label": "schedule-reminder heartbeat (5 min): sole delivery path for every watchdog reminder",
+            "max_age_hours": 1,
+            "artifact": "${COMPANION_ROOT}/data/db.sqlite3",
+            "artifact_max_age_hours": 1
+          }
+        }
+      ]
+    }
+  ]
+}

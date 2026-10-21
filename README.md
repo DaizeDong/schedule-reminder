@@ -31,9 +31,12 @@ python tools/verify_config.py --json                             # local shape c
 python skills/schedule-reminder/scripts/reminder.py init         # create or upgrade the database
 ```
 
-Schedule `skills/schedule-reminder/scripts/tick.py` every 5 minutes (on Windows through your task
-registration tool; this repository ships no installer). One tick runs the agent work step, fires
-due reminders, then polls the inbound channels.
+The 5-minute task ships with the skill: [automation/tasks.json](automation/tasks.json) declares
+`ScheduleReminderTick`, which runs `skills/schedule-reminder/scripts/tick.py`. A task registration
+tool that reads this manifest installs it (on the author's machines, background-task-core's
+`install-skill`); this repository ships no installer of its own. Machine choices (enabled state,
+another interval, a console category) go in the companion's `automation/tasks.local.json`. One tick
+runs the agent work step, fires due reminders, then polls the inbound channels.
 
 ## Configuration
 
