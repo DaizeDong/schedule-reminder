@@ -111,7 +111,7 @@ def reap(reservations=None, post=True):
         if it and agent_task.exec_state(it) == agent_task.STATE_STOPPING:
             result = _stop_pending_under_lock(it["id"], op["checkpoint"] == "claimed")
             if result is not None:
-                _deliver(result, post)
+                _deliver(result, post and not ((it or {}).get("ext") or {}).get(agent_task.EXT_NO_POST, False))
                 if result["stopped"]:
                     reaped.append(it["id"])
             continue
@@ -131,7 +131,7 @@ def reap(reservations=None, post=True):
             continue
         reaped.append(op["item_id"])
         _log("reconcile: %s pid=%s" % (op["item_id"][:8], pid))
-        if post:
+        if post and not ((it or {}).get("ext") or {}).get(agent_task.EXT_NO_POST, False):
             _post_owner(((it or {}).get("ext") or {}).get(agent_task.EXT_STREAM) or "infra",
                   "工作单 `%s` 没有完成；执行状态待核对，不会自动重排。" % op["item_id"][:8], run_id=op['run_id'])
     return reaped
@@ -239,7 +239,7 @@ def _launch_locked(item, generation, post_reports):
     try:
         kw = {"creationflags": RUNNER_CREATION_FLAGS} if sys.platform == "win32" else {"start_new_session": True}
         argv = [exe, "-B", RUNNER, "--id", item["id"], "--generation", str(generation)]
-        if not post_reports:
+        if not post_reports or ext.get(agent_task.EXT_NO_POST, False):
             argv.append("--no-post")
         p = _spawn_runner(argv, item["id"], generation,
                           stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
@@ -419,7 +419,7 @@ def stop(item_id, note="", post=True, *, expected_generation=None):
     for item in targets:
         with agent_task.launch_lock():
             outcome = _stop_one(item, note, expected_generation)
-        out.append(_deliver(outcome, post))
+        out.append(_deliver(outcome, post and not (item.get("ext") or {}).get(agent_task.EXT_NO_POST, False)))
     return out
 
 

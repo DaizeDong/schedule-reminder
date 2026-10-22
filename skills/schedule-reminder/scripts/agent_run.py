@@ -14,13 +14,13 @@ import re
 import sys
 import tempfile
 from dataclasses import asdict, dataclass, field, is_dataclass
-import private_data
 from contextvars import ContextVar
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+import private_data  # noqa: E402
 import agent_task  # noqa: E402
 
 for _s in (sys.stdout, sys.stderr):
@@ -530,6 +530,7 @@ def run_order(item_id, post_reports=True, *, generation=None):
         _log("runner has no owned generation; no execution")
         return 2
     ext = item.get("ext") or {}
+    post_reports = post_reports and not ext.get(agent_task.EXT_NO_POST, False)
     stream = ext.get(agent_task.EXT_STREAM) or "infra"
     workspace = ext.get(agent_task.EXT_WORKSPACE) or agent_task.default_workspace()
     try:
@@ -545,7 +546,7 @@ def run_order(item_id, post_reports=True, *, generation=None):
         # The store rejects release after a failed/missing child cleanup receipt, even on cancel.
         # A released slot can take the next queued order now rather than at the next poll.
         if agent_task.release(item_id, generation):
-            agent_task.wake_tick()
+            agent_task.wake_tick(post=post_reports)
 
 
 def _execute_order(item, generation, stream, workspace, post_reports):

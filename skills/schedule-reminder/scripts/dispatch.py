@@ -252,7 +252,7 @@ def _stopped_work_receipt(item_id, generation):
 def execute(stream, cfg, plan, items, log=None, work=None, msg_id=None,
             saved_outcomes=None, save_outcome=None, inbound_id=None, authorized_ids=None,
             authorized_work_ids=None, request_id=None, channel_id=None,
-            authorized_work_generations=None):
+            authorized_work_generations=None, post=True):
     allowed = {it["id"] for it in items}
     running_ids = {it["id"] for it in (work or [])}
     if authorized_ids is not None:
@@ -284,7 +284,7 @@ def execute(stream, cfg, plan, items, log=None, work=None, msg_id=None,
                     elif request:
                         workspace = _order_workspace(action.get("workspace"), key)
                         item = agent_task.enqueue(stream, request, workspace=workspace,
-                                                  msg_id=msg_id,
+                                                  msg_id=msg_id, post=post,
                                                   idempotency_key=key if source_identity is not None else None,
                                                   **({'origin_item_id': origin} if origin is not None else {}))
                         outcome = ({"op": op, "status": "succeeded", "id": item["id"]} if item.get("id")
@@ -305,7 +305,7 @@ def execute(stream, cfg, plan, items, log=None, work=None, msg_id=None,
                             if type(generation) is not int or generation < 0:
                                 stops.append({'id': target, 'stopped': False, 'status': 'reconcile'})
                             elif target in running_ids:
-                                stops.extend(agent_tick.stop(target, note="user asked to stop",
+                                stops.extend(agent_tick.stop(target, note="user asked to stop", post=post,
                                                              expected_generation=generation))
                             else:
                                 stops.append({"id": target,
@@ -459,7 +459,7 @@ def _dispatch(stream, reply, log, post, channel_id, msg_id, record=None, save=No
     def save_outcome(key, outcome):
         record["outcomes"][key] = outcome
         save()
-    result = execute(stream, cfg, plan, items, log=log, work=work, msg_id=msg_id,
+    result = execute(stream, cfg, plan, items, log=log, work=work, msg_id=msg_id, post=post,
                      saved_outcomes=record["outcomes"] if record is not None else None,
                      save_outcome=save_outcome if record is not None else None,
                      inbound_id=inbound_id,
@@ -519,7 +519,7 @@ def main():
     ap.add_argument("--stream", required=True)
     ap.add_argument("--reply", required=True, help="the reply text to plan and execute")
     ap.add_argument('--request-id', help='stable identity of this source occurrence for retries')
-    ap.add_argument("--no-post", dest="post", action="store_false", help="dry run: print confirm, do not relay")
+    ap.add_argument("--no-post", dest="post", action="store_false", help="skip confirmations and work-order reports (actions still execute)")
     a = ap.parse_args()
     reply = a.reply
     if not reply.strip():

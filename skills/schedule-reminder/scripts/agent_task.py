@@ -33,12 +33,16 @@ import os
 import re
 import subprocess
 import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
 import private_data
 import runner_job
 import store
 import uuid
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
 TICK = os.path.join(_HERE, "agent_tick.py")
 
 for _s in (sys.stdout, sys.stderr):
@@ -57,6 +61,7 @@ ACTOR = "agent-center-work"
 EXT_V = "x_agent_exec_v"                  # ext schema version
 EXT_STATE = "x_agent_exec_state"          # queued|running|stalled|done|failed
 EXT_STREAM = "x_agent_exec_stream"        # origin channel key
+EXT_NO_POST = "x_agent_exec_no_post"      # suppress reports across detached and scheduled ticks
 EXT_MSG = "x_agent_exec_msg_id"           # origin Discord message id (may be None)
 EXT_DIR = "x_agent_exec_dir"              # run directory NAME, relative to runs_root()
 EXT_WORKSPACE = "x_agent_exec_workspace"  # cwd the runner works in (== codex write sandbox)
@@ -101,7 +106,7 @@ def _utcnow():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def wake_tick():
+def wake_tick(post=True):
     """Start a detached tick now instead of waiting for the scheduled poll. Never raises: the
     work step of the scheduled tick.py remains the backstop when this cannot start."""
     exe = sys.executable or "python"
@@ -112,9 +117,12 @@ def wake_tick():
     # is inside its own runner job); a job that forbids breakaway refuses that, so retry without.
     attempts = ((0x08000000 | 0x00000008 | 0x01000000), (0x08000000 | 0x00000008)) \
         if sys.platform == "win32" else (0,)
+    argv = [exe, "-B", TICK]
+    if not post:
+        argv.append("--no-post")
     for flags in attempts:
         try:
-            subprocess.Popen([exe, "-B", TICK], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, close_fds=True, creationflags=flags,
                              **({} if sys.platform == "win32" else {"start_new_session": True}))
             return True
@@ -252,7 +260,7 @@ def _persist_request(item, request):
 
 
 def enqueue(stream, request, workspace=None, msg_id=None, title=None, *,
-            idempotency_key=None, origin_item_id=None, work_id=None, db_path=None, action_id=None):
+            idempotency_key=None, origin_item_id=None, work_id=None, db_path=None, action_id=None, post=True):
     """Create a queued work order. Returns the item dict, or {"_err": ...}."""
     private_data.check_destination(runs_root())
     ws, note = resolve_workspace(workspace)
@@ -266,6 +274,8 @@ def enqueue(stream, request, workspace=None, msg_id=None, title=None, *,
         EXT_APPROACH: 0,
         EXT_REQUEST_SHA: hashlib.sha256((request or "").encode("utf-8")).hexdigest(),
     }
+    if not post:
+        ext[EXT_NO_POST] = True
     if note:
         ext[EXT_NOTE] = note
     if origin_item_id:
@@ -307,7 +317,7 @@ def enqueue(stream, request, workspace=None, msg_id=None, title=None, *,
     if not item:
         return {"_err": "work preparation cancelled or changed"}
     append_event(item, "enqueued", stream=stream, workspace=ws, note=note)
-    wake_tick()
+    wake_tick(post=post)
     return item
 
 
