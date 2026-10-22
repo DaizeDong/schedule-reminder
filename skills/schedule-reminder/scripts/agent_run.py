@@ -546,7 +546,7 @@ def run_order(item_id, post_reports=True, *, generation=None):
         # The store rejects release after a failed/missing child cleanup receipt, even on cancel.
         # A released slot can take the next queued order now rather than at the next poll.
         if agent_task.release(item_id, generation):
-            agent_task.wake_tick(post=post_reports)
+            agent_task.wake_tick()
 
 
 def _execute_order(item, generation, stream, workspace, post_reports):

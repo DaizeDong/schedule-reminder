@@ -106,7 +106,7 @@ def _utcnow():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def wake_tick(post=True):
+def wake_tick():
     """Start a detached tick now instead of waiting for the scheduled poll. Never raises: the
     work step of the scheduled tick.py remains the backstop when this cannot start."""
     exe = sys.executable or "python"
@@ -117,12 +117,9 @@ def wake_tick(post=True):
     # is inside its own runner job); a job that forbids breakaway refuses that, so retry without.
     attempts = ((0x08000000 | 0x00000008 | 0x01000000), (0x08000000 | 0x00000008)) \
         if sys.platform == "win32" else (0,)
-    argv = [exe, "-B", TICK]
-    if not post:
-        argv.append("--no-post")
     for flags in attempts:
         try:
-            subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            subprocess.Popen([exe, "-B", TICK], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, close_fds=True, creationflags=flags,
                              **({} if sys.platform == "win32" else {"start_new_session": True}))
             return True
@@ -317,7 +314,7 @@ def enqueue(stream, request, workspace=None, msg_id=None, title=None, *,
     if not item:
         return {"_err": "work preparation cancelled or changed"}
     append_event(item, "enqueued", stream=stream, workspace=ws, note=note)
-    wake_tick(post=post)
+    wake_tick()
     return item
 
 
