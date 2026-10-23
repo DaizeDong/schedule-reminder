@@ -21,6 +21,7 @@ CONTRACT (frozen surface downstream skills depend on — subprocess, never impor
       relay.py send   --stream NAME (--text T | --json '{"content":..,"username":..}')
       relay.py send   --channel-id ID --text T [--file PATH ...]
       relay.py send   --dm (--text T | --text-file PATH|-) [--file PATH ...]   # owner DM
+      relay.py edit   --channel-id ID --message-id ID --text-file - [--file PATH ...]
       relay.py list                       # show configured streams (NO secrets)
       relay.py health                     # registry present? streams sane? (NO network, NO secrets)
 
@@ -393,6 +394,44 @@ def bot_token(reg: dict) -> str | None:
     return bot_credential.resolve_or_none(reg, "relay")
 
 
+def _bot_request(url, payload, files, token, method="POST"):
+    """Build the shared JSON or multipart bot request for sends and edits."""
+    headers = {"Authorization": "Bot %s" % token, "User-Agent": _UA}
+    if not files:
+        req = urllib.request.Request(
+            url, data=json.dumps(payload).encode("utf-8"), method=method,
+            headers={**headers, "Content-Type": "application/json"})
+    else:
+        paths = [os.fspath(f) for f in files]
+        boundary = "----agentcenter" + os.urandom(8).hex()
+        payload = {**payload, "attachments": [
+            {"id": i, "filename": os.path.basename(p)} for i, p in enumerate(paths)]}
+        parts: list[bytes] = []
+
+        def field(name, value, filename=None, ctype=None):
+            head = '--%s\r\nContent-Disposition: form-data; name="%s"' % (boundary, name)
+            if filename:
+                head += '; filename="%s"' % filename
+            head += "\r\n"
+            if ctype:
+                head += "Content-Type: %s\r\n" % ctype
+            parts.append(head.encode("utf-8") + b"\r\n" + value + b"\r\n")
+
+        field("payload_json", json.dumps(payload).encode("utf-8"), ctype="application/json")
+        for i, (attachment, p) in enumerate(zip(files, paths)):
+            if isinstance(attachment, _PreparedAttachment):
+                data = attachment.data
+            else:
+                with open(p, "rb") as fh:
+                    data = fh.read()
+            field("files[%d]" % i, data, os.path.basename(p), "application/octet-stream")
+        parts.append(("--%s--\r\n" % boundary).encode())
+        req = urllib.request.Request(
+            url, data=b"".join(parts), method=method,
+            headers={**headers, "Content-Type": "multipart/form-data; boundary=%s" % boundary})
+    return req
+
+
 def _post_bot(channel_id: str, content: str, files: list | None, token: str) -> bool:
     """POST as the bot to one channel, with optional file attachments.
 
@@ -423,41 +462,8 @@ def _post_bot(channel_id: str, content: str, files: list | None, token: str) -> 
             channel_id, (content or "")[:80],
             (" +%d file(s)" % len(files)) if files else ""))
         return True
-    url = "%s/channels/%s/messages" % (_API, channel_id)
-    headers = {"Authorization": "Bot %s" % token, "User-Agent": _UA}
-    if not files:
-        req = urllib.request.Request(
-            url, data=json.dumps({"content": content or ""}).encode("utf-8"), method="POST",
-            headers={**headers, "Content-Type": "application/json"})
-    else:
-        paths = [os.fspath(f) for f in files]
-        boundary = "----agentcenter" + os.urandom(8).hex()
-        payload = {"content": content or "",
-                   "attachments": [{"id": i, "filename": os.path.basename(p)}
-                                   for i, p in enumerate(paths)]}
-        parts: list[bytes] = []
-
-        def field(name, value, filename=None, ctype=None):
-            head = '--%s\r\nContent-Disposition: form-data; name="%s"' % (boundary, name)
-            if filename:
-                head += '; filename="%s"' % filename
-            head += "\r\n"
-            if ctype:
-                head += "Content-Type: %s\r\n" % ctype
-            parts.append(head.encode("utf-8") + b"\r\n" + value + b"\r\n")
-
-        field("payload_json", json.dumps(payload).encode("utf-8"), ctype="application/json")
-        for i, (attachment, p) in enumerate(zip(files, paths)):
-            if isinstance(attachment, _PreparedAttachment):
-                data = attachment.data
-            else:
-                with open(p, "rb") as fh:
-                    data = fh.read()
-            field("files[%d]" % i, data, os.path.basename(p), "application/octet-stream")
-        parts.append(("--%s--\r\n" % boundary).encode())
-        req = urllib.request.Request(
-            url, data=b"".join(parts), method="POST",
-            headers={**headers, "Content-Type": "multipart/form-data; boundary=%s" % boundary})
+    req = _bot_request("%s/channels/%s/messages" % (_API, channel_id),
+                       {"content": content or ""}, files, token)
     try:
         with urllib.request.urlopen(req, timeout=180) as r:
             return r.status in (200, 204)
@@ -503,7 +509,8 @@ def _big_brother(text: str, files: list | None = None) -> bool:
     return _post_bot(chan, text, files, token)
 
 
-def deliver(stream, content):
+def deliver(stream, content, *, channel_id=None, files=None, idempotency_key=None,
+            mention_user=None):
     """Deliver through the configured stream and retain confirmed Discord message IDs."""
     from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
     import uuid
@@ -511,16 +518,18 @@ def deliver(stream, content):
         raise ValueError('blank content cannot produce a delivery receipt')
     reg = load_registry()
     target = (reg.get('streams') or {}).get(stream) or {}
-    webhook = target.get('webhook')
+    webhook = None if channel_id or files or mention_user else target.get('webhook')
     token = bot_token(reg)
-    channel = target.get('channel_id')
+    channel = channel_id or target.get('channel_id')
     if not webhook and not (channel and token):
+        if channel_id or files or mention_user or idempotency_key is not None:
+            raise ValueError('missing bot channel or credentials')
         return relay(stream, content)
     if os.environ.get('AGENT_CENTER_RELAY_DRYRUN'):
         return {'kind': 'synthetic-local', 'receipt_id': str(uuid.uuid4()),
                 'delivered': True, 'exit_code': 0}
     receipts = []
-    for part in split_for_discord(content):
+    for index, part in enumerate(split_for_discord(content)):
         payload = {'content': part, 'flags': 4}
         headers = {'Content-Type': 'application/json', 'User-Agent': _UA}
         if webhook:
@@ -530,12 +539,18 @@ def deliver(stream, content):
             url = urlunsplit(parsed._replace(query=urlencode(query)))
             if target.get('username'):
                 payload['username'] = target['username']
+            request = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'),
+                                             headers=headers, method='POST')
         else:
-            url = '%s/channels/%s/messages' % (_API, channel)
-            headers['Authorization'] = 'Bot '+token
-        request = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'),
-                                         headers=headers, method='POST')
-        with urllib.request.urlopen(request, timeout=30) as response:
+            if mention_user is not None:
+                payload['allowed_mentions'] = {'parse': [], 'users': [mention_user]}
+            if idempotency_key is not None:
+                nonce_key = json.dumps([idempotency_key, index], ensure_ascii=False)
+                payload.update(nonce=hashlib.sha256(nonce_key.encode('utf-8')).hexdigest()[:25],
+                               enforce_nonce=True)
+            request = _bot_request('%s/channels/%s/messages' % (_API, channel), payload,
+                                   files if index == 0 else None, token)
+        with urllib.request.urlopen(request, timeout=180 if files else 30) as response:
             if response.status != 200:
                 raise ValueError('delivery response did not confirm a message')
             message = json.loads(response.read().decode('utf-8'))
@@ -685,15 +700,17 @@ def _send_with_receipt(args, content) -> int:
     if not isinstance(key, str) or not key.strip():
         sys.stderr.write("relay: --idempotency-key must be nonempty\n")
         return 2
-    if args.channel_id or args.files or not args.stream:
+    if args.dm or not (args.channel_id or args.stream):
         return emit({"status": "not_applied",
-                     "evidence": "receipt mode supports --stream delivery only; nothing was sent"}, 2)
+                     "evidence": "receipt mode needs --stream or --channel-id; nothing was sent"}, 2)
     if not isinstance(content, str) or not content.strip():
         return emit({"status": "not_applied", "evidence": "blank content; nothing was sent"}, 1)
     try:
         reg = load_registry()
         target = (reg.get("streams") or {}).get(args.stream) or {}
-        capable = bool(target.get("webhook") or (target.get("channel_id") and bot_token(reg)))
+        channel = args.channel_id or target.get("channel_id")
+        bot_required = args.channel_id or args.files or args.mention_user
+        capable = bool((not bot_required and target.get("webhook")) or (channel and bot_token(reg)))
     except Exception as exc:
         return emit({"status": "not_applied",
                      "evidence": "registry unreadable (%s); nothing was sent" % type(exc).__name__}, 1)
@@ -701,13 +718,44 @@ def _send_with_receipt(args, content) -> int:
         return emit({"status": "not_applied",
                      "evidence": "stream %r has no webhook or bot channel; nothing was sent" % args.stream}, 1)
     try:
-        delivered = deliver(args.stream, content)
+        delivered = deliver(args.stream, content, channel_id=args.channel_id, files=args.files,
+                            idempotency_key=key, mention_user=args.mention_user)
     except Exception as exc:
         return emit({"status": "uncertain", "error": type(exc).__name__}, 1)
     receipt_id = delivered.get("receipt_id") if isinstance(delivered, dict) else None
     if not isinstance(receipt_id, str) or not receipt_id.strip():
         return emit({"status": "uncertain"}, 1)
     return emit({"status": "confirmed", "receipt_id": receipt_id, "kind": delivered.get("kind")}, 0)
+
+
+def _edit(args) -> int:
+    """Replace the content and attachments of one existing bot message."""
+    try:
+        raw = (sys.stdin.buffer.read() if args.text_file == "-"
+               else Path(args.text_file).read_bytes())
+        content = raw.decode("utf-8-sig")
+        token = bot_token(load_registry())
+        if not token:
+            raise ValueError("missing bot credentials")
+        request = _bot_request(
+            "%s/channels/%s/messages/%s" % (_API, args.channel_id, args.message_id),
+            {"content": content, "attachments": [], "allowed_mentions": {"parse": []}},
+            args.files, token, method="PATCH")
+        if os.environ.get("AGENT_CENTER_RELAY_DRYRUN"):
+            print(json.dumps({"status": "not_applied", "evidence": "dry run; message not edited"}))
+            return 1
+        with urllib.request.urlopen(request, timeout=180) as response:
+            if response.status != 200:
+                raise ValueError("edit response did not confirm a message")
+            message = json.loads(response.read().decode("utf-8"))
+        if not isinstance(message, dict) or message.get("id") != args.message_id:
+            raise ValueError("edit response did not confirm the requested message")
+    except Exception as exc:
+        print(json.dumps({"status": "uncertain", "error": type(exc).__name__}))
+        return 1
+    print(json.dumps({"status": "confirmed", "receipt_id": message["id"],
+                      "kind": "discord-message"}))
+    return 0
 
 
 def main(argv=None) -> int:
@@ -731,12 +779,19 @@ def main(argv=None) -> int:
     g.add_argument("--json", dest="json_payload", help='{"content":..,"username":..}')
     g.add_argument("--json-b64", dest="json_b64", help="base64 of UTF-8 JSON (PowerShell-safe)")
     p_send.add_argument("--username", default=None)
+    p_send.add_argument("--mention-user", default=None,
+                        help="allow only this user mention; requires --idempotency-key")
     # A caller that must prove delivery (a durable action ledger) passes a key and gets one
     # JSON receipt line on stdout: confirmed with the Discord message IDs, not_applied with evidence
-    # when nothing can have been sent, otherwise uncertain. Stream delivery only.
+    # when nothing can have been sent, otherwise uncertain. Attachments and explicit channels use the bot.
     p_send.add_argument("--idempotency-key", dest="idempotency_key", default=None)
     p_send.add_argument("--receipt-adapter", dest="receipt_adapter", default="relay",
                         help="adapter name echoed in the receipt")
+    p_edit = sub.add_parser("edit", help="replace one bot message and its attachments")
+    p_edit.add_argument("--channel-id", required=True)
+    p_edit.add_argument("--message-id", required=True)
+    p_edit.add_argument("--text-file", required=True, help="UTF-8 file ('-' = stdin)")
+    p_edit.add_argument("--file", dest="files", action="append", default=None)
     sub.add_parser("list", help="list configured streams (no secrets)")
     sub.add_parser("health", help="check registry health (no network, no secrets)")
     args = ap.parse_args(argv)
@@ -749,7 +804,11 @@ def main(argv=None) -> int:
         return _cmd_list()
     if args.cmd == "health":
         return _cmd_health()
+    if args.cmd == "edit":
+        return _edit(args)
     if args.cmd == "send":
+        if args.mention_user and args.idempotency_key is None:
+            ap.error("--mention-user requires --idempotency-key")
         if sum(bool(x) for x in (args.stream, args.channel_id, args.dm)) != 1:
             sys.stderr.write("relay: send needs exactly one of --stream, --channel-id, --dm\n")
             return 2
@@ -776,10 +835,10 @@ def main(argv=None) -> int:
             content, username = raw.decode("utf-8-sig", errors="replace"), args.username
         else:
             content, username = args.text, args.username
-        if args.dm:
-            return 0 if _big_brother(content, args.files) else 1
         if args.idempotency_key is not None:
             return _send_with_receipt(args, content)
+        if args.dm:
+            return 0 if _big_brother(content, args.files) else 1
         return 0 if send(content, stream=args.stream, channel_id=args.channel_id,
                          files=args.files, username=username) else 1
     return 2

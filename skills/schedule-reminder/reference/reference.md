@@ -370,9 +370,28 @@ and transport fixes in one place.
 ```
 python relay.py send   --stream <name> (--text T | --json '{"content":..,"username":..}')
 python relay.py send   --channel-id ID --text T [--file PATH ...]   # bot transport
+python relay.py send --stream verification --text-file - --file PATH --idempotency-key KEY --mention-user ID
+python relay.py send --channel-id ID --text-file - --file PATH --idempotency-key KEY --mention-user ID
+python relay.py edit --channel-id ID --message-id ID --text-file - [--file PATH ...]
 python relay.py list                   # configured streams (NEVER prints webhook URLs)
 python relay.py health                 # registry sane? (no network, no secrets)
 ```
+
+- **Receipts:** `send --idempotency-key KEY` prints one JSON line with `status: confirmed`
+  and the returned `receipt_id`, or `not_applied`/`uncertain` with a nonzero exit. Attachments,
+  explicit channels and `--mention-user` use the bot; a stream needs a configured `channel_id`.
+  Text-only stream receipts retain webhook routing. `--mention-user ID` requires a key and
+  permits only that user to ping (`parse=[]`); include `<@ID>` in the text to mention them.
+  Bot receipt POSTs use a deterministic 25-character nonce per key/chunk with `enforce_nonce=true`.
+  Discord deduplicates recent nonces only; this is not a permanent idempotency ledger, and
+  webhook receipts do not deduplicate. Reuse the key only for the same logical send.
+- **Edits:** PATCH the given bot message once, replacing content and all attachments. Omitting
+  `--file` clears existing attachments; repeating it supplies the full replacement list.
+  Edits suppress all mention pings and return confirmed `receipt_id` JSON, or a safe error and
+  nonzero exit. Edits cannot split: keep text within Discord's 2,000-character message limit.
+  Sends retain existing chunking, return comma-separated IDs for multiple messages, and attach
+  files to the first chunk only. File count/size limits are enforced by Discord. Both commands
+  accept UTF-8 stdin with `--text-file -`; neither receipt sends nor edits retry or fall back to DM.
 
 - **Two transports behind one caller contract.** `files` given, or `channel_id` given → the bot
   (the canonical bot token; see **Bot token** below). A named stream uses its webhook when present; a notification-only
