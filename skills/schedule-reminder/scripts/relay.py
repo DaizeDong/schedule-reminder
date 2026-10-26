@@ -69,6 +69,7 @@ from pathlib import Path
 import json
 import os
 import bot_credential
+import machine_role
 import private_data
 import sys
 import urllib.request
@@ -376,6 +377,7 @@ def _post_webhook(url: str, payload: dict) -> bool:
         sys.stdout.write("DRYRUN webhook <%s> %s\n" % (payload.get("username", "?"),
                                                        (payload.get("content", "") or "")[:80]))
         return True
+    machine_role.refuse_on_secondary()  # the secondary machine never sends; see machine_role.py
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data,
                                  headers={"Content-Type": "application/json", "User-Agent": _UA})
@@ -462,6 +464,7 @@ def _post_bot(channel_id: str, content: str, files: list | None, token: str) -> 
             channel_id, (content or "")[:80],
             (" +%d file(s)" % len(files)) if files else ""))
         return True
+    machine_role.refuse_on_secondary()  # the secondary machine never sends; see machine_role.py
     req = _bot_request("%s/channels/%s/messages" % (_API, channel_id),
                        {"content": content or ""}, files, token)
     try:
@@ -476,6 +479,7 @@ def _open_dm(user_id: str, token: str) -> str | None:
     """The bot's DM channel with one user (Discord returns the existing one when it exists)."""
     if os.environ.get("AGENT_CENTER_RELAY_DRYRUN"):
         return "dryrun-dm"
+    machine_role.refuse_on_secondary()  # the secondary machine never sends; see machine_role.py
     req = urllib.request.Request(
         "%s/users/@me/channels" % _API, method="POST",
         data=json.dumps({"recipient_id": str(user_id)}).encode("utf-8"),
@@ -528,6 +532,7 @@ def deliver(stream, content, *, channel_id=None, files=None, idempotency_key=Non
     if os.environ.get('AGENT_CENTER_RELAY_DRYRUN'):
         return {'kind': 'synthetic-local', 'receipt_id': str(uuid.uuid4()),
                 'delivered': True, 'exit_code': 0}
+    machine_role.refuse_on_secondary()  # the secondary machine never sends; see machine_role.py
     receipts = []
     for index, part in enumerate(split_for_discord(content)):
         payload = {'content': part, 'flags': 4}
@@ -744,6 +749,7 @@ def _edit(args) -> int:
         if os.environ.get("AGENT_CENTER_RELAY_DRYRUN"):
             print(json.dumps({"status": "not_applied", "evidence": "dry run; message not edited"}))
             return 1
+        machine_role.refuse_on_secondary()  # the secondary machine never sends; see machine_role.py
         with urllib.request.urlopen(request, timeout=180) as response:
             if response.status != 200:
                 raise ValueError("edit response did not confirm a message")

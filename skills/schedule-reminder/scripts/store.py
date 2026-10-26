@@ -27,6 +27,7 @@ import uuid as _uuid
 from pathlib import Path
 from datetime import datetime, timezone
 
+import machine_role
 import private_data
 
 # --- SQLite backend selection: prefer a bundled-newer pysqlite3 if present, else stdlib ----------
@@ -181,6 +182,7 @@ def _connect(db_path=None, *, readonly=False, create=False, immutable=False):
     public tree). A plain read-only connection skips it; owner reads use admitted_connection."""
     path = db_path or default_db_path()
     if not readonly:
+        machine_role.refuse_on_secondary()  # reminders are written on the primary only; reads stay open
         _admit(path)
     if not os.path.isfile(path) and not create:
         raise SkillError("ERR_UNINITIALIZED", "initialize the PRIVATE database with init")
