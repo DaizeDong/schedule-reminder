@@ -191,6 +191,7 @@ def release_prepared(prepared):
 
 
 def _send_command(content, prepared):
+    machine_role.refuse_on_secondary()  # the secondary machine never sends; see machine_role.py
     from llmcall import process
     # Legacy @file notifiers consume this attempt's immutable snapshot once. Text transports use
     # the same canonical chunker as stream delivery; no chunk can gain a second receipt.
