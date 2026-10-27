@@ -9,6 +9,7 @@
   "data": [
     "data/",
     "state/",
+    "inbox/",
     "agent-runs/",
     "workspaces/",
     "notification-payloads/",

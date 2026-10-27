@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """schedule-reminder: the one scheduled entry point (Task Scheduler: ScheduleReminderTick, every 5 min).
 
-One tick runs three steps in a fixed order, each in this process and each with its own result:
+One tick runs four steps in a fixed order, each in this process and each with its own result:
 
+  inbox   inbox.drain()        apply intents a secondary machine queued in the companion inbox
   work    agent_tick.run()     reap finished agent orders, launch the next queued one (fast)
   remind  store.tick()         fire due reminders through relay.py
   ingest  ingest_tick.run()    poll every Agent Center channel and dispatch replies (self-budgeted)
@@ -11,7 +12,7 @@ A failing step never stops the next one. The JSON summary names every step; the 
 number of steps that raised, so the Scheduler's last result shows a red tick without hiding which
 step it was. Ingest keeps its own time budget (ingest_tick.TASK_LIMIT_S) inside the 5-minute interval.
 
-CLI: tick.py [--no-post] [--only work|remind|ingest ...]
+CLI: tick.py [--no-post] [--only inbox|work|remind|ingest ...]
 """
 import argparse
 import json
@@ -29,7 +30,12 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-STEPS = ("work", "remind", "ingest")
+STEPS = ("inbox", "work", "remind", "ingest")
+
+
+def _inbox(post):
+    import inbox
+    return inbox.drain(post=post)
 
 
 def _work(post):
@@ -49,7 +55,7 @@ def _ingest(post):
     return ingest_tick.run(post=post)
 
 
-_RUN = {"work": _work, "remind": _remind, "ingest": _ingest}
+_RUN = {"inbox": _inbox, "work": _work, "remind": _remind, "ingest": _ingest}
 
 
 def run(only=None, post=True):
@@ -69,7 +75,7 @@ def run(only=None, post=True):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tick.py")
     ap.add_argument("--no-post", dest="post", action="store_false",
-                    help="no Discord delivery: reminders dry-run, agent and ingest skip confirmations")
+                    help="no Discord delivery: reminders dry-run, inbox only lists, agent and ingest skip confirmations")
     ap.add_argument("--only", nargs="+", choices=STEPS, default=None)
     a = ap.parse_args(argv)
     results, failed = run(only=a.only, post=a.post)
