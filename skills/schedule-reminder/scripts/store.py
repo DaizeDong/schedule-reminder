@@ -857,7 +857,8 @@ def update_item(item_id, *, idempotency_key=None, actor=None, ext=None, db_path=
     """Patch mutable fields. ext uses a shallow merge preserving unknown top-level keys. State is unchanged."""
     if machine_role.is_secondary():
         import inbox
-        return inbox.submit("update", dict(fields, id=item_id, ext=ext, actor=actor))
+        return inbox.submit("update", dict(fields, id=item_id, ext=ext, actor=actor,
+                                            idempotency_key=idempotency_key))
     conn = _connect(db_path)
     try:
         with _Tx(conn):

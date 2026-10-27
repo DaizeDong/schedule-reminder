@@ -65,7 +65,7 @@ def run(only=None, post=True):
             continue
         try:
             results[name] = {"ok": True, "result": _RUN[name](post)}
-        except Exception as error:
+        except (Exception, SystemExit) as error:  # SystemExit: a step refused on a secondary machine
             failed += 1
             results[name] = {"ok": False, "error": type(error).__name__}
             traceback.print_exc(file=sys.stderr)

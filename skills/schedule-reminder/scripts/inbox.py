@@ -2,14 +2,17 @@
 
 A secondary machine never writes the reminder database. Instead each of those four writes becomes
 one intent file in the PRIVATE companion, inbox/<machine id>/<uuid7>.json, committed alone and
-pushed. When the push fails (offline) the commit stays local and goes out with the next push.
+pushed. When the push fails (offline) the commit stays local; the next queued change pushes it, and so
+does the secondary's nightly companion sync (repos.json secondaryPaths inbox/{machine}/), whichever
+comes first.
 
 The primary's tick runs drain() first: it fetches the companion and reads every intent from the
 upstream branch with `git show`, so the primary's working tree is never touched. Each applied
 intent is recorded in the meta table as inbox:<uuid> and skipped afterwards; meta is part of the
 text export, so a handover keeps that record. An add carries an idempotency key (the caller's, or
 inbox:<uuid>) and the intent's uuid as the item id, so a crash between applying and recording
-replays into the same item.
+replays into the same item. An intent the primary refuses (unknown item, bad field) is recorded
+with its error and announced once through the reminders stream, so a queued change never fails silently.
 """
 import json
 import os
@@ -58,7 +61,7 @@ def submit(op, args):
     message = ('queued for the primary machine; it applies the change within one tick (5 minutes)'
                if delivered else
                'saved in the inbox on this machine but not pushed (offline?); it reaches the primary '
-               'once this machine is online and pushes the companion repository')
+               'with the next queued change or the nightly companion sync once this machine is online')
     result = {'queued': True, 'inbox_id': uid, 'op': op, 'machine': machine, 'delivered': delivered,
               'path': str(path), 'message': message}
     if op == 'add':
@@ -102,6 +105,14 @@ def _apply(store, intent):
     if op == 'snooze':
         return store.snooze(item_id, args.pop('until'), actor=actor)
     raise store.SkillError('ERR_BAD_INPUT', 'unknown inbox op %r' % op)
+
+
+def _announce(intent, uid, error):
+    """Tell the owner once (durable receipt keyed by the intent uuid) that a queued change was refused."""
+    import notify
+    text = '[reminder inbox] a %s queued on %s was not applied: %s %s' % (
+        intent.get('op'), intent.get('machine'), error.get('error_code', ''), error.get('message', ''))
+    notify.notify(text.strip(), run_id=_PREFIX + uid, phase='inbox', condition='refused')
 
 
 def drain(post=True):
@@ -148,6 +159,8 @@ def drain(post=True):
             errors += 1  # transient: left unseen and retried on the next tick
             continue
         _mark(store, uid, record)
+        if 'error' in record:
+            _announce(intent, uid, record['error'])
     if errors:
         raise RuntimeError('%d inbox intents could not be read or applied; retried next tick' % errors)
     return {'ref': ref, 'total': len(names), 'applied': applied, 'failed': failed}
