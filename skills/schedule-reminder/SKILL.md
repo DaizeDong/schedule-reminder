@@ -62,8 +62,9 @@ On a secondary machine (`CLAUDE_MACHINE_ROLE=secondary`) the database is never w
 `update`, `done` and `snooze` print `{"queued": {...}}` instead: the change is one intent file
 `inbox/<CLAUDE_MACHINE_ID>/<uuid7>.json` in the companion, committed alone and pushed, and the
 primary's next tick applies it. When `delivered` is false the push failed; tell the user the change
-is saved in the inbox and reaches the primary once this machine is online. Every other write refuses
-with `secondary machine: do this on the primary`.
+is saved in the inbox and reaches the primary once this machine is online. `import-text` into a
+missing database under the companion's `data/replica/` (the secondary's read-only copy) is allowed.
+Every other write refuses with `secondary machine: do this on the primary`.
 
 `health` keeps its report-success JSON and exit zero: a database `quick_check` plus whether the
 relay registry is present. It starts no process. The companion commits `reminder.py export-text`

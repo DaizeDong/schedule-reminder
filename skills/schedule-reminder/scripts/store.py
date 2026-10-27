@@ -175,7 +175,19 @@ def default_db_path():
     return os.environ.get("SCHEDULE_DB_PATH") or str(private_data.data_dir()/"db.sqlite3")
 
 
-def _connect(db_path=None, *, readonly=False, create=False, immutable=False):
+def _replica_target(path):
+    """True when path is a database directly under the companion's data/replica/ directory.
+
+    That read-only copy is what a secondary machine reads; it is rebuilt there from the primary's
+    export, so import_text (and the init it runs) may write it on a secondary machine."""
+    try:
+        replica = (private_data.config_root() / "data" / "replica").resolve()
+    except (ImportError, ValueError, PermissionError):
+        return False
+    return Path(path).resolve().parent == replica
+
+
+def _connect(db_path=None, *, readonly=False, create=False, immutable=False, _replica=False):
     """Open a connection in autocommit mode (isolation_level=None) so WE control BEGIN IMMEDIATE.
 
     A write connection checks the database path and its sidecars once (no alias, outside the
@@ -184,7 +196,9 @@ def _connect(db_path=None, *, readonly=False, create=False, immutable=False):
     if not readonly:
         # Reminders are written on the primary only; reads stay open. add/update/done/snooze never get
         # here on a secondary machine: they are queued in the inbox (inbox.py) before connecting.
-        machine_role.refuse_on_secondary()
+        # The one exception is import_text rebuilding the read-only copy under data/replica/.
+        if not (_replica and _replica_target(path)):
+            machine_role.refuse_on_secondary()
         _admit(path)
     if not os.path.isfile(path) and not create:
         raise SkillError("ERR_UNINITIALIZED", "initialize the PRIVATE database with init")
@@ -338,10 +352,10 @@ CREATE TABLE IF NOT EXISTS notification_receipts (
 """
 
 
-def init_db(db_path=None):
+def init_db(db_path=None, *, _replica=False):
     """Create schema, enable WAL (durable per-file property), set user_version. Idempotent."""
     path = db_path or default_db_path()
-    conn = _connect(path, create=True)
+    conn = _connect(path, create=True, _replica=_replica)
     try:
         conn.execute("PRAGMA journal_mode = WAL")  # persists for the file; set once
         conn.executescript(_DDL)
@@ -403,12 +417,14 @@ def export_text(out_dir, db_path=None):
 
 
 def import_text(in_dir, db_path=None):
-    """Rebuild a MISSING database from an export_text directory. Refuses an existing database."""
+    """Rebuild a MISSING database from an export_text directory. Refuses an existing database.
+
+    On a secondary machine this works only for a target under the companion's data/replica/."""
     path = db_path or default_db_path()
     if os.path.exists(path):
         raise SkillError("ERR_EXISTS", "database already exists; import only rebuilds a missing one")
-    init_db(path)
-    conn = _connect(path)
+    init_db(path, _replica=True)
+    conn = _connect(path, _replica=True)
     counts = {}
     try:
         with _Tx(conn):

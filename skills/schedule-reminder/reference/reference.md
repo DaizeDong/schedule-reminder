@@ -984,7 +984,9 @@ A secondary machine (`CLAUDE_MACHINE_ROLE=secondary`, id from `CLAUDE_MACHINE_ID
 pushes. The CLI prints `{"queued": {inbox_id, op, delivered, message, item_id for add}}`; an add
 gets the intent's uuid as its item id and `inbox:<uuid>` as its idempotency key unless the caller
 gave one. An intent the primary cannot apply (for example an unknown id) is recorded with its error
-in `meta` and not retried. Every other write refuses on a secondary machine. Change the task by editing the manifest or the companion override
+in `meta` and not retried. `import-text` may rebuild a missing database directly under the
+companion's `data/replica/` (the read-only copy a secondary machine reads). Every other write refuses
+on a secondary machine. Change the task by editing the manifest or the companion override
 and running `install-skill` again; this repository ships no installer of its own.
 
 ### Private runtime storage
