@@ -23,11 +23,13 @@ import private_data
 
 OPS = ('add', 'update', 'done', 'snooze')
 _PREFIX = 'inbox:'
+# The tick runs under pythonw; without CREATE_NO_WINDOW every git call pops a console window.
+_NOWINDOW = {'creationflags': 0x08000000} if os.name == 'nt' else {}
 
 
 def _git(root, *args, timeout=120):
     return subprocess.run(['git', '-C', str(root), *args], capture_output=True, text=True,
-                          encoding='utf-8', errors='replace', timeout=timeout)
+                          encoding='utf-8', errors='replace', timeout=timeout, **_NOWINDOW)
 
 
 def submit(op, args):

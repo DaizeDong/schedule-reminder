@@ -30,7 +30,8 @@ def _override():
 def _run(argv):
     # encoding="utf-8": text=True otherwise decodes the child's stdout with the locale codepage.
     return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", timeout=30)
+                          errors="replace", timeout=30,
+                          **({"creationflags": 0x08000000} if os.name == "nt" else {}))
 
 
 def notify_event(event, text, **delivery_options):
