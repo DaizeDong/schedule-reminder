@@ -13,8 +13,7 @@ Conventions (frozen — additive evolution only; deletes/renames bump api_versio
   * time: UTC RFC3339 everywhere; inject a clock with --now or SCHEDULE_NOW (tests).
   * db: --db PATH or SCHEDULE_DB_PATH (test isolation).
   * idempotency: add/update accept --idempotency-key (UPSERT); reads are naturally idempotent.
-  * secondary machine: add/update/done/snooze print {"queued": {...}} instead of {"item": ...};
-    the change waits in the companion inbox until the primary's tick applies it. Other writes refuse.
+  * secondary machine: every write refuses (exit 3); reads stay open.
 
 Usage:
   reminder.py init
@@ -110,13 +109,6 @@ def _emit(payload):
     return 0
 
 
-def _emit_item(item):
-    """A secondary machine queues add/update/done/snooze in the inbox: report that, not an item."""
-    if isinstance(item, dict) and item.get("queued"):
-        return _emit({"queued": item})
-    return _emit({"item": item})
-
-
 def _fail(err):
     body = {"api_version": store.API_VERSION, "ok": False}
     if isinstance(err, ActionError):
@@ -184,7 +176,7 @@ def cmd_add(a):
         idempotency_key=a.idempotency_key, if_exists=a.if_exists, ext=_parse_ext(a.ext),
         actor=a.actor, db_path=a.db,
     )
-    return _emit_item(item)
+    return _emit({"item": item})
 
 
 def cmd_creation(a):
@@ -222,7 +214,7 @@ def cmd_update(a):
         fields[k.strip()] = v
     item = store.update_item(a.id, idempotency_key=a.idempotency_key, ext=_parse_ext(a.ext),
                              actor=a.actor, db_path=a.db, **fields)
-    return _emit_item(item)
+    return _emit({"item": item})
 
 
 def cmd_transition(a):
@@ -232,7 +224,7 @@ def cmd_transition(a):
 
 
 def cmd_done(a):
-    return _emit_item(store.done(a.id, actor=a.actor, ext=_parse_ext(a.ext), db_path=a.db))
+    return _emit({"item": store.done(a.id, actor=a.actor, ext=_parse_ext(a.ext), db_path=a.db)})
 
 
 def cmd_block(a):
@@ -242,7 +234,7 @@ def cmd_block(a):
 
 
 def cmd_snooze(a):
-    return _emit_item(store.snooze(a.id, a.until, actor=a.actor, db_path=a.db))
+    return _emit({"item": store.snooze(a.id, a.until, actor=a.actor, db_path=a.db)})
 
 
 def cmd_due(a):

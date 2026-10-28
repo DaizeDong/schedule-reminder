@@ -88,8 +88,7 @@ Output is always JSON. Global options such as `--db` and `--actor` go before the
 SQLite (WAL) single file        <- private storage, downstream never touches it
   store.py (typed functions)    <- in-process; trusted skills may import
     reminder.py <verb>          <- versioned CLI contract (api_version 1.0.0)
-[task: every 5 min] tick.py -> inbox  inbox.drain (apply intents a secondary machine queued)
-                             -> work   agent_tick  (reap / launch one agent order)
+[task: every 5 min] tick.py -> work   agent_tick  (reap / launch one agent order)
                              -> remind store.tick  (due reminders -> relay.py -> Discord)
                              -> ingest ingest_tick (owner replies -> command handler or LLM judge)
 ```

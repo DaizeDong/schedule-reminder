@@ -194,9 +194,7 @@ def _connect(db_path=None, *, readonly=False, create=False, immutable=False, _re
     public tree). A plain read-only connection skips it; owner reads use admitted_connection."""
     path = db_path or default_db_path()
     if not readonly:
-        # Reminders are written on the primary only; reads stay open. add/update/done/snooze never get
-        # here on a secondary machine: they are queued in the inbox (inbox.py) before connecting.
-        # The one exception is import_text rebuilding the read-only copy under data/replica/.
+        # Reminders are written on the primary only; reads stay open. The one exception is import_text rebuilding the read-only copy under data/replica/.
         if not (_replica and _replica_target(path)):
             machine_role.refuse_on_secondary()
         _admit(path)
@@ -593,17 +591,7 @@ def add_item(title, *, kind="task", due_at=None, state="pending", priority=0, pr
              tz=None, recurrence=None, rdate=None, exdate=None, tags=None, project=None,
              relations=None, alarms=None, source=None, idempotency_key=None, ext=None, if_exists="update",
              actor=None, db_path=None, _id=None, _creation=None):
-    """Create an item. Idempotent on idempotency_key (UPSERT). Returns the item dict.
-
-    On a secondary machine a plain add is queued in the companion inbox instead (see inbox.py)."""
-    if _creation is None and machine_role.is_secondary():
-        import inbox
-        return inbox.submit("add", dict(
-            title=title, kind=kind, due_at=due_at, state=state, priority=priority, progress=progress,
-            description=description, scheduled_at=scheduled_at, start_at=start_at, end_at=end_at,
-            wait_until=wait_until, tz=tz, recurrence=recurrence, rdate=rdate, exdate=exdate, tags=tags,
-            project=project, relations=relations, alarms=alarms, source=source,
-            idempotency_key=idempotency_key, ext=ext, if_exists=if_exists, actor=actor))
+    """Create an item. Idempotent on idempotency_key (UPSERT). Returns the item dict."""
     if not title or not str(title).strip():
         raise SkillError("ERR_BAD_INPUT", "title is required")
     _validate_kind(kind)
@@ -855,10 +843,6 @@ _TIME_FIELDS = {"due_at", "scheduled_at", "start_at", "end_at", "wait_until"}
 
 def update_item(item_id, *, idempotency_key=None, actor=None, ext=None, db_path=None, **fields):
     """Patch mutable fields. ext uses a shallow merge preserving unknown top-level keys. State is unchanged."""
-    if machine_role.is_secondary():
-        import inbox
-        return inbox.submit("update", dict(fields, id=item_id, ext=ext, actor=actor,
-                                            idempotency_key=idempotency_key))
     conn = _connect(db_path)
     try:
         with _Tx(conn):
@@ -998,9 +982,6 @@ def transition(item_id, to_state, *, expect_state=None, reason=None, actor=None,
 
 
 def done(item_id, *, actor=None, ext=None, db_path=None):
-    if machine_role.is_secondary():
-        import inbox
-        return inbox.submit("done", dict(id=item_id, ext=ext, actor=actor))
     return transition(item_id, "done", actor=actor, ext=ext, db_path=db_path)
 
 
@@ -1013,9 +994,6 @@ def block(item_id, *, blocker_id=None, reason=None, actor=None, db_path=None):
 def snooze(item_id, until, *, actor=None, db_path=None):
     """Suppress reminders until `until` and clear any pending notify state. Does not change state."""
     until_s = to_rfc3339(parse_dt(until))
-    if machine_role.is_secondary():
-        import inbox
-        return inbox.submit("snooze", dict(id=item_id, until=until_s, actor=actor))
     conn = _connect(db_path)
     try:
         with _Tx(conn):

@@ -5,7 +5,7 @@
     {
       "id": "schedule-reminder/scheduleremindertick",
       "name": "ScheduleReminderTick",
-      "purpose": "Every 5 minutes: one tick applies inbox intents from a secondary machine, runs the agent work step, fires due reminders and polls the inbound channels; the exit code is the number of steps that raised.",
+      "purpose": "Every 5 minutes: one tick runs the agent work step, fires due reminders and polls the inbound channels; the exit code is the number of steps that raised.",
       "enabled": true,
       "trigger": {"type": "interval", "minutes": 5},
       "argv": [

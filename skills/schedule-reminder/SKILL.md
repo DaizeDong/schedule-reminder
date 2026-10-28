@@ -24,8 +24,7 @@ SQLite (WAL) single file          <- private storage, NEVER touched by downstrea
   store.py  (typed functions)     <- in-process, trusted skills MAY import
     reminder.py <verb>            <- versioned CLI contract (JSON always); call via subprocess
     reminder_linked_items.py      <- reviewed read-only Background Task Core linkage
-[Windows task ScheduleReminderTick, PT5M] -> tick.py, four steps in order:
-   inbox  -> inbox.drain  -> apply intents queued by a secondary machine (read via git show)
+[Windows task ScheduleReminderTick, PT5M] -> tick.py, three steps in order:
    work   -> agent_tick   -> reap the dead, launch one work order (also woken on enqueue and release)
    remind -> store.tick   -> reconcile due items -> relay.py -> Discord (out)
    ingest -> ingest_tick  -> poll every readable channel -> commands.py (deterministic)
@@ -55,17 +54,10 @@ list reads may return empty, work-feed reports unavailable, and creation preflig
 initialized database. Writes fail until the PRIVATE database is explicitly initialized.
 
 The one scheduled task runs `scripts/tick.py` every 5 minutes; it is registered through the
-machine's task registration authority, not by this skill. `tick.py --only inbox|work|remind|ingest`
+machine's task registration authority, not by this skill. `tick.py --only work|remind|ingest`
 runs one step; the exit code counts the steps that raised.
 
-On a secondary machine (`CLAUDE_MACHINE_ROLE=secondary`) the database is never written. `add`,
-`update`, `done` and `snooze` print `{"queued": {...}}` instead: the change is one intent file
-`inbox/<CLAUDE_MACHINE_ID>/<uuid7>.json` in the companion, committed alone and pushed, and the
-primary's next tick applies it. When `delivered` is false the push failed; tell the user the change
-is saved in the inbox and reaches the primary once this machine is online (the next queued change or
-the nightly companion sync pushes it). `import-text` into a
-missing database under the companion's `data/replica/` (the secondary's read-only copy) is allowed.
-Every other write refuses with `secondary machine: do this on the primary`.
+Reminders live on the primary machine only. On a secondary machine (`CLAUDE_MACHINE_ROLE=secondary`) every write refuses with `secondary machine: do this on the primary` and exits 3; tell the user to make the change on the primary. Reads stay open. `import-text` into a missing database under the companion's `data/replica/` (the secondary's read-only copy) is the one allowed write.
 
 `health` keeps its report-success JSON and exit zero: a database `quick_check` plus whether the
 relay registry is present. It starts no process. The companion commits `reminder.py export-text`

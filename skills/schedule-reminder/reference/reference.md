@@ -965,29 +965,22 @@ recognize differently worded follow-ups, or provide exactly-once delivery of ext
 One Windows task, **ScheduleReminderTick**, runs `scripts/tick.py` every 5 minutes. It is declared in
 the repository's `automation/tasks.json` (paths only through `${SKILL_ROOT}` and `${COMPANION_ROOT}`) and
 installed by the task registration authority (background-task-core `install-skill`), which generates
-its launcher; the companion's optional `automation/tasks.local.json` holds this machine's choices. `tick.py` runs four steps in order,
+its launcher; the companion's optional `automation/tasks.local.json` holds this machine's choices. `tick.py` runs three steps in order,
 each with its own result in the JSON summary; the exit code is the number of steps that raised:
 
 | Step | Runs | Needs |
 |---|---|---|
-| inbox | `inbox.drain()`: fetch the companion, read `inbox/*/*.json` from its upstream branch with `git show` (the working tree is untouched) and apply each unseen intent; `meta` records `inbox:<uuid>` so it runs once | store, git |
 | work | `agent_tick.run()`: reap finished agent orders, launch the next queued one | store, relay, llmcall |
 | remind | `store.tick()`: fire due reminders | store, relay |
 | ingest | `ingest_tick.run()`: poll every readable channel, dispatch replies (budget `TASK_LIMIT_S`) | store, relay, llmcall |
 
-`tick.py --only remind` (or `inbox`, `work`, `ingest`) runs one step; `--no-post` makes reminders a
-dry run, lists pending inbox intents without applying them and skips channel confirmations.
+`tick.py --only remind` (or `work`, `ingest`) runs one step; `--no-post` makes reminders a dry run
+and skips channel confirmations.
 
-A secondary machine (`CLAUDE_MACHINE_ROLE=secondary`, id from `CLAUDE_MACHINE_ID`) queues `add`,
-`update`, `done` and `snooze` as intents instead of writing: `inbox.submit()` writes
-`inbox/<machine id>/<uuid7>.json`, commits only that file, runs `pull --rebase --autostash` and
-pushes. The CLI prints `{"queued": {inbox_id, op, delivered, message, item_id for add}}`; an add
-gets the intent's uuid as its item id and `inbox:<uuid>` as its idempotency key unless the caller
-gave one. An intent the primary cannot apply (for example an unknown id) is recorded with its error
-in `meta`, announced once on the reminders stream and not retried. A push that failed stays a local
-commit; the next queued change or the secondary's nightly companion sync pushes it. `import-text` may rebuild a missing database directly under the
-companion's `data/replica/` (the read-only copy a secondary machine reads). Every other write refuses
-on a secondary machine. Change the task by editing the manifest or the companion override
+Reminders live on the primary machine only: on a secondary machine (`CLAUDE_MACHINE_ROLE=secondary`)
+every write refuses with `secondary machine: do this on the primary` and reads stay open. `import-text`
+may rebuild a missing database directly under the companion's `data/replica/` (the read-only copy a
+secondary machine reads). Change the task by editing the manifest or the companion override
 and running `install-skill` again; this repository ships no installer of its own.
 
 ### Private runtime storage
